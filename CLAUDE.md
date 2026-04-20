@@ -78,7 +78,17 @@ bash benchmarks/run_bench.sh
 # Reference bench (jax.hessian / asdex; tagged by JAX version, rerun only on upstream update):
 bash benchmarks/run_bench.sh --refs
 
-# Other modes: --curated (5-way), --highn (n>2500), --full (all scalar problems)
+# Full sweep: lineaxpr on all ~275 sif2jax problems (~10 min, per-commit):
+bash benchmarks/run_bench.sh --full
+
+# Full refs sweep: jax.hessian + asdex across all problems (~30 min, rarely rerun):
+bash benchmarks/run_bench.sh --full-refs
+
+# View combined report with min(folded, unfolded) as the jax baseline:
+uv run python -m benchmarks.report --tag lineaxpr   # curated table
+uv run python -m benchmarks.report --tag full --summary  # full with aggregate stats
+
+# Other modes: --curated (5-way), --highn (n>2500)
 # Add USE_CONTAINER=1 for EAGER_CONSTANT_FOLDING=TRUE release parity.
 
 # Monkeypatch experiment (pure-BCOO comparison):

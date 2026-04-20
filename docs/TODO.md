@@ -120,7 +120,23 @@ upfront `make_jaxpr`. Defer until a concrete use case emerges.
 
 Audit sif2jax for `@jax.custom_jvp` usage; add a rule that `lift_jvp`'s
 the custom-JVP'd function and re-runs through our walk. Sparsify has
-this; we don't.
+this; we don't. (Confirmed 2026-04-20: sif2jax has 0 `custom_jvp`
+calls, so this is not blocking. Revisit if a user reports it.)
+
+### 9a. Primitive-coverage gaps — 18 problems skipped by --full sweep
+
+Full bench at commit `4562b8f` found 18 `bcoo_jacobian` compile failures
+(NotImplementedError in walk). They form two clusters:
+
+- **PALMER1A/1C/1D, PALMER2A/2C/2E, PALMER3A/3C/3E, PALMER4C/4E,
+  PALMER6C/6E, PALMER7C/7E, PALMER8C/8E** — 17 problems. Polynomial
+  curve-fitting to spectroscopy data. Likely one shared primitive
+  missing across the family.
+- **BQP1VAR** — bounded quadratic with n=1. Degenerate shape case.
+
+Audit: set `_SMALL_N_VMAP_THRESHOLD = 0` and run one of them; the
+improved NIE message names the missing primitive. Add the rule or
+document the shape limitation. Not BandedPivoted-blocking.
 
 ## Priority 3 — memory / hygiene
 
