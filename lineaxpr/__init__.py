@@ -16,26 +16,31 @@ Public API:
 """
 
 from .materialize import (
-    materialize,
     bcoo_jacobian,
+    materialize,
     materialize_rules,
-    register,
+    sparsify,
+    to_bcoo,
+    to_dense,
     _SMALL_N_VMAP_THRESHOLD,
 )
 
-# Internal structural forms — exposed for tests / debugging, not stable API.
-from .materialize import (
+from ._base import (
     ConstantDiagonal,
     Diagonal,
+    Identity,
     Pivoted,
 )
 
 __all__ = [
+    "sparsify",
     "materialize",
     "bcoo_jacobian",
+    "to_dense",
+    "to_bcoo",
     "materialize_rules",
-    "register",
     "ConstantDiagonal",
     "Diagonal",
+    "Identity",
     "Pivoted",
 ]

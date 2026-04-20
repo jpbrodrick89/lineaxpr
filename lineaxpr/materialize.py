@@ -19,7 +19,7 @@ the boundary.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -29,133 +29,18 @@ from jax._src.lax import slicing as _slicing
 from jax.experimental import sparse
 from jax.extend import core
 
-
-# -------------------------- internal structural forms --------------------------
-# These are *internal*: they live only inside the env during a single walk.
-# Public APIs always return BCOO or ndarray.
-
-
-class ConstantDiagonal:
-    """Internal: diagonal matrix with all entries equal to `value`."""
-
-    __slots__ = ("n", "value")
-
-    def __init__(self, n: int, value: Any = 1.0):
-        self.n = n
-        self.value = value
-
-
-class Diagonal:
-    """Internal: diagonal matrix `diag(values)` for a length-n vector."""
-
-    __slots__ = ("values",)
-
-    def __init__(self, values):
-        self.values = values
-
-    @property
-    def n(self):
-        return self.values.shape[0]
-
-
-class Pivoted:
-    """Internal: a linear operator with at most one nonzero per row.
-
-    Represents the `(out_size, in_size)` matrix
-        M[out_rows[i], in_cols[i]] = values[i]
-        M[r, c] = 0 otherwise.
-
-    Captures `slice(Identity)`, `gather(Identity)`, scaled versions, and
-    pad/add chains thereof — common in sparse-banded problems.
-    Avoids BCOO's `(nse, 2)` indices array by keeping rows + cols as 1D.
-    """
-
-    __slots__ = ("out_rows", "in_cols", "values", "out_size", "in_size")
-
-    def __init__(self, out_rows, in_cols, values, out_size, in_size):
-        self.out_rows = out_rows
-        self.in_cols = in_cols
-        self.values = values
-        self.out_size = out_size
-        self.in_size = in_size
-
-    @property
-    def shape(self):
-        return (self.out_size, self.in_size)
-
-    @property
-    def n(self):
-        return self.in_size
-
-    @property
-    def nse(self):
-        return self.out_rows.shape[0]
-
-
-def _to_dense(op, n: int) -> jnp.ndarray:
-    if isinstance(op, ConstantDiagonal):
-        if isinstance(op.value, float) and op.value == 1.0:
-            return jnp.eye(n)
-        return op.value * jnp.eye(n)
-    if isinstance(op, Diagonal):
-        m = op.values.shape[0]
-        idx = jnp.arange(m)
-        return jnp.zeros((m, m), op.values.dtype).at[idx, idx].set(op.values)
-    if isinstance(op, Pivoted):
-        return (jnp.zeros((op.out_size, op.in_size), op.values.dtype)
-                .at[op.out_rows, op.in_cols].add(op.values))
-    if isinstance(op, sparse.BCOO):
-        return op.todense()
-    return op
-
-
-def _pivoted_to_bcoo(p: "Pivoted") -> sparse.BCOO:
-    if isinstance(p.out_rows, np.ndarray) and isinstance(p.in_cols, np.ndarray):
-        # Stack statically; avoid two asarray + one jnp.stack HLO ops.
-        indices = np.stack([p.out_rows, p.in_cols], axis=1)
-    else:
-        indices = jnp.stack([jnp.asarray(p.out_rows), jnp.asarray(p.in_cols)], axis=1)
-    return sparse.BCOO((p.values, indices), shape=p.shape)
-
-
-def _concat(arrs):
-    arrs = list(arrs)
-    if all(isinstance(a, np.ndarray) for a in arrs):
-        return np.concatenate(arrs)
-    return jnp.concatenate(arrs)
-
-
-def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
-    """Convert a (Constant)Diagonal to BCOO."""
-    idx = jnp.arange(d.n)
-    indices = jnp.stack([idx, idx], axis=1)
-    if isinstance(d, ConstantDiagonal):
-        v = jnp.asarray(d.value)
-        data = jnp.broadcast_to(v, (d.n,))
-    elif isinstance(d, Diagonal):
-        data = d.values
-    else:
-        raise TypeError(f"_diag_to_bcoo expected diagonal LinOp, got {type(d)}")
-    return sparse.BCOO((data, indices), shape=(d.n, d.n))
-
-
-def _to_bcoo(op, n: int):
-    """Convert any internal LinOp to BCOO (used at the bcoo_jacobian boundary)."""
-    if isinstance(op, sparse.BCOO):
-        return op
-    if isinstance(op, (ConstantDiagonal, Diagonal)):
-        return _diag_to_bcoo(op)
-    if isinstance(op, Pivoted):
-        return _pivoted_to_bcoo(op)
-    return op  # plain ndarray — caller will keep dense
-
-
-def _traced_shape(op) -> tuple:
-    if isinstance(op, (ConstantDiagonal, Diagonal)):
-        return (op.n,)
-    if isinstance(op, Pivoted):
-        return (op.out_size,)
-    return tuple(op.shape[:-1])
+from ._base import (
+    ConstantDiagonal,
+    Diagonal,
+    Identity,
+    Pivoted,
+    _concat,
+    _diag_to_bcoo,
+    _pivoted_to_bcoo,
+    _to_bcoo,
+    _to_dense,
+    _traced_shape,
+)
 
 
 # -------------------------- rule registry --------------------------
@@ -164,18 +49,23 @@ def _traced_shape(op) -> tuple:
 materialize_rules: dict[core.Primitive, Callable] = {}
 
 
-def register(prim: core.Primitive):
-    def deco(fn):
-        materialize_rules[prim] = fn
-        return fn
-
-    return deco
-
-
 # -------------------------- rules --------------------------
 
 
-@register(lax.mul_p)
+def _bcoo_scale_scalar(b: sparse.BCOO, s) -> sparse.BCOO:
+    return sparse.BCOO((s * b.data, b.indices), shape=b.shape)
+
+
+def _bcoo_scale_per_out_row(b: sparse.BCOO, v) -> sparse.BCOO:
+    row_idx = b.indices[:, 0]
+    v_arr = jnp.asarray(v)
+    return sparse.BCOO((b.data * jnp.take(v_arr, row_idx), b.indices), shape=b.shape)
+
+
+def _bcoo_negate(b: sparse.BCOO) -> sparse.BCOO:
+    return sparse.BCOO((-b.data, b.indices), shape=b.shape)
+
+
 def _mul_rule(invals, traced, n, **params):
     del params
     x, y = invals
@@ -191,47 +81,20 @@ def _mul_rule(invals, traced, n, **params):
 
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
-        scale = jnp.asarray(scale).reshape(())
-        if isinstance(traced_op, ConstantDiagonal):
-            return ConstantDiagonal(traced_op.n, scale * traced_op.value)
-        if isinstance(traced_op, Diagonal):
-            return Diagonal(scale * traced_op.values)
-        if isinstance(traced_op, Pivoted):
-            return Pivoted(traced_op.out_rows, traced_op.in_cols,
-                           scale * traced_op.values,
-                           traced_op.out_size, traced_op.in_size)
+        s = jnp.asarray(scale).reshape(())
+        if isinstance(traced_op, (ConstantDiagonal, Diagonal, Pivoted)):
+            return traced_op.scale_scalar(s)
         if isinstance(traced_op, sparse.BCOO):
-            return sparse.BCOO(
-                (scale * traced_op.data, traced_op.indices),
-                shape=traced_op.shape,
-            )
-        return scale * traced_op
-    if isinstance(traced_op, ConstantDiagonal):
-        return Diagonal(traced_op.value * jnp.asarray(scale))
-    if isinstance(traced_op, Diagonal):
-        return Diagonal(traced_op.values * jnp.asarray(scale))
-    if isinstance(traced_op, Pivoted):
-        # scale has shape (out_size,) matching traced_op's output dim. Scale
-        # values by scale[out_rows].
-        scale_arr = jnp.asarray(scale)
-        if scale_arr.shape[0] == traced_op.nse:
-            # Special case: scale length equals nse (true when out_rows ==
-            # arange(k), i.e. before any pad). Avoid the gather.
-            new_values = traced_op.values * scale_arr
-        else:
-            new_values = traced_op.values * jnp.take(scale_arr, traced_op.out_rows)
-        return Pivoted(traced_op.out_rows, traced_op.in_cols, new_values,
-                       traced_op.out_size, traced_op.in_size)
+            return _bcoo_scale_scalar(traced_op, s)
+        return s * traced_op
+    if isinstance(traced_op, (ConstantDiagonal, Diagonal, Pivoted)):
+        return traced_op.scale_per_out_row(scale)
     if isinstance(traced_op, sparse.BCOO):
-        row_idx = traced_op.indices[:, 0]
-        scale_arr = jnp.asarray(scale)
-        return sparse.BCOO(
-            (traced_op.data * jnp.take(scale_arr, row_idx), traced_op.indices),
-            shape=traced_op.shape,
-        )
+        return _bcoo_scale_per_out_row(traced_op, scale)
     dense = _to_dense(traced_op, n)
     return scale[..., None] * dense
 
+materialize_rules[lax.mul_p] = _mul_rule
 
 def _add_like(invals, traced, n, **params):
     del params
@@ -340,11 +203,11 @@ def _add_like(invals, traced, n, **params):
     return result
 
 
-register(lax.add_p)(_add_like)
+materialize_rules[lax.add_p] = _add_like
 try:
     from jax._src.ad_util import add_jaxvals_p
 
-    register(add_jaxvals_p)(_add_like)
+    materialize_rules[add_jaxvals_p] = _add_like
 except ImportError:
     pass
 
@@ -357,30 +220,24 @@ def _identity_rule(invals, traced, n, **params):
     return op if t else None
 
 
-register(lax.convert_element_type_p)(_identity_rule)
-register(lax.copy_p)(_identity_rule)
+materialize_rules[lax.convert_element_type_p] = _identity_rule
+materialize_rules[lax.copy_p] = _identity_rule
 
 
-@register(lax.neg_p)
 def _neg_rule(invals, traced, n, **params):
-    del params
+    del params, n
     (op,) = invals
     (t,) = traced
     if not t:
         return None
-    if isinstance(op, ConstantDiagonal):
-        return ConstantDiagonal(op.n, -op.value)
-    if isinstance(op, Diagonal):
-        return Diagonal(-op.values)
-    if isinstance(op, Pivoted):
-        return Pivoted(op.out_rows, op.in_cols, -op.values,
-                       op.out_size, op.in_size)
+    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+        return op.negate()
     if isinstance(op, sparse.BCOO):
-        return sparse.BCOO((-op.data, op.indices), shape=op.shape)
+        return _bcoo_negate(op)
     return -op
 
+materialize_rules[lax.neg_p] = _neg_rule
 
-@register(lax.sub_p)
 def _sub_rule(invals, traced, n, **params):
     """a - b = a + (-b). Reuse add via negating the second operand if traced."""
     a, b = invals
@@ -397,8 +254,8 @@ def _sub_rule(invals, traced, n, **params):
     neg_b = _neg_rule([b], [True], n)
     return _add_like([a, neg_b], [True, True], n)
 
+materialize_rules[lax.sub_p] = _sub_rule
 
-@register(lax.dot_general_p)
 def _dot_general_rule(invals, traced, n, **params):
     x, y = invals
     tx, ty = traced
@@ -460,8 +317,8 @@ def _dot_general_rule(invals, traced, n, **params):
         return lax.transpose(out, perm)
     return lax.dot_general(M, dense, (((tuple(c_M), tuple(c_tr))), ((), ())))
 
+materialize_rules[lax.dot_general_p] = _dot_general_rule
 
-@register(lax.slice_p)
 def _slice_rule(invals, traced, n, **params):
     (operand,) = invals
     (to,) = traced
@@ -521,8 +378,8 @@ def _slice_rule(invals, traced, n, **params):
     str_full = strides + (1,)
     return lax.slice(dense, s_full, l_full, str_full)
 
+materialize_rules[lax.slice_p] = _slice_rule
 
-@register(lax.pad_p)
 def _pad_rule(invals, traced, n, **params):
     operand, padding_value = invals
     to, tp = traced
@@ -537,19 +394,7 @@ def _pad_rule(invals, traced, n, **params):
     before, after = int(before), int(after)
     if (isinstance(operand, Pivoted) and len(config) == 1
             and int(interior) == 0):
-        out_size = operand.out_size + before + after
-        new_rows = operand.out_rows + before
-        if before >= 0 and after >= 0:
-            return Pivoted(new_rows, operand.in_cols, operand.values,
-                           out_size, operand.in_size)
-        # Negative pad = truncation: drop entries with new_row out of range.
-        is_np = isinstance(new_rows, np.ndarray)
-        mask = (new_rows >= 0) & (new_rows < out_size)
-        safe_rows = (np.where(mask, new_rows, 0) if is_np
-                     else jnp.where(mask, new_rows, 0))
-        val_mask = jnp.asarray(mask, dtype=operand.values.dtype) if is_np else mask
-        return Pivoted(safe_rows, operand.in_cols, operand.values * val_mask,
-                       out_size, operand.in_size)
+        return operand.pad_rows(before, after)
     if (isinstance(operand, sparse.BCOO) and len(config) == 1
             and int(interior) == 0):
         out_size = operand.shape[0] + before + after
@@ -563,8 +408,8 @@ def _pad_rule(invals, traced, n, **params):
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
 
+materialize_rules[lax.pad_p] = _pad_rule
 
-@register(lax.squeeze_p)
 def _squeeze_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -584,8 +429,8 @@ def _squeeze_rule(invals, traced, n, **params):
     # input-coordinate axis).
     return lax.squeeze(op, dimensions)
 
+materialize_rules[lax.squeeze_p] = _squeeze_rule
 
-@register(lax.rev_p)
 def _rev_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -603,8 +448,12 @@ def _rev_rule(invals, traced, n, **params):
     dense = _to_dense(op, n)
     return lax.rev(dense, dimensions)
 
+materialize_rules[lax.rev_p] = _rev_rule
 
-@register(lax.reshape_p)
+# TODO(structural): reshape/broadcast_in_dim/reduce_sum/cumsum/split/transpose
+# all densify unconditionally. Structural alternatives exist (e.g. transpose on
+# BCOO swaps index columns; reduce_sum on a sparse axis drops it). Deferred —
+# see docs/RESEARCH_NOTES.md §10 "Densifying vs structure-preserving" audit.
 def _reshape_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -615,8 +464,8 @@ def _reshape_rule(invals, traced, n, **params):
     # Reshape applies to output axes only; preserve the trailing input axis.
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
+materialize_rules[lax.reshape_p] = _reshape_rule
 
-@register(lax.broadcast_in_dim_p)
 def _broadcast_in_dim_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -629,8 +478,8 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
     out_dims = tuple(broadcast_dimensions) + (len(shape),)  # add input axis
     return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
 
+materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
 
-@register(lax.reduce_sum_p)
 def _reduce_sum_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -641,8 +490,8 @@ def _reduce_sum_rule(invals, traced, n, **params):
     # Sum applies to output axes only — never to the last (input-coordinate) axis.
     return jnp.sum(dense, axis=tuple(axes))
 
+materialize_rules[lax.reduce_sum_p] = _reduce_sum_rule
 
-@register(lax.concatenate_p)
 def _concatenate_rule(invals, traced, n, **params):
     if not any(traced):
         return None
@@ -658,8 +507,8 @@ def _concatenate_rule(invals, traced, n, **params):
             parts.append(jnp.broadcast_to(v[..., None] * 0, v.shape + (n,)))
     return lax.concatenate(parts, dimension)
 
+materialize_rules[lax.concatenate_p] = _concatenate_rule
 
-@register(lax.split_p)
 def _split_rule(invals, traced, n, **params):
     (operand,) = invals
     (t,) = traced
@@ -677,6 +526,7 @@ def _split_rule(invals, traced, n, **params):
         start += int(sz)
     return out
 
+materialize_rules[lax.split_p] = _split_rule
 
 def _jit_rule(invals, traced, n, **params):
     """Recurse into the inner jaxpr of a `jit` (pjit) call."""
@@ -684,34 +534,25 @@ def _jit_rule(invals, traced, n, **params):
     inner = inner_cj.jaxpr
     inner_consts = inner_cj.consts
 
-    inner_env: dict = {}
-    inner_consts_env: dict = dict(zip(inner.constvars, inner_consts))
+    inner_env: dict = {v: (False, c) for v, c in zip(inner.constvars, inner_consts)}
     for inner_invar, outer_val, was_traced in zip(inner.invars, invals, traced):
-        if was_traced:
-            inner_env[inner_invar] = outer_val
-        else:
-            inner_consts_env[inner_invar] = outer_val
-    _walk_jaxpr(inner, inner_env, inner_consts_env, n)
+        inner_env[inner_invar] = (was_traced, outer_val)
+    _walk_jaxpr(inner, inner_env, n)
 
-    outs = []
-    for outvar in inner.outvars:
-        if outvar in inner_env:
-            outs.append(inner_env[outvar])
-        else:
-            outs.append(inner_consts_env[outvar])
-    return outs  # jit_p is always multiple_results
+    # jit_p is always multiple_results; walker sets all outputs to traced
+    # since _jit_rule is only called when any input is traced.
+    return [inner_env[outvar][1] for outvar in inner.outvars]
 
 
 # pjit_p is the modern name for jit's primitive.
 try:
     from jax._src.pjit import jit_p
 
-    register(jit_p)(_jit_rule)
+    materialize_rules[jit_p] = _jit_rule
 except ImportError:
     pass
 
 
-@register(lax.select_n_p)
 def _select_n_rule(invals, traced, n, **params):
     """`select_n(pred, *cases)` for constant `pred`. Predicates derived from
     traced inputs would imply a data-dependent branch, which is non-linear and
@@ -746,8 +587,8 @@ def _select_n_rule(invals, traced, n, **params):
     pred_b = jnp.broadcast_to(pred_arr[..., None], target_shape)
     return lax.select_n(pred_b, *case_dense)
 
+materialize_rules[lax.select_n_p] = _select_n_rule
 
-@register(lax.cumsum_p)
 def _cumsum_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -758,8 +599,8 @@ def _cumsum_rule(invals, traced, n, **params):
     dense = _to_dense(op, n)
     return lax.cumsum(dense, axis=axis, reverse=reverse)
 
+materialize_rules[lax.cumsum_p] = _cumsum_rule
 
-@register(lax.div_p)
 def _div_rule(invals, traced, n, **params):
     a, b = invals
     ta, tb = traced
@@ -771,8 +612,8 @@ def _div_rule(invals, traced, n, **params):
     inv_b = jnp.reciprocal(jnp.asarray(b))
     return _mul_rule([a, inv_b], [True, False], n)
 
+materialize_rules[lax.div_p] = _div_rule
 
-@register(lax.transpose_p)
 def _transpose_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -783,8 +624,8 @@ def _transpose_rule(invals, traced, n, **params):
     # Permutation applies to output axes only; preserve trailing input axis.
     return lax.transpose(dense, tuple(permutation) + (len(permutation),))
 
+materialize_rules[lax.transpose_p] = _transpose_rule
 
-@register(lax.gather_p)
 def _gather_rule(invals, traced, n, **params):
     operand, start_indices = invals
     to, ti = traced
@@ -815,8 +656,8 @@ def _gather_rule(invals, traced, n, **params):
     dense = _to_dense(operand, n)
     return dense[row_idx]
 
+materialize_rules[lax.gather_p] = _gather_rule
 
-@register(_slicing.scatter_add_p)
 def _scatter_add_rule(invals, traced, n, **params):
     operand, scatter_indices, updates = invals
     to, ti, tu = traced
@@ -866,60 +707,71 @@ def _scatter_add_rule(invals, traced, n, **params):
     return (jnp.zeros((out_size, n), flat_updates.dtype)
             .at[out_idx_flat].add(flat_updates))
 
+materialize_rules[_slicing.scatter_add_p] = _scatter_add_rule
 
 # -------------------------- driver --------------------------
 
 
-def _walk_jaxpr(jaxpr, env, consts_env, n):
-    """Walk a jaxpr, mutating env. Used by both top-level and nested jit calls.
+def _walk_jaxpr(jaxpr, env, n):
+    """Walk a jaxpr, mutating env.
 
-    Each var is in exactly one of:
-      * `env` (traced — has a LinOp value)
-      * `consts_env` (not traced — has a concrete array value)
-      * neither (a Literal, read directly from .val).
+    Env is `dict[Var, tuple[bool, Any]]` where the bool is `traced`:
+      * (True, LinOp) — this var depends on the walk's input; value is a LinOp.
+      * (False, concrete_array) — this var is pure closure data.
+    Literals are read directly from `.val`; traced status comes from the
+    invars the caller seeded.
     """
 
     def read(atom):
         if isinstance(atom, core.Literal):
-            return atom.val
-        if atom in env:
-            return env[atom]
-        return consts_env[atom]
-
-    def is_traced(atom):
-        return not isinstance(atom, core.Literal) and atom in env
+            return (False, atom.val)
+        return env[atom]
 
     for eqn in jaxpr.eqns:
-        invals = [read(v) for v in eqn.invars]
-        traced = [is_traced(v) for v in eqn.invars]
+        entries = [read(v) for v in eqn.invars]
+        invals = [e[1] for e in entries]
+        traced = [e[0] for e in entries]
         if not any(traced):
-            # No traced inputs — evaluate the primitive concretely and stash
-            # the result in consts_env. This is the "constant propagation"
-            # path for vars derived purely from closures.
+            # Constant propagation: no traced inputs → evaluate concretely
+            # and stash as closure data. Important for constant-H problems
+            # (DUAL, CMPC) — lets the whole walk fold to a trace-time BCOO
+            # literal. See docs/RESEARCH_NOTES.md §10.
             concrete_outs = eqn.primitive.bind(*invals, **eqn.params)
             if eqn.primitive.multiple_results:
                 for v, o in zip(eqn.outvars, concrete_outs):
-                    consts_env[v] = o
+                    env[v] = (False, o)
             else:
                 (outvar,) = eqn.outvars
-                consts_env[outvar] = concrete_outs
+                env[outvar] = (False, concrete_outs)
             continue
         rule = materialize_rules.get(eqn.primitive)
         if rule is None:
+            forms = ", ".join(
+                type(v).__name__ if t else f"closure:{type(v).__name__}"
+                for v, t in zip(invals, traced)
+            )
             raise NotImplementedError(
-                f"No materialize rule for primitive {eqn.primitive}"
+                f"No lineaxpr rule for primitive '{eqn.primitive}'.\n"
+                f"  Input forms: [{forms}]\n"
+                f"  To add a rule: register at lineaxpr.materialize_rules[{eqn.primitive}] = your_rule\n"
+                f"  Or file an issue at https://github.com/jpbrodrick89/lineaxpr/issues "
+                f"with the minimal f(y) that triggers this."
             )
         outs = rule(invals, traced, n, **eqn.params)
         if eqn.primitive.multiple_results:
             for v, o in zip(eqn.outvars, outs):
-                env[v] = o
+                env[v] = (True, o)
         else:
             (outvar,) = eqn.outvars
-            env[outvar] = outs
+            env[outvar] = (True, outs)
 
 
-def _walk(linear_fn, primal):
-    cj = jax.make_jaxpr(linear_fn)(primal)
+def _walk_with_seed(linear_fn, seed_linop):
+    """Trace `linear_fn` with the aval implied by `seed_linop`, walk the
+    jaxpr, return the output LinOp."""
+    aval = seed_linop.primal_aval()
+    placeholder = jax.ShapeDtypeStruct(aval.shape, aval.dtype)
+    cj = jax.make_jaxpr(linear_fn)(placeholder)
     jaxpr = cj.jaxpr
 
     if len(jaxpr.invars) != 1:
@@ -929,19 +781,80 @@ def _walk(linear_fn, primal):
         raise NotImplementedError("non-1D input not yet handled")
     n = invar.aval.size
 
-    consts_env: dict = dict(zip(jaxpr.constvars, cj.consts))
-    env: dict = {invar: ConstantDiagonal(n)}
-    _walk_jaxpr(jaxpr, env, consts_env, n)
+    env: dict = {v: (False, c) for v, c in zip(jaxpr.constvars, cj.consts)}
+    env[invar] = (True, seed_linop)
+    _walk_jaxpr(jaxpr, env, n)
 
     if len(jaxpr.outvars) != 1:
         raise NotImplementedError("multi-output linear_fn not yet handled")
     (outvar,) = jaxpr.outvars
-    return (env[outvar] if outvar in env else consts_env[outvar]), n
+    return env[outvar][1]
+
+
+def sparsify(linear_fn):
+    """Transform a linear function into one that operates on LinOps.
+
+    `sparsify(linear_fn)(seed_linop)` traces `linear_fn` against the aval
+    implied by `seed_linop.primal_aval()`, walks the resulting jaxpr with
+    per-primitive structural rules, and returns a LinOp representing the
+    linear function's matrix.
+
+    Seeds are explicit — no automatic Identity cast. For the common case
+    of extracting the full Jacobian, the public wrappers `materialize` /
+    `bcoo_jacobian` build `Identity(primal.size, dtype=primal.dtype)` and
+    pass it through.
+    """
+    def inner(seed_linop):
+        return _walk_with_seed(linear_fn, seed_linop)
+
+    return inner
+
+
+# Back-compat for direct users of `_walk`.
+def _walk(linear_fn, primal):
+    seed = ConstantDiagonal(primal.size)
+    out = _walk_with_seed(linear_fn, seed)
+    return out, primal.size
 
 
 _SMALL_N_VMAP_THRESHOLD = 16
 """Below this n, vmap(linear_fn)(eye) emits less HLO than the structural walk
 on most problems. Above it the walk's structure exploitation dominates."""
+
+
+def to_dense(op):
+    """Densify a LinOp returned by `sparsify` to a jnp.ndarray.
+
+    Uniform across all possible return types:
+    - Our LinOp classes (ConstantDiagonal, Diagonal, Pivoted) → `.to_dense()`.
+    - `jax.experimental.sparse.BCOO` → `.todense()`.
+    - Plain ndarray → passthrough.
+    """
+    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+        return op.to_dense()
+    if isinstance(op, sparse.BCOO):
+        return op.todense()
+    return op
+
+
+def to_bcoo(op):
+    """Convert a LinOp returned by `sparsify` to a BCOO (or ndarray if
+    the walk produced a dense fallback that can't be usefully sparsified).
+
+    - Our LinOp classes → `.to_bcoo()`.
+    - `BCOO` passthrough.
+    - Plain ndarray passthrough (caller decides what to do).
+    """
+    if isinstance(op, sparse.BCOO):
+        return op
+    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+        return op.to_bcoo()
+    return op
+
+
+# Legacy internal aliases (still referenced in benchmarks / older tests).
+_linop_to_dense = lambda op, n: to_dense(op)  # noqa: E731
+_linop_to_bcoo = lambda op: to_bcoo(op)  # noqa: E731
 
 
 def materialize(linear_fn, primal):
@@ -955,18 +868,17 @@ def materialize(linear_fn, primal):
     n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
     if n < _SMALL_N_VMAP_THRESHOLD:
         return jax.vmap(linear_fn)(jnp.eye(n, dtype=primal.dtype)).T
-    op, n2 = _walk(linear_fn, primal)
-    return _to_dense(op, n2)
+    seed = Identity(n, dtype=primal.dtype)
+    return to_dense(sparsify(linear_fn)(seed))
 
 
 def bcoo_jacobian(linear_fn, primal):
     """Return a `jax.experimental.sparse.BCOO` if the linear function has
     sparse structure that survives the walk, otherwise a dense `jnp.ndarray`.
     """
-    op, n = _walk(linear_fn, primal)
-    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted, sparse.BCOO)):
-        return _to_bcoo(op, n)
-    return op
+    n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
+    seed = Identity(n, dtype=primal.dtype)
+    return to_bcoo(sparsify(linear_fn)(seed))
 
 
 # -------------------------- demo --------------------------
