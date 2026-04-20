@@ -16,7 +16,13 @@ Public API:
 """
 
 from .materialize import (
+    bcoo_hessian,
+    bcoo_jacfwd,
     bcoo_jacobian,
+    bcoo_jacrev,
+    hessian,
+    jacfwd,
+    jacrev,
     materialize,
     materialize_rules,
     sparsify,
@@ -33,14 +39,25 @@ from ._base import (
 )
 
 __all__ = [
+    # jax-like public API (preferred)
+    "jacfwd",
+    "bcoo_jacfwd",
+    "jacrev",
+    "bcoo_jacrev",
+    "hessian",
+    "bcoo_hessian",
+    # lower-level building blocks
     "sparsify",
     "materialize",
-    "bcoo_jacobian",
     "to_dense",
     "to_bcoo",
+    # rule registry
     "materialize_rules",
+    # LinOp classes (exposed for custom seeds / debugging)
     "ConstantDiagonal",
     "Diagonal",
     "Identity",
     "Pivoted",
+    # deprecated — kept for back-compat
+    "bcoo_jacobian",
 ]

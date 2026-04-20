@@ -868,28 +868,150 @@ _linop_to_dense = lambda op, n: to_dense(op)  # noqa: E731
 _linop_to_bcoo = lambda op: to_bcoo(op)  # noqa: E731
 
 
-def materialize(linear_fn, primal):
-    """Return the dense `jnp.ndarray` matrix of the linear function `linear_fn`.
+_VALID_FORMATS = ("dense", "bcoo")
 
-    Mirrors `jax.hessian`'s output convention.
 
-    For tiny inputs (n < `_SMALL_N_VMAP_THRESHOLD`) the structural walk emits
-    more HLO than the simple `vmap(linear_fn)(eye)` does — short-circuit.
+def materialize(linear_fn, primal, format: str = "dense"):
+    """Materialize the Jacobian matrix of a linear callable.
+
+    Args:
+      linear_fn: a linear callable `R^n -> R^m` (typically the output of
+        `jax.linearize(...)[1]` or `jax.linear_transpose(...)`).
+      primal: a shape/dtype witness for the input to `linear_fn` (its
+        value is not used; only `primal.size` and `primal.dtype` matter).
+      format: one of `"dense"` or `"bcoo"`.
+        - `"dense"` returns a `jnp.ndarray`.
+        - `"bcoo"` returns a `jax.experimental.sparse.BCOO` when the
+          walk preserves structural sparsity, otherwise a dense ndarray
+          (dense fallbacks surface to the caller unchanged).
+
+    For tiny inputs (n < `_SMALL_N_VMAP_THRESHOLD`) the structural walk
+    emits more HLO than `vmap(linear_fn)(eye)` — the short-circuit is
+    always dense; users asking for `"bcoo"` at tiny n still get dense
+    output (by design; densification at small n is the right call).
     """
+    if format not in _VALID_FORMATS:
+        raise ValueError(f"format must be one of {_VALID_FORMATS}, got {format!r}")
     n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
     if n < _SMALL_N_VMAP_THRESHOLD:
         return jax.vmap(linear_fn)(jnp.eye(n, dtype=primal.dtype)).T
     seed = Identity(n, dtype=primal.dtype)
-    return to_dense(sparsify(linear_fn)(seed))
+    linop = sparsify(linear_fn)(seed)
+    if format == "dense":
+        return to_dense(linop)
+    return to_bcoo(linop)
 
 
 def bcoo_jacobian(linear_fn, primal):
-    """Return a `jax.experimental.sparse.BCOO` if the linear function has
-    sparse structure that survives the walk, otherwise a dense `jnp.ndarray`.
+    """DEPRECATED: use `materialize(linear_fn, primal, format='bcoo')` or
+    one of the jax-like wrappers (`bcoo_jacfwd`, `bcoo_jacrev`,
+    `bcoo_hessian`). Kept as a passthrough for backward compatibility.
+
+    Whether the fn is fwd or rev Jacobian is ambiguous from the name —
+    the jax-like variants make it explicit.
     """
-    n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
-    seed = Identity(n, dtype=primal.dtype)
-    return to_bcoo(sparsify(linear_fn)(seed))
+    import warnings
+    warnings.warn(
+        "lineaxpr.bcoo_jacobian is deprecated; use "
+        "materialize(..., format='bcoo') or bcoo_jacfwd / bcoo_jacrev / "
+        "bcoo_hessian depending on which Jacobian you want.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return materialize(linear_fn, primal, format="bcoo")
+
+
+# -------------------------- jax-like public API --------------------------
+
+
+def _jacfwd_impl(f, y, format: str):
+    """materialize ∘ jax.linearize — forward-mode Jacobian."""
+    y_out, lin = jax.linearize(f, y)
+    del y_out  # only needed for shape in jacrev
+    return materialize(lin, y, format=format)
+
+
+def _jacrev_impl(f, y, format: str):
+    """materialize ∘ jax.linear_transpose ∘ jax.linearize — reverse-mode
+    Jacobian. linear_transpose of the JVP is the VJP; materializing gives
+    Jᵀ, so we transpose the result to match `jax.jacrev`'s shape."""
+    y_out, lin = jax.linearize(f, y)
+    vjp = jax.linear_transpose(lin, y)
+    # vjp: R^m -> R^n, where m = y_out.shape.
+    # jax.linear_transpose wraps the result in a tuple (multi-output),
+    # so we unpack.
+    def vjp_unpacked(w):
+        (out,) = vjp(w)
+        return out
+    # Primal for the VJP is a shape/dtype witness of y_out.
+    jt = materialize(vjp_unpacked, y_out, format=format)
+    # jt has shape (n, m); we want (m, n) to match jax.jacrev.
+    if format == "dense":
+        return jt.T
+    # BCOO supports .T via transpose().
+    return jt.T
+
+
+def jacfwd(f, *, format: str = "dense"):
+    """Forward-mode Jacobian, matching `jax.jacfwd`'s output shape.
+
+    Equivalent to `materialize(jax.linearize(f, y)[1], y, format=format)`.
+
+    Returns a function `(y) -> Jacobian`. `format='dense'` (default)
+    returns a `jnp.ndarray`; `format='bcoo'` returns a BCOO when
+    structural sparsity survives, else a dense ndarray.
+
+    Only single-input / single-output `f` with 1D `y` is currently
+    supported — see `docs/TODO.md` for the multi-input / multi-output
+    roadmap.
+    """
+    def wrapped(y):
+        return _jacfwd_impl(f, y, format)
+    return wrapped
+
+
+def bcoo_jacfwd(f):
+    """Forward-mode Jacobian returned as BCOO. Alias for
+    `jacfwd(f, format='bcoo')`."""
+    return jacfwd(f, format="bcoo")
+
+
+def jacrev(f, *, format: str = "dense"):
+    """Reverse-mode Jacobian, matching `jax.jacrev`'s output shape.
+
+    Equivalent to `materialize(linear_transpose(linearize(f, y)[1], y),
+    y_out, format=format).T`.
+
+    Returns a function `(y) -> Jacobian`.
+    """
+    def wrapped(y):
+        return _jacrev_impl(f, y, format)
+    return wrapped
+
+
+def bcoo_jacrev(f):
+    """Reverse-mode Jacobian returned as BCOO. Alias for
+    `jacrev(f, format='bcoo')`."""
+    return jacrev(f, format="bcoo")
+
+
+def hessian(f, *, format: str = "dense"):
+    """Hessian, matching `jax.hessian`'s output shape.
+
+    Equivalent to `materialize(jax.linearize(jax.grad(f), y)[1], y,
+    format=format)`.
+
+    Returns a function `(y) -> Hessian`.
+    """
+    def wrapped(y):
+        _, lin = jax.linearize(jax.grad(f), y)
+        return materialize(lin, y, format=format)
+    return wrapped
+
+
+def bcoo_hessian(f):
+    """Hessian returned as BCOO. Alias for `hessian(f, format='bcoo')`."""
+    return hessian(f, format="bcoo")
 
 
 # -------------------------- demo --------------------------

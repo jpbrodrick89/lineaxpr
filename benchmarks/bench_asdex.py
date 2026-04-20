@@ -14,7 +14,7 @@ import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
-from lineaxpr import bcoo_jacobian, materialize  # noqa: E402
+from lineaxpr import materialize  # noqa: E402
 
 try:
     import asdex  # noqa: E402
@@ -58,7 +58,7 @@ def test_one(problem):
     @jax.jit
     def bcoo(y):
         _, h = jax.linearize(jax.grad(f), y)
-        return bcoo_jacobian(h, y)
+        return materialize(h, y, format="bcoo")
 
     # asdex: static coloring, needs input_shape upfront
     try:

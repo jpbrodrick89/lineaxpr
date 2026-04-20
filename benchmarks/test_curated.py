@@ -12,7 +12,7 @@ import sys
 import jax
 import pytest
 import sif2jax  # noqa: E402
-from lineaxpr import bcoo_jacobian, materialize  # noqa: E402
+from lineaxpr import materialize  # noqa: E402
 
 try:
     import asdex
@@ -122,7 +122,7 @@ def _make(extractor_kind, problem):
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
-            return bcoo_jacobian(h, y)
+            return materialize(h, y, format="bcoo")
         return _compile(fn, problem.y0)
 
     if extractor_kind == "asdex_bcoo":

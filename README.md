@@ -19,32 +19,38 @@ pip install -e .
 pip install -e ".[benchmark]"
 ```
 
-## Quick example
+## Quick example — jax-like API
 
 ```python
-import jax
 import jax.numpy as jnp
-from lineaxpr import materialize, bcoo_jacobian
+import lineaxpr
 
 def f(y):
     return jnp.sum(y ** 2) - jnp.prod(y) ** 0.2
 
 y = jnp.array([9.1, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0])
 
-@jax.jit
-def H_of(y):
-    _, hvp = jax.linearize(jax.grad(f), y)
-    return materialize(hvp, y)          # -> jnp.ndarray (n, n)
+H = lineaxpr.hessian(f)(y)          # -> jnp.ndarray (n, n)
+H_bcoo = lineaxpr.bcoo_hessian(f)(y) # -> BCOO or ndarray
 
-@jax.jit
-def H_sparse_of(y):
-    _, hvp = jax.linearize(jax.grad(f), y)
-    return bcoo_jacobian(hvp, y)        # -> BCOO or ndarray
+# Fwd and rev Jacobians (also accept a format='dense'|'bcoo' kwarg):
+J_fwd = lineaxpr.jacfwd(f)(y)
+J_rev = lineaxpr.jacrev(f)(y)
+J_sparse = lineaxpr.bcoo_jacfwd(f)(y)
+
+# Equivalent longer form — useful when you already have a linearized fn:
+_, hvp = jax.linearize(jax.grad(f), y)
+H = lineaxpr.materialize(hvp, y, format="dense")
+H_bcoo = lineaxpr.materialize(hvp, y, format="bcoo")
 ```
+
+Signatures mirror `jax.jacfwd` / `jax.jacrev` / `jax.hessian`. Current
+limitations: single-input, single-output `f`, 1D `y` only — see
+`docs/TODO.md` #9c/#9d for `argnums` / `has_aux` / multi-output plans.
 
 ## Lower-level transform
 
-`materialize` and `bcoo_jacobian` are thin wrappers around a more general
+The jax-like wrappers are thin compositions over a more general
 transform:
 
 ```python
@@ -107,9 +113,14 @@ Regressions need an explicit justification in the commit message.
 ```
 lineaxpr/
 ├── lineaxpr/              # package
-│   ├── __init__.py        # public API (sparsify, materialize, bcoo_jacobian,
-│   │                      #   to_dense, to_bcoo, Identity, ConstantDiagonal,
-│   │                      #   Diagonal, Pivoted, materialize_rules)
+│   ├── __init__.py        # public API:
+│   │                      #   jacfwd / bcoo_jacfwd
+│   │                      #   jacrev / bcoo_jacrev
+│   │                      #   hessian / bcoo_hessian
+│   │                      #   materialize(..., format=...), sparsify
+│   │                      #   to_dense, to_bcoo
+│   │                      #   Identity, ConstantDiagonal, Diagonal, Pivoted
+│   │                      #   materialize_rules
 │   ├── _base.py           # LinOp classes with methods
 │   └── materialize.py     # sparsify transform + rule registry + rules
 ├── experiments/           # monkeypatch studies (not production)

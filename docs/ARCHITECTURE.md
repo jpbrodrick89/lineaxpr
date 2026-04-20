@@ -12,24 +12,39 @@ describes how each intermediate depends linearly on the input.
 ## Public API
 
 ```python
-# Full Jacobian, dense:
-H = lineaxpr.materialize(linear_fn, primal)
+# jax-like (preferred):
+H  = lineaxpr.hessian(f)(y)         # dense Hessian
+Hs = lineaxpr.bcoo_hessian(f)(y)    # BCOO Hessian
 
-# Full Jacobian, BCOO when sparse structure survives:
-S = lineaxpr.bcoo_jacobian(linear_fn, primal)
+Jf  = lineaxpr.jacfwd(f)(y)         # dense forward-mode Jacobian
+Jr  = lineaxpr.jacrev(f)(y)         # dense reverse-mode Jacobian
+Jfs = lineaxpr.bcoo_jacfwd(f)(y)    # BCOO variants
+Jrs = lineaxpr.bcoo_jacrev(f)(y)
 
-# Lower-level transform — explicit seed, returns a LinOp:
+# Core helper — when you already have a linearized callable:
+H = lineaxpr.materialize(linear_fn, primal, format="dense")
+S = lineaxpr.materialize(linear_fn, primal, format="bcoo")
+
+# Primitive transform — explicit seed, returns a LinOp:
 seed = lineaxpr.Identity(primal.size, dtype=primal.dtype)
 linop = lineaxpr.sparsify(linear_fn)(seed)
-linop.todense()   # jnp.ndarray
+linop.todense()    # jnp.ndarray
 linop.to_bcoo()    # sparse.BCOO
 ```
 
-`sparsify` is the primitive transform; `materialize` and `bcoo_jacobian`
-are convenience wrappers that build an `Identity` seed and densify at the
-boundary. Inspired by `jax.experimental.sparse.sparsify`, but specialized
-for the linearize-of-grad jaxpr pattern with a richer format space
-(Identity / Diagonal / Pivoted / BCOO / ndarray).
+Composition layers (outer → inner):
+- `hessian(f)(y)` composes `jax.linearize(jax.grad(f), y)[1]` with
+  `materialize(..., format="dense")`.
+- `jacfwd(f)(y)` composes `jax.linearize(f, y)[1]` with `materialize`.
+- `jacrev(f)(y)` composes `jax.linear_transpose(linearize(f, y)[1], y)`
+  with `materialize`, then transposes so the output shape matches
+  `jax.jacrev`.
+- `materialize(linear_fn, primal, format=...)` composes `sparsify(...)
+  (Identity(primal.size, dtype=primal.dtype))` with `to_dense` / `to_bcoo`.
+- `sparsify` is the primitive transform. Inspired by
+  `jax.experimental.sparse.sparsify` but specialized for the
+  linearize-of-grad jaxpr pattern with a richer format space
+  (Identity / Diagonal / Pivoted / BCOO / ndarray).
 
 ## The walk
 

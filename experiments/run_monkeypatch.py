@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 
 from experiments.sparsify_monkeypatch import install
-from lineaxpr import bcoo_jacobian
+from lineaxpr import materialize
 
 install()
 
@@ -86,7 +86,7 @@ def _lineaxpr_bcoo(problem):
     @jax.jit
     def extract(y):
         _, lin = jax.linearize(jax.grad(f), y)
-        return bcoo_jacobian(lin, y)
+        return materialize(lin, y, format="bcoo")
 
     return extract, y0
 

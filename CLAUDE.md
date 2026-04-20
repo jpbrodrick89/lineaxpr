@@ -5,17 +5,32 @@ A JAX transformation that extracts dense / sparse Hessian/Jacobian matrices
 from linear callables (the output of `jax.linearize`). Walks the linear
 jaxpr once with per-primitive structural rules.
 
-Public API:
-- `materialize(linear_fn, primal) -> jnp.ndarray` — always dense.
-- `bcoo_jacobian(linear_fn, primal) -> BCOO | jnp.ndarray` — BCOO when
-  sparse structure survives; dense otherwise.
-- `sparsify(linear_fn)(seed_linop) -> LinOp` — primitive transform. No
-  implicit Identity cast; caller provides the seed.
-- `to_dense(linop)` / `to_bcoo(linop)` — format conversion helpers that
-  work uniformly on our LinOp classes, BCOO, and plain ndarrays.
-- `Identity(n, dtype=...)` — standard seed constructor for `sparsify`.
-- `ConstantDiagonal`, `Diagonal`, `Pivoted` — LinOp classes (exposed for
-  tests/debugging and custom seeds; not a pytree-registered API).
+Public API (jax-like, preferred):
+- `hessian(f)(y)`, `bcoo_hessian(f)(y)` — matches `jax.hessian`.
+- `jacfwd(f)(y)`, `bcoo_jacfwd(f)(y)` — matches `jax.jacfwd`.
+- `jacrev(f)(y)`, `bcoo_jacrev(f)(y)` — matches `jax.jacrev`.
+  All six accept `format='dense'|'bcoo'` as a kwarg too; the
+  `bcoo_`-prefixed variants are shorthand for `format='bcoo'`.
+
+Lower-level building blocks:
+- `materialize(linear_fn, primal, format='dense'|'bcoo')` — core
+  entry point. Default `'dense'`.
+- `sparsify(linear_fn)(seed_linop) -> LinOp` — primitive transform.
+  No implicit Identity cast; caller provides the seed.
+- `to_dense(linop)` / `to_bcoo(linop)` — format conversion helpers
+  that work uniformly on LinOp classes, BCOO, and plain ndarrays.
+- `Identity(n, dtype=...)` — standard seed for `sparsify`.
+- `ConstantDiagonal`, `Diagonal`, `Pivoted` — LinOp classes (exposed
+  for tests/debugging and custom seeds; not a pytree-registered API).
+
+Deprecated:
+- `bcoo_jacobian(linear_fn, primal)` — passthrough to
+  `materialize(..., format='bcoo')`. Removed in a future release; the
+  fwd-vs-rev distinction should be explicit.
+
+Current limitations (TODO #9c/#9d): no argnums, no has_aux, single
+input, single output, 1D primal. `jax.vmap` composition not yet
+verified.
 
 ## Non-goals
 - Coloring-based extraction (that's asdex's approach; we do per-linearization

@@ -18,7 +18,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 
-from lineaxpr import bcoo_jacobian
+from lineaxpr import materialize
 
 
 jax.config.update("jax_enable_x64", True)
@@ -66,7 +66,7 @@ def main():
 
         try:
             _, hvp = jax.linearize(jax.grad(f), y)
-            S = bcoo_jacobian(hvp, y)
+            S = materialize(hvp, y, format="bcoo")
         except Exception as e:
             skipped_error += 1
             print(f"  skip {name}: {type(e).__name__}: {str(e)[:60]}")

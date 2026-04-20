@@ -116,6 +116,35 @@ Implement `LineaxprTrace(core.Trace)` / `LineaxprTracer` hooking
 use_tracer=True)`. Lets `sparsify` compose with other transforms without
 upfront `make_jaxpr`. Defer until a concrete use case emerges.
 
+### 9c. jax-style kwargs on jacfwd/jacrev/hessian
+
+Match `jax.jacfwd` / `jax.jacrev` / `jax.hessian`'s full signature:
+
+- `argnums: int | Sequence[int]` — differentiate w.r.t. multiple args
+- `has_aux: bool` — allow `f` to return `(output, aux)`; aux passes
+  through untouched
+- `holomorphic: bool` — complex-valued inputs/outputs
+- `allow_int: bool` — allow integer inputs (where result is identically zero)
+
+Today our wrappers hard-code `argnums=0`, single-output, float, no aux.
+Low priority until a user hits one; the building block (`materialize` on
+a traced linear_fn) doesn't care.
+
+### 9d. Multi-input / multi-output + vmap composition
+
+Currently `sparsify(linear_fn)(seed)` rejects multi-input and
+multi-output linear fns. And the walk hasn't been tested against
+`jax.vmap`-composed callers. For NeurIPS demos with more general
+differentiation targets, either:
+- extend the walk to handle multi-output linear fns (flatten outputs
+  to a single 1D output, walk, reshape), OR
+- document multi-output as a hard limit and require users to flatten
+  themselves.
+
+Also: `vmap(hessian(f))(batched_y)` should work in principle — the walk
+happens once at trace time, then vmap batches the compiled result.
+Verify + test; no rule changes expected.
+
 ### 9. `custom_jvp_call_p` rule
 
 Audit sif2jax for `@jax.custom_jvp` usage; add a rule that `lift_jvp`'s

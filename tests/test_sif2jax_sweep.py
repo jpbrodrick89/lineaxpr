@@ -3,10 +3,11 @@
 For each problem (bounded minimisation + unconstrained minimisation +
 quadratic) with n ≤ `MAX_N` and 1D y0:
 
-1. **Correctness**: `bcoo_jacobian(hvp, y) @ v` matches `hvp(v)` to
-   `REL_TOL` on a random probe vector. This avoids materialising the
-   dense n×n Hessian for every problem (the sweep is ~200 problems).
-2. **nse regression**: `bcoo_jacobian(hvp, y).nse` must not exceed
+1. **Correctness**: `materialize(hvp, y, format='bcoo') @ v` matches
+   `hvp(v)` to `REL_TOL` on a random probe vector. This avoids
+   materialising the dense n×n Hessian for every problem (the sweep is
+   ~200 problems).
+2. **nse regression**: `.nse` of the BCOO Hessian must not exceed
    the value recorded in `tests/nse_manifest.json` for that problem.
    Decreases are allowed and require a manifest bump
    (`uv run python -m tests.update_nse_manifest`).
@@ -28,7 +29,7 @@ import jax.numpy as jnp
 import pytest
 from jax.experimental import sparse
 
-from lineaxpr import bcoo_jacobian
+from lineaxpr import materialize
 
 
 MAX_N = 5000
@@ -90,7 +91,7 @@ def test_sif2jax_correctness_and_nse(param):
 
     try:
         _, hvp = jax.linearize(jax.grad(f), y)
-        S = bcoo_jacobian(hvp, y)
+        S = materialize(hvp, y, format="bcoo")
     except NotImplementedError as e:
         pytest.skip(f"walk raised: {e}")
 

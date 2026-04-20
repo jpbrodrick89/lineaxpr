@@ -12,7 +12,7 @@ import sys
 import jax
 import pytest
 import sif2jax  # noqa: E402
-from lineaxpr import bcoo_jacobian, materialize  # noqa: E402
+from lineaxpr import materialize  # noqa: E402
 from sif2jax._problem import (  # noqa: E402
     AbstractBoundedMinimisation,
     AbstractConstrainedQuadraticProblem,
@@ -118,7 +118,7 @@ def test_materialize(benchmark, problem):
 def test_bcoo_jacobian(benchmark, problem):
     benchmark.group = f"bcoo_jacobian-{_cls(problem)}"
     benchmark.name = f"test_bcoo_jacobian[{problem.name}]"
-    c = _make(bcoo_jacobian, problem)
+    c = _make(lambda h, y: materialize(h, y, format="bcoo"), problem)
     if c is None: pytest.skip("failed")
     benchmark(lambda y: _block(c(y)), jax.device_put(problem.y0))
     benchmark.extra_info.update(_info(problem, "bcoo_jacobian"))

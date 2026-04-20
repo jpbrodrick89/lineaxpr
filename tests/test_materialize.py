@@ -22,7 +22,7 @@ from jax.experimental import sparse
 
 from lineaxpr import (
     Identity,
-    bcoo_jacobian,
+    bcoo_hessian,
     materialize,
     sparsify,
 )
@@ -89,9 +89,9 @@ def test_arrowhead_hessian_pattern(n):
     expected[1:, 0] = 1.0
     np.testing.assert_allclose(np.asarray(H), expected, atol=1e-12)
 
-    # Same pattern via bcoo_jacobian; may return dense ndarray for dense
+    # Same pattern via bcoo_hessian; may return dense ndarray for dense
     # fallback or BCOO for structural case.
-    S = bcoo_jacobian(hvp, y)
+    S = bcoo_hessian(_arrowhead_f)(y)
     dense_S = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
     np.testing.assert_allclose(dense_S, expected, atol=1e-12)
 
@@ -130,7 +130,7 @@ def test_heat_equation_hessian_is_tridiagonal(n):
     assert float(jnp.max(jnp.abs(jnp.diag(H)))) > 0.1
 
     # BCOO path agrees.
-    S = bcoo_jacobian(hvp, T)
+    S = bcoo_hessian(_heat_energy)(T)
     dense_S = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
     np.testing.assert_allclose(dense_S, H_np, atol=1e-10)
     # Tridiagonal nnz upper bound = 3n - 2. Current extractor emits
@@ -175,14 +175,14 @@ def test_zero_linear_fn():
 
 
 def test_bcoo_returned_for_sparse_pattern():
-    """`bcoo_jacobian` should return a BCOO when the walk yields structural
+    """`bcoo_hessian` should return a BCOO when the walk yields structural
     sparsity, not a dense array."""
     def f(x):
         return jnp.sum(x**2) + jnp.sum(x[:-1] * x[1:])
 
     y = jnp.arange(1, 33, dtype=jnp.float64)
     _, hvp = jax.linearize(jax.grad(f), y)
-    S = bcoo_jacobian(hvp, y)
+    S = bcoo_hessian(f)(y)
     assert isinstance(S, sparse.BCOO)
     # Pattern: tridiagonal ⇒ ≤ 3n-2 nnz; allow 2× slack.
     assert S.nse <= 2 * (3 * 32 - 2)
@@ -199,7 +199,7 @@ def test_dense_returned_for_dense_pattern():
 
     y = jnp.zeros(20)
     _, hvp = jax.linearize(jax.grad(f), y)
-    out = bcoo_jacobian(hvp, y)
+    out = bcoo_hessian(f)(y)
     # Walk may return either dense ndarray OR a dense-ish BCOO; both are
     # acceptable here. Just check correctness.
     dense = np.asarray(out.todense() if isinstance(out, sparse.BCOO) else out)
