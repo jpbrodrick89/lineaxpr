@@ -44,6 +44,17 @@ BCOO-concat across buckets.
 general). Walk becomes order-independent for add-chains, robust against
 authorial style variations in sif2jax.
 
+**Additional benefit (Ellpack perf fix, 2026-04-20)**: on full bench,
+FREUROTH (+51%) and BDEXP (+25%) regressed vs old Pivoted because
+every different-cols `_add_rule` widen emits 2 `broadcast_in_dim` +
+1 `concatenate` to stack two 1D k=1 values into `(n, 2)` 2D. Old
+Pivoted flat-1D concat was 1 kernel. Tested `jnp.stack(axis=1)` as
+fix — lowers to identical HLO. A deferred-Sum approach that stays
+tuple-per-band through the widen and only stacks at scale-time
+(where the fused k≥2 SIMD is worth the axis insert) would recover
+these regressions without losing the high-k fused-mul win on
+DIXMAAN-class problems.
+
 **Affects**: new class in `_base.py`, new `_flush_sum` helper, ~8 rule
 touches. Carefully: any path reading operand attributes directly (e.g.
 `_linop_matrix_shape`) must handle Sum or be flushed first.
