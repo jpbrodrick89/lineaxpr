@@ -44,7 +44,7 @@ def test_constant_diagonal_to_dense_scaled():
 
 def test_constant_diagonal_to_bcoo_roundtrip():
     cd = ConstantDiagonal(4, value=3.0)
-    b = cd.tobcoo()
+    b = cd.to_bcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (4, 4)
     np.testing.assert_array_equal(np.asarray(b.todense()), cd.todense())
@@ -88,7 +88,7 @@ def test_diagonal_to_dense():
 def test_diagonal_to_bcoo_roundtrip():
     values = jnp.asarray([1.0, 2.0, 3.0])
     d = Diagonal(values)
-    b = d.tobcoo()
+    b = d.to_bcoo()
     assert isinstance(b, sparse.BCOO)
     np.testing.assert_array_equal(np.asarray(b.todense()), d.todense())
 
@@ -143,7 +143,7 @@ def test_pivoted_to_dense():
 
 def test_pivoted_to_bcoo_roundtrip():
     p = _simple_pivoted()
-    b = p.tobcoo()
+    b = p.to_bcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (3, 4)
     np.testing.assert_array_equal(np.asarray(b.todense()), p.todense())
@@ -235,7 +235,7 @@ def test_pivoted_nse_reports_entries():
 def test_to_bcoo_dense_agreement(op_factory):
     op = op_factory()
     dense = np.asarray(op.todense())
-    bcoo = op.tobcoo()
+    bcoo = op.to_bcoo()
     np.testing.assert_array_equal(np.asarray(bcoo.todense()), dense)
 
 

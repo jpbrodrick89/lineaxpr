@@ -43,7 +43,7 @@ class ConstantDiagonal:
             return jnp.eye(self.n)
         return self.value * jnp.eye(self.n)
 
-    def tobcoo(self):
+    def to_bcoo(self):
         return _diag_to_bcoo(self)
 
     def negate(self):
@@ -90,7 +90,7 @@ class Diagonal:
         idx = jnp.arange(self.n)
         return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
 
-    def tobcoo(self):
+    def to_bcoo(self):
         return _diag_to_bcoo(self)
 
     def negate(self):
@@ -143,7 +143,7 @@ class Pivoted:
         return (jnp.zeros((self.out_size, self.in_size), self.values.dtype)
                 .at[self.out_rows, self.in_cols].add(self.values))
 
-    def tobcoo(self):
+    def to_bcoo(self):
         return _pivoted_to_bcoo(self)
 
     def negate(self):

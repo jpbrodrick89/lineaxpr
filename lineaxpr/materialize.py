@@ -841,14 +841,14 @@ def to_bcoo(op):
     """Convert a LinOp returned by `sparsify` to a BCOO (or ndarray if
     the walk produced a dense fallback that can't be usefully sparsified).
 
-    - Our LinOp classes → `.tobcoo()`.
+    - Our LinOp classes → `.to_bcoo()`.
     - `BCOO` passthrough.
     - Plain ndarray passthrough (caller decides what to do).
     """
     if isinstance(op, sparse.BCOO):
         return op
     if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
-        return op.tobcoo()
+        return op.to_bcoo()
     return op
 
 
