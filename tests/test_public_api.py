@@ -148,6 +148,33 @@ def test_materialize_default_is_dense():
     assert not isinstance(out, sparse.BCOO)
 
 
+def test_materialize_accepts_shape_dtype_struct():
+    """Primal only needs .size and .dtype — a ShapeDtypeStruct (no
+    concrete array) must work, matching jax.linear_transpose's
+    conventions."""
+    def lin(x): return jnp.diff(x)
+    sds = jax.ShapeDtypeStruct((20,), jnp.float64)
+    out_dense = lineaxpr.materialize(lin, sds, format="dense")
+    out_bcoo = lineaxpr.materialize(lin, sds, format="bcoo")
+    expected = np.zeros((19, 20))
+    for i in range(19):
+        expected[i, i] = -1.0
+        expected[i, i + 1] = 1.0
+    np.testing.assert_allclose(np.asarray(out_dense), expected)
+    np.testing.assert_allclose(_fetch_dense(out_bcoo), expected)
+
+
+def test_materialize_accepts_shape_dtype_struct_short_circuit():
+    """Below n=16 the short-circuit path fires; must also accept SDS."""
+    def lin(x): return jnp.diff(x)
+    sds = jax.ShapeDtypeStruct((4,), jnp.float64)
+    out = lineaxpr.materialize(lin, sds, format="dense")
+    expected = np.array([[-1, 1, 0, 0],
+                         [0, -1, 1, 0],
+                         [0, 0, -1, 1]], dtype=float)
+    np.testing.assert_allclose(np.asarray(out), expected)
+
+
 # --------------------------- inside jit -----------------------------------
 
 

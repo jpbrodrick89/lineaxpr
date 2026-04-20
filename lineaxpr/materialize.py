@@ -877,8 +877,13 @@ def materialize(linear_fn, primal, format: str = "dense"):
     Args:
       linear_fn: a linear callable `R^n -> R^m` (typically the output of
         `jax.linearize(...)[1]` or `jax.linear_transpose(...)`).
-      primal: a shape/dtype witness for the input to `linear_fn` (its
-        value is not used; only `primal.size` and `primal.dtype` matter).
+      primal: a shape/dtype witness for the input to `linear_fn`. Only
+        `primal.size` and `primal.dtype` are read, so this can be any of:
+        a concrete array, a `jax.Array` / `jnp.ndarray`, or a
+        `jax.ShapeDtypeStruct` (matching the convention used by
+        `jax.linear_transpose` / `jax.eval_shape`). Passing a
+        ShapeDtypeStruct is the preferred option when you don't already
+        have a concrete primal on hand.
       format: one of `"dense"` or `"bcoo"`.
         - `"dense"` returns a `jnp.ndarray`.
         - `"bcoo"` returns a `jax.experimental.sparse.BCOO` when the

@@ -25,15 +25,24 @@ from jax.experimental import sparse
 
 import lineaxpr
 
+# Parametrize every Jacobian test over both fwd and rev modes.
+# Both should produce the same matrix; exercising both paths catches
+# linear_transpose issues that jacfwd alone would miss.
+_JAC_MODES = [
+    pytest.param(lineaxpr.jacfwd, id="jacfwd"),
+    pytest.param(lineaxpr.jacrev, id="jacrev"),
+]
+
 
 # ----------------------- non-square Jacobians ----------------------------
 
 
+@pytest.mark.parametrize("jac", _JAC_MODES)
 @pytest.mark.parametrize("n", [3, 10, 50])
-def test_jnp_diff_bidiagonal(n):
+def test_jnp_diff_bidiagonal(jac, n):
     """`jnp.diff(x)` is linear R^n → R^{n-1}; matrix is [-1, +1] bidiagonal."""
     y = jnp.zeros(n)  # shape witness only
-    M = lineaxpr.jacfwd(jnp.diff)(y)
+    M = jac(jnp.diff)(y)
     assert M.shape == (n - 1, n)
     expected = np.zeros((n - 1, n))
     for i in range(n - 1):
@@ -42,17 +51,19 @@ def test_jnp_diff_bidiagonal(n):
     np.testing.assert_allclose(np.asarray(M), expected)
 
 
+@pytest.mark.parametrize("jac", _JAC_MODES)
 @pytest.mark.parametrize("n", [3, 10, 50])
-def test_jnp_cumsum_lower_triangular_ones(n):
+def test_jnp_cumsum_lower_triangular_ones(jac, n):
     """`jnp.cumsum(x)` is linear R^n → R^n; matrix is lower triangular of ones."""
     y = jnp.zeros(n)
-    M = lineaxpr.jacfwd(jnp.cumsum)(y)
+    M = jac(jnp.cumsum)(y)
     assert M.shape == (n, n)
     expected = np.tril(np.ones((n, n)))
     np.testing.assert_allclose(np.asarray(M), expected)
 
 
-def test_matrix_multiply_constant_matrix():
+@pytest.mark.parametrize("jac", _JAC_MODES)
+def test_matrix_multiply_constant_matrix(jac):
     """lin(x) = A @ x for constant A. Expect exact reproduction of A."""
     rng = np.random.default_rng(0)
     A = rng.standard_normal((5, 7))
@@ -61,7 +72,7 @@ def test_matrix_multiply_constant_matrix():
         return jnp.asarray(A) @ x
 
     y = jnp.zeros(7)
-    M = lineaxpr.jacfwd(lin)(y)
+    M = jac(lin)(y)
     np.testing.assert_allclose(np.asarray(M), A, atol=1e-12)
 
 
@@ -138,30 +149,34 @@ def test_heat_equation_hessian_is_tridiagonal(n):
 # ----------------------- edge cases --------------------------------------
 
 
-def test_n1_identity():
+@pytest.mark.parametrize("jac", _JAC_MODES)
+def test_n1_identity(jac):
     """n=1 exercises short-circuit path and should still produce [[1]]."""
     lin = lambda x: x  # noqa: E731
-    M = lineaxpr.jacfwd(lin)(jnp.zeros(1))
+    M = jac(lin)(jnp.zeros(1))
     np.testing.assert_array_equal(np.asarray(M), np.eye(1))
 
 
-def test_n2_scaled_identity():
+@pytest.mark.parametrize("jac", _JAC_MODES)
+def test_n2_scaled_identity(jac):
     lin = lambda x: 3.0 * x  # noqa: E731
-    M = lineaxpr.jacfwd(lin)(jnp.zeros(2))
+    M = jac(lin)(jnp.zeros(2))
     np.testing.assert_array_equal(np.asarray(M), 3.0 * np.eye(2))
 
 
-def test_passthrough_linear_fn():
+@pytest.mark.parametrize("jac", _JAC_MODES)
+def test_passthrough_linear_fn(jac):
     lin = lambda x: x  # noqa: E731
     # Above short-circuit (n >= 16) exercises the walk path.
-    M = lineaxpr.jacfwd(lin)(jnp.zeros(32))
+    M = jac(lin)(jnp.zeros(32))
     np.testing.assert_array_equal(np.asarray(M), np.eye(32))
 
 
-def test_zero_linear_fn():
+@pytest.mark.parametrize("jac", _JAC_MODES)
+def test_zero_linear_fn(jac):
     """lin(x) = 0 · x → Jacobian is zero."""
     lin = lambda x: 0.0 * x  # noqa: E731
-    M = lineaxpr.jacfwd(lin)(jnp.zeros(32))
+    M = jac(lin)(jnp.zeros(32))
     np.testing.assert_array_equal(np.asarray(M), np.zeros((32, 32)))
 
 
