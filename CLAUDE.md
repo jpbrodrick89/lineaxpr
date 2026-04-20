@@ -33,8 +33,8 @@ Public API:
   Any rule change must preserve this. `tests/test_correctness.py` is the
   ground truth; `tests/test_materialize.py` pins explicit expected
   matrices for hand-rolled problems.
-- LinOp forms live in `lineaxpr/_base.py` with methods `.to_dense()`,
-  `.to_bcoo()`, `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`,
+- LinOp forms live in `lineaxpr/_base.py` with methods `.todense()`,
+  `.tobcoo()`, `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`,
   `.primal_aval()` (and `Pivoted.pad_rows(lo, hi)`). Rules dispatch to
   these methods rather than branching on LinOp type inside every rule.
 - Primitive rules are registered by direct dict assignment:

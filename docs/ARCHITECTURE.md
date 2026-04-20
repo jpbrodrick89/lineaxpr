@@ -21,8 +21,8 @@ S = lineaxpr.bcoo_jacobian(linear_fn, primal)
 # Lower-level transform — explicit seed, returns a LinOp:
 seed = lineaxpr.Identity(primal.size, dtype=primal.dtype)
 linop = lineaxpr.sparsify(linear_fn)(seed)
-linop.to_dense()   # jnp.ndarray
-linop.to_bcoo()    # sparse.BCOO
+linop.todense()   # jnp.ndarray
+linop.tobcoo()    # sparse.BCOO
 ```
 
 `sparsify` is the primitive transform; `materialize` and `bcoo_jacobian`
@@ -90,8 +90,8 @@ Each LinOp class defines:
 
 - `.primal_aval() -> ShapedArray` — the input aval the walk should trace
   against when this LinOp is used as a seed.
-- `.to_dense() -> jnp.ndarray` — densify to an (out_size, in_size) matrix.
-- `.to_bcoo() -> sparse.BCOO` — convert to BCOO.
+- `.todense() -> jnp.ndarray` — densify to an (out_size, in_size) matrix.
+- `.tobcoo() -> sparse.BCOO` — convert to BCOO.
 - `.negate()` — returns same form with negated values.
 - `.scale_scalar(s)` — scale all entries by scalar `s`.
 - `.scale_per_out_row(v)` — scale row `i` by `v[i]`.

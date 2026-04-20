@@ -33,31 +33,31 @@ def test_identity_dtype_propagates():
 
 
 def test_constant_diagonal_to_dense_identity():
-    out = Identity(4).to_dense()
+    out = Identity(4).todense()
     np.testing.assert_array_equal(np.asarray(out), np.eye(4))
 
 
 def test_constant_diagonal_to_dense_scaled():
-    out = ConstantDiagonal(3, value=2.5).to_dense()
+    out = ConstantDiagonal(3, value=2.5).todense()
     np.testing.assert_array_equal(np.asarray(out), 2.5 * np.eye(3))
 
 
 def test_constant_diagonal_to_bcoo_roundtrip():
     cd = ConstantDiagonal(4, value=3.0)
-    b = cd.to_bcoo()
+    b = cd.tobcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (4, 4)
-    np.testing.assert_array_equal(np.asarray(b.todense()), cd.to_dense())
+    np.testing.assert_array_equal(np.asarray(b.todense()), cd.todense())
 
 
 def test_constant_diagonal_negate():
     cd = ConstantDiagonal(3, 2.0).negate()
-    np.testing.assert_array_equal(np.asarray(cd.to_dense()), -2.0 * np.eye(3))
+    np.testing.assert_array_equal(np.asarray(cd.todense()), -2.0 * np.eye(3))
 
 
 def test_constant_diagonal_scale_scalar():
     cd = ConstantDiagonal(3, 2.0).scale_scalar(jnp.asarray(4.0))
-    np.testing.assert_array_equal(np.asarray(cd.to_dense()), 8.0 * np.eye(3))
+    np.testing.assert_array_equal(np.asarray(cd.todense()), 8.0 * np.eye(3))
 
 
 def test_constant_diagonal_scale_per_out_row():
@@ -65,7 +65,7 @@ def test_constant_diagonal_scale_per_out_row():
     result = ConstantDiagonal(3, value=2.0).scale_per_out_row(v)
     assert isinstance(result, Diagonal)
     expected = np.diag([2.0, 4.0, 6.0])
-    np.testing.assert_array_equal(np.asarray(result.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(result.todense()), expected)
 
 
 def test_constant_diagonal_primal_aval():
@@ -81,35 +81,35 @@ def test_constant_diagonal_primal_aval():
 
 def test_diagonal_to_dense():
     values = jnp.asarray([1.0, 2.0, 3.0])
-    out = Diagonal(values).to_dense()
+    out = Diagonal(values).todense()
     np.testing.assert_array_equal(np.asarray(out), np.diag([1.0, 2.0, 3.0]))
 
 
 def test_diagonal_to_bcoo_roundtrip():
     values = jnp.asarray([1.0, 2.0, 3.0])
     d = Diagonal(values)
-    b = d.to_bcoo()
+    b = d.tobcoo()
     assert isinstance(b, sparse.BCOO)
-    np.testing.assert_array_equal(np.asarray(b.todense()), d.to_dense())
+    np.testing.assert_array_equal(np.asarray(b.todense()), d.todense())
 
 
 def test_diagonal_negate():
     d = Diagonal(jnp.asarray([1.0, -2.0, 3.0])).negate()
     np.testing.assert_array_equal(
-        np.asarray(d.to_dense()), np.diag([-1.0, 2.0, -3.0])
+        np.asarray(d.todense()), np.diag([-1.0, 2.0, -3.0])
     )
 
 
 def test_diagonal_scale_scalar():
     d = Diagonal(jnp.asarray([1.0, 2.0])).scale_scalar(jnp.asarray(3.0))
-    np.testing.assert_array_equal(np.asarray(d.to_dense()), np.diag([3.0, 6.0]))
+    np.testing.assert_array_equal(np.asarray(d.todense()), np.diag([3.0, 6.0]))
 
 
 def test_diagonal_scale_per_out_row():
     d = Diagonal(jnp.asarray([1.0, 2.0, 3.0])).scale_per_out_row(
         jnp.asarray([2.0, 2.0, 2.0])
     )
-    np.testing.assert_array_equal(np.asarray(d.to_dense()), np.diag([2.0, 4.0, 6.0]))
+    np.testing.assert_array_equal(np.asarray(d.todense()), np.diag([2.0, 4.0, 6.0]))
 
 
 def test_diagonal_primal_aval():
@@ -138,15 +138,15 @@ def test_pivoted_to_dense():
     expected = np.zeros((3, 4))
     expected[0, 1] = 5.0
     expected[2, 3] = 7.0
-    np.testing.assert_array_equal(np.asarray(p.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
 
 
 def test_pivoted_to_bcoo_roundtrip():
     p = _simple_pivoted()
-    b = p.to_bcoo()
+    b = p.tobcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (3, 4)
-    np.testing.assert_array_equal(np.asarray(b.todense()), p.to_dense())
+    np.testing.assert_array_equal(np.asarray(b.todense()), p.todense())
 
 
 def test_pivoted_negate():
@@ -154,7 +154,7 @@ def test_pivoted_negate():
     expected = np.zeros((3, 4))
     expected[0, 1] = -5.0
     expected[2, 3] = -7.0
-    np.testing.assert_array_equal(np.asarray(p.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
 
 
 def test_pivoted_scale_scalar():
@@ -162,7 +162,7 @@ def test_pivoted_scale_scalar():
     expected = np.zeros((3, 4))
     expected[0, 1] = 10.0
     expected[2, 3] = 14.0
-    np.testing.assert_array_equal(np.asarray(p.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
 
 
 def test_pivoted_scale_per_out_row_fast_path():
@@ -174,7 +174,7 @@ def test_pivoted_scale_per_out_row_fast_path():
     expected = np.zeros((3, 4))
     expected[0, 1] = 50.0
     expected[2, 3] = 700.0
-    np.testing.assert_array_equal(np.asarray(scaled.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(scaled.todense()), expected)
 
 
 def test_pivoted_scale_per_out_row_gather_path():
@@ -184,7 +184,7 @@ def test_pivoted_scale_per_out_row_gather_path():
     expected = np.zeros((3, 4))
     expected[0, 1] = 50.0      # 5 * scale[0]
     expected[2, 3] = 700.0     # 7 * scale[2]
-    np.testing.assert_array_equal(np.asarray(scaled.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(scaled.todense()), expected)
 
 
 def test_pivoted_pad_rows_positive():
@@ -194,7 +194,7 @@ def test_pivoted_pad_rows_positive():
     expected = np.zeros((6, 4))
     expected[1, 1] = 5.0
     expected[3, 3] = 7.0
-    np.testing.assert_array_equal(np.asarray(padded.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
 
 
 def test_pivoted_pad_rows_negative_truncates():
@@ -204,7 +204,7 @@ def test_pivoted_pad_rows_negative_truncates():
     assert padded.shape == (2, 4)
     expected = np.zeros((2, 4))
     expected[1, 3] = 7.0
-    np.testing.assert_array_equal(np.asarray(padded.to_dense()), expected)
+    np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
 
 
 def test_pivoted_primal_aval():
@@ -234,8 +234,8 @@ def test_pivoted_nse_reports_entries():
 )
 def test_to_bcoo_dense_agreement(op_factory):
     op = op_factory()
-    dense = np.asarray(op.to_dense())
-    bcoo = op.to_bcoo()
+    dense = np.asarray(op.todense())
+    bcoo = op.tobcoo()
     np.testing.assert_array_equal(np.asarray(bcoo.todense()), dense)
 
 
@@ -250,6 +250,6 @@ def test_to_bcoo_dense_agreement(op_factory):
 )
 def test_negate_then_scale_minus_one_agree(op_factory):
     op = op_factory()
-    neg_direct = op.negate().to_dense()
-    neg_via_scale = op.scale_scalar(jnp.asarray(-1.0)).to_dense()
+    neg_direct = op.negate().todense()
+    neg_via_scale = op.scale_scalar(jnp.asarray(-1.0)).todense()
     np.testing.assert_allclose(np.asarray(neg_direct), np.asarray(neg_via_scale))

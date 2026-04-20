@@ -38,12 +38,12 @@ class ConstantDiagonal:
         v = jnp.asarray(self.value)
         return core.ShapedArray((self.n,), v.dtype)
 
-    def to_dense(self):
+    def todense(self):
         if isinstance(self.value, float) and self.value == 1.0:
             return jnp.eye(self.n)
         return self.value * jnp.eye(self.n)
 
-    def to_bcoo(self):
+    def tobcoo(self):
         return _diag_to_bcoo(self)
 
     def negate(self):
@@ -86,11 +86,11 @@ class Diagonal:
     def primal_aval(self):
         return core.ShapedArray((self.n,), self.values.dtype)
 
-    def to_dense(self):
+    def todense(self):
         idx = jnp.arange(self.n)
         return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
 
-    def to_bcoo(self):
+    def tobcoo(self):
         return _diag_to_bcoo(self)
 
     def negate(self):
@@ -139,11 +139,11 @@ class Pivoted:
     def primal_aval(self):
         return core.ShapedArray((self.in_size,), self.values.dtype)
 
-    def to_dense(self):
+    def todense(self):
         return (jnp.zeros((self.out_size, self.in_size), self.values.dtype)
                 .at[self.out_rows, self.in_cols].add(self.values))
 
-    def to_bcoo(self):
+    def tobcoo(self):
         return _pivoted_to_bcoo(self)
 
     def negate(self):

@@ -826,12 +826,12 @@ def to_dense(op):
     """Densify a LinOp returned by `sparsify` to a jnp.ndarray.
 
     Uniform across all possible return types:
-    - Our LinOp classes (ConstantDiagonal, Diagonal, Pivoted) → `.to_dense()`.
+    - Our LinOp classes (ConstantDiagonal, Diagonal, Pivoted) → `.todense()`.
     - `jax.experimental.sparse.BCOO` → `.todense()`.
     - Plain ndarray → passthrough.
     """
     if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
-        return op.to_dense()
+        return op.todense()
     if isinstance(op, sparse.BCOO):
         return op.todense()
     return op
@@ -841,14 +841,14 @@ def to_bcoo(op):
     """Convert a LinOp returned by `sparsify` to a BCOO (or ndarray if
     the walk produced a dense fallback that can't be usefully sparsified).
 
-    - Our LinOp classes → `.to_bcoo()`.
+    - Our LinOp classes → `.tobcoo()`.
     - `BCOO` passthrough.
     - Plain ndarray passthrough (caller decides what to do).
     """
     if isinstance(op, sparse.BCOO):
         return op
     if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
-        return op.to_bcoo()
+        return op.tobcoo()
     return op
 
 
