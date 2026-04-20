@@ -283,6 +283,19 @@ def _commit_from_lx(lx_path: Path | None) -> str:
     return m.group(1) if m else "nodata"
 
 
+def _counter_from_lx(lx_path: Path | None) -> str:
+    """Extract the pytest-benchmark NNNN prefix.
+
+    0005_4562b8f_full.json -> '0005'. Used to prefix plot filenames so
+    plots are uniquely tied to the specific bench run that produced
+    them (multiple runs of the same commit get distinct NNNN).
+    """
+    if lx_path is None:
+        return "0000"
+    m = re.match(r"(\d+)_", lx_path.name)
+    return m.group(1) if m else "0000"
+
+
 def _canonicalise_methods(method_spec: str | None, default: list[str]) -> list[str]:
     raw = default if method_spec is None else [s.strip() for s in method_spec.split(",") if s.strip()]
     return [METHOD_ALIASES.get(m, m) for m in raw]
@@ -332,7 +345,11 @@ def main():
 
     PLOT_DIR.mkdir(exist_ok=True)
     commit = _commit_from_lx(lx)
-    stem = args.name or f"{commit}_{args.tag}"
+    counter = _counter_from_lx(lx)
+    # Default stem: NNNN_<commit>_<tag> — matches the bench JSON's
+    # naming scheme so it's obvious which bench a plot came from
+    # (and NNNN tie-breaks between multiple runs of the same commit).
+    stem = args.name or f"{counter}_{commit}_{args.tag}"
 
     # Status summary to stderr.
     for m, t in runs.items():
