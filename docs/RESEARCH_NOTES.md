@@ -395,6 +395,35 @@ AND passing `y` as a closure (not a jit input):
   closes dramatically for closure-y. `benchmarks/run_in_container.sh`
   uses EAGER_CONSTANT_FOLDING=TRUE precisely to prevent spurious wins.
 
+## 10b. asdex coloring cost — not uniform, not predictable from n
+
+An earlier note claimed "asdex coloring is ~15ms" based on `probe_caps.py`
+which wrapped trace + coloring + XLA compile into one `compile_s` figure.
+A more careful probe (`/tmp/coloring_probe.py`, 2026-04-20) timed
+`asdex.hessian_coloring(f, input_shape, symmetric=True)` in isolation
+across 15 problems. Three regimes emerge:
+
+| regime                    | examples                                                  | coloring time              |
+| ------------------------- | --------------------------------------------------------- | -------------------------- |
+| banded / genuinely sparse | FLETCHCR, CMPC\*, EDENSCH, DIXMAANB, BDEXP                | 26–134 ms                  |
+| dense-ish at small n      | ARGLIN{A,B,C}, ARGTRIGLS (all n=200)                      | **400–600 ms**             |
+| pathological              | BDQRTIC n=5000; EIGENALS/EIGENBLS n=2550; CHARDIS0 n=2000 | **6 s to >30 s (timeout)** |
+
+The cost scales with sparsity-pattern complexity (nnz × color-count),
+not with n. Dense blocks force many distinct colors; CHARDIS0's
+structure apparently defeats whatever heuristic asdex uses.
+
+**Implication for bench reporting**: the 6 asdex timeouts in
+`0010_full-asdex-jax0.10.0.json` (EIGEN\*, CHARDIS0, MSQRTALS, +1) are
+genuine asdex pathologies — when comparing "lineaxpr beat asdex by
+50×" we should call out that some of those wins are on problems asdex
+can't run at all. Mentioning coloring-cost pathologies is more honest
+for a paper than treating timeouts as "asdex slow".
+
+**Implication for lineaxpr**: we avoid this entire failure mode
+because we skip coloring — but the cost is paid elsewhere (our walk
+has O(eqns) primitive-rule overhead). Different pathology envelopes.
+
 ## 11. Short-circuit at n<16
 
 Without the short-circuit, HS110 (n=10) costs ~15 µs (structural walk
