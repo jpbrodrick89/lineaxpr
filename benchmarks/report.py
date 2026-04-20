@@ -183,8 +183,8 @@ def main():
         ref_patterns = [args.refs_tag]
     elif args.tag == "full":
         ref_patterns = ["full-refs-jax", "full-jaxhes-jax",
-                        "full-jaxhes-folded-jax", "full-asdex-dense-jax",
-                        "full-asdex-bcoo-jax"]
+                        "full-jaxhes-folded-jax", "full-asdex-jax",
+                        "full-asdex-dense-jax", "full-asdex-bcoo-jax"]
     else:
         ref_patterns = ["refs-jax"]
 

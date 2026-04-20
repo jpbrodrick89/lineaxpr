@@ -152,7 +152,7 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
         # Auto-discover. For full, look for any per-method + combined refs.
         patterns = (
             ["full-refs-jax", "full-jaxhes-jax", "full-jaxhes-folded-jax",
-             "full-asdex-dense-jax", "full-asdex-bcoo-jax"]
+             "full-asdex-jax", "full-asdex-dense-jax", "full-asdex-bcoo-jax"]
             if "full" in lineaxpr_tag else ["refs-jax"]
         )
         for pat in patterns:
