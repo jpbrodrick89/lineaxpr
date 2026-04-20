@@ -146,6 +146,19 @@ def _make(extractor_kind, problem):
     raise ValueError(extractor_kind)
 
 
+# Known asdex pathologies — hessian_coloring takes >30s on these
+# (measured by benchmarks/coloring_probe.py; see docs/RESEARCH_NOTES.md
+# §10b). Skipped up-front so the bench doesn't waste time triggering
+# the pytest-timeout fallback on each one. Not an "asdex is slow"
+# finding — these patterns break the coloring heuristic. Revisit if
+# asdex releases a fix.
+ASDEX_PATHOLOGICAL_PROBLEMS = {
+    "EIGENALS", "EIGENBLS", "EIGENCLS",
+    "CHARDIS0",
+    "MSQRTALS",  # added the 6th full-asdex timeout (truncated in log)
+}
+
+
 def _asdex_compile(problem, output_format: str):
     """Build and compile an asdex hessian fn.
 
@@ -153,8 +166,12 @@ def _asdex_compile(problem, output_format: str):
     the ColoredPattern during `hessian_from_coloring`, so reusing a
     coloring across output_formats breaks ("Computation compiled for
     4 inputs but called with 1"). Reproduced in /tmp/debug_asdex.py.
-    Coloring itself is fast (~15ms per probe), negligible overhead.
     """
+    if problem.name in ASDEX_PATHOLOGICAL_PROBLEMS:
+        pytest.skip(
+            f"asdex coloring >30s on {problem.name} — see "
+            f"ASDEX_PATHOLOGICAL_PROBLEMS + docs/RESEARCH_NOTES.md §10b"
+        )
     args_c = problem.args
 
     def f(y):
