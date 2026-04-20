@@ -70,8 +70,18 @@ def _block(out):
     return out
 
 
+def _compile(fn, primal):
+    try:
+        compiled = fn.lower(primal).compile()
+        _block(compiled(primal))
+        return compiled
+    except Exception:
+        return None
+
+
 def _make(extractor_kind, problem):
-    """extractor_kind: one of 'jaxhes', 'mat', 'bcoo', 'asdex_bcoo', 'asdex_dense'."""
+    """extractor_kind: one of 'jaxhes', 'jaxhes_folded', 'mat', 'bcoo',
+    'asdex_bcoo', 'asdex_dense'."""
     args_c = problem.args
 
     def f(y):
@@ -80,39 +90,49 @@ def _make(extractor_kind, problem):
     if extractor_kind == "jaxhes":
         @jax.jit
         def fn(y): return jax.hessian(f)(y)
-    elif extractor_kind == "mat":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "jaxhes_folded":
+        # jax.hessian WITH eager_constant_folding (release config).
+        from jax._src import config
+        @jax.jit
+        def fn(y): return jax.hessian(f)(y)
+        with config.eager_constant_folding(True):
+            return _compile(fn, problem.y0)
+
+    if extractor_kind == "mat":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y)
-    elif extractor_kind == "bcoo":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "bcoo":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return bcoo_jacobian(h, y)
-    elif extractor_kind == "asdex_bcoo":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "asdex_bcoo":
         if not HAS_ASDEX: return None
         try:
             fn = jax.jit(asdex.hessian(f, input_shape=problem.y0.shape,
                                         output_format="bcoo", symmetric=True))
         except Exception:
             return None
-    elif extractor_kind == "asdex_dense":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "asdex_dense":
         if not HAS_ASDEX: return None
         try:
             fn = jax.jit(asdex.hessian(f, input_shape=problem.y0.shape,
                                         output_format="dense", symmetric=True))
         except Exception:
             return None
-    else:
-        raise ValueError(extractor_kind)
+        return _compile(fn, problem.y0)
 
-    try:
-        compiled = fn.lower(problem.y0).compile()
-        _block(compiled(problem.y0))
-        return compiled
-    except Exception:
-        return None
+    raise ValueError(extractor_kind)
 
 
 # ------------------- dense-output methods (cap DENSE_MAX) -------------------
@@ -120,12 +140,25 @@ def _make(extractor_kind, problem):
 
 @pytest.mark.parametrize("problem", DENSE_PROBLEMS, ids=_id)
 def test_jax_hessian(benchmark, problem):
+    """jax.hessian with eager_constant_folding OFF (default)."""
     benchmark.group = f"jax_hessian-{_cls(problem)}"
     benchmark.name = f"test_jax_hessian[{problem.name}]"
     c = _make("jaxhes", problem)
     if c is None: pytest.skip("jax.hessian failed/too big")
     benchmark(lambda y: _block(c(y)), jax.device_put(problem.y0))
     benchmark.extra_info.update(_info(problem, "jax.hessian"))
+    jax.clear_caches()
+
+
+@pytest.mark.parametrize("problem", DENSE_PROBLEMS, ids=_id)
+def test_jax_hessian_folded(benchmark, problem):
+    """jax.hessian with eager_constant_folding=True (release config)."""
+    benchmark.group = f"jax_hessian_folded-{_cls(problem)}"
+    benchmark.name = f"test_jax_hessian_folded[{problem.name}]"
+    c = _make("jaxhes_folded", problem)
+    if c is None: pytest.skip("jax.hessian (folded) failed/too big")
+    benchmark(lambda y: _block(c(y)), jax.device_put(problem.y0))
+    benchmark.extra_info.update(_info(problem, "jax.hessian (folded)"))
     jax.clear_caches()
 
 
