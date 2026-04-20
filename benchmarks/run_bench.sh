@@ -52,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --full-refs)           MODE="full-refs"; shift ;;
     --full-jaxhes)         MODE="full-jaxhes"; shift ;;
     --full-jaxhes-folded)  MODE="full-jaxhes-folded"; shift ;;
+    --full-asdex)          MODE="full-asdex"; shift ;;
     --full-asdex-dense)    MODE="full-asdex-dense"; shift ;;
     --full-asdex-bcoo)     MODE="full-asdex-bcoo"; shift ;;
     --lineaxpr)            MODE="lineaxpr"; shift ;;
@@ -116,17 +117,25 @@ case "$MODE" in
     NAME="full-jaxhes-folded-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_jax_hessian_folded")
     ;;
+  full-asdex)
+    # Combined asdex dense + bcoo. Coloring is shared across output
+    # formats (_ASDEX_COLORING_CACHE in test_full.py) so running both
+    # together amortizes the expensive coloring pass.
+    # Probe said n=5000 compile is ~130ms, but unseen problems may
+    # blow up — keep DENSE_MAX tight (2000) and BCOO_MAX more generous
+    # (since bcoo output is cheap even when coloring was expensive).
+    export DENSE_MAX="${DENSE_MAX:-2000}"
+    export BCOO_MAX="${BCOO_MAX:-3000}"
+    NAME="full-asdex-jax${JAX_VERSION}"
+    SELECT=(benchmarks/test_full.py -k "test_asdex_dense or test_asdex_bcoo")
+    ;;
   full-asdex-dense)
-    # asdex dense: compile ~30-540ms stable across n; runtime scales
-    # with n² (dense alloc). BDEXP@5000 = 14ms runtime, tolerable.
-    export DENSE_MAX="${DENSE_MAX:-5000}"
+    export DENSE_MAX="${DENSE_MAX:-2000}"
     NAME="full-asdex-dense-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_asdex_dense")
     ;;
   full-asdex-bcoo)
-    # asdex bcoo: compile ~20-540ms; runtime stays ~100-250µs across
-    # n=100→5000 (cheapest method by far).
-    export BCOO_MAX="${BCOO_MAX:-5000}"
+    export BCOO_MAX="${BCOO_MAX:-3000}"
     NAME="full-asdex-bcoo-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_asdex_bcoo")
     ;;
@@ -136,14 +145,21 @@ echo "=== bench mode=$MODE  save=$NAME ==="
 echo "=== JAX: $JAX_VERSION  commit: $SHORT_SHA ==="
 echo ""
 
+# Per-test wall-clock hard timeout (signal-based; kills the test if
+# compile/trace/run exceeds the budget). Catches genuine hangs that the
+# in-process COMPILE_TIMEOUT_S guard in _compile() can't detect.
+TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
+
 if [ "${USE_CONTAINER:-0}" = "1" ]; then
   echo "Running under container (EAGER_CONSTANT_FOLDING=TRUE)..."
   bash "$SCRIPT_DIR/run_in_container.sh" "${SELECT[@]}" \
     --benchmark-only --benchmark-save="$NAME" \
+    --timeout="$TEST_TIMEOUT" --timeout-method=signal \
     "${EXTRA_ARGS[@]:+${EXTRA_ARGS[@]}}"
 else
   uv run pytest "${SELECT[@]}" \
     --benchmark-only --benchmark-save="$NAME" \
     --benchmark-columns=min,median,mean,stddev,rounds \
+    --timeout="$TEST_TIMEOUT" --timeout-method=signal \
     "${EXTRA_ARGS[@]:+${EXTRA_ARGS[@]}}"
 fi

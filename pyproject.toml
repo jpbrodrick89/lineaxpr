@@ -19,10 +19,12 @@ dependencies = [
 test = [
     "pytest",
     "pytest-benchmark",
+    "pytest-timeout",
 ]
 benchmark = [
     "pytest",
     "pytest-benchmark",
+    "pytest-timeout",
     "asdex",
     "sif2jax",
     "matplotlib",
