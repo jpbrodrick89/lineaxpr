@@ -1,0 +1,189 @@
+"""Transform-level tests for `lineaxpr.sparsify`.
+
+Unlike `test_materialize.py` (which tests the public `materialize` /
+`bcoo_jacobian` wrappers on concrete problems), these tests exercise the
+transform itself: explicit seeds, const-prop folding, nested jit,
+missing-primitive error format, and multi-output error handling.
+"""
+
+from __future__ import annotations
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from jax.experimental import sparse
+
+from lineaxpr import (
+    ConstantDiagonal,
+    Diagonal,
+    Identity,
+    Pivoted,
+    materialize_rules,
+    sparsify,
+    to_dense,
+)
+
+
+# ----------------------- identity seed vs reference ----------------------
+
+
+@pytest.mark.parametrize("n", [4, 17, 64])
+def test_identity_seed_matches_vmap_eye(n):
+    def lin(x):
+        return 2.0 * x + jnp.pad(x[:-1], (1, 0))
+
+    seed = Identity(n, dtype=jnp.float64)
+    linop = sparsify(lin)(seed)
+    ours = to_dense(linop)
+    ref = jax.vmap(lin)(jnp.eye(n)).T
+    np.testing.assert_allclose(np.asarray(ours), np.asarray(ref), atol=1e-12)
+
+
+# ----------------------- custom seeds ------------------------------------
+
+
+def test_constant_diagonal_seed_scales_output():
+    """Seeding with ConstantDiagonal(n, k) should produce k × output."""
+    n = 8
+
+    def lin(x):
+        return 3.0 * x
+
+    out_identity = to_dense(sparsify(lin)(Identity(n, dtype=jnp.float64)))
+    out_scaled = to_dense(sparsify(lin)(ConstantDiagonal(n, value=2.0)))
+    np.testing.assert_allclose(
+        np.asarray(out_scaled), 2.0 * np.asarray(out_identity), atol=1e-12
+    )
+
+
+def test_diagonal_seed_scales_per_column():
+    """Seeding with Diagonal(v) should produce output @ diag(v) = cols scaled."""
+    n = 6
+    v = jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+
+    def lin(x):
+        return jnp.cumsum(x)
+
+    out_identity = to_dense(sparsify(lin)(Identity(n, dtype=jnp.float64)))
+    out_diag = to_dense(sparsify(lin)(Diagonal(v)))
+    # sparsify(lin)(Diagonal(v)) computes lin as applied to diag(v)'s columns:
+    # column i of output is lin(v[i] * e_i) = v[i] * lin(e_i). So the
+    # result is out_identity with each column j scaled by v[j].
+    expected = np.asarray(out_identity) * np.asarray(v)[None, :]
+    np.testing.assert_allclose(np.asarray(out_diag), expected, atol=1e-12)
+
+
+# ----------------------- constant propagation ----------------------------
+
+
+def test_constant_hessian_folds_to_literal():
+    """For a constant-H problem (pure quadratic), the walk's const-prop
+    path should produce a trace-time literal. Verify by tracing under jit
+    and checking the output is returned (same values, same compile-time
+    constant shape)."""
+    rng = np.random.default_rng(0)
+    A = rng.standard_normal((12, 12))
+    A = A @ A.T  # symmetric constant
+
+    def f(x):
+        return 0.5 * x @ jnp.asarray(A) @ x
+
+    @jax.jit
+    def extract(y):
+        _, hvp = jax.linearize(jax.grad(f), y)
+        return to_dense(sparsify(hvp)(Identity(y.size, dtype=y.dtype)))
+
+    y0 = jnp.zeros(12)
+    H = extract(y0)
+    np.testing.assert_allclose(np.asarray(H), A, atol=1e-10)
+
+
+# ----------------------- nested jit --------------------------------------
+
+
+def test_nested_jit_inside_linear_fn():
+    """The linear fn body contains a nested @jax.jit — walker's _jit_rule
+    should recurse into the inner jaxpr."""
+
+    @jax.jit
+    def scaled(x):
+        return 2.5 * x
+
+    def f(x):
+        return 0.5 * jnp.sum(scaled(x) ** 2)
+
+    y = jnp.zeros(20)
+    _, hvp = jax.linearize(jax.grad(f), y)
+    out = to_dense(sparsify(hvp)(Identity(20, dtype=y.dtype)))
+    # Hessian is (2.5)^2 · I = 6.25 · I.
+    np.testing.assert_allclose(np.asarray(out), 6.25 * np.eye(20), atol=1e-12)
+
+
+# ----------------------- error messages ----------------------------------
+
+
+def test_missing_primitive_error_format():
+    """Missing-rule error should name the primitive and include the input
+    LinOp forms so users can diagnose quickly."""
+    # Trigger by temporarily removing a rule and invoking a fn that needs it.
+    prim = None
+    for p in materialize_rules:
+        if p.name == "mul":
+            prim = p
+            break
+    assert prim is not None, "could not find mul primitive in registry"
+
+    saved = materialize_rules.pop(prim)
+    try:
+        with pytest.raises(NotImplementedError) as excinfo:
+            sparsify(lambda x: 2.0 * x)(Identity(4, dtype=jnp.float64))
+        msg = str(excinfo.value)
+        assert "mul" in msg
+        assert "ConstantDiagonal" in msg or "Identity" in msg or "forms" in msg
+        assert "materialize_rules" in msg
+    finally:
+        materialize_rules[prim] = saved
+
+
+# ----------------------- unsupported shape errors ------------------------
+
+
+def test_multi_output_linear_fn_rejected():
+    """Our walker seeds a single invar; multi-output linear fns are rejected."""
+    def lin(x):
+        return x, 2.0 * x
+
+    with pytest.raises(NotImplementedError, match="multi-output"):
+        sparsify(lin)(Identity(4, dtype=jnp.float64))
+
+
+def test_non_1d_input_rejected():
+    """The walker currently requires a 1D input invar."""
+    def lin(x):
+        return x.flatten()
+
+    with pytest.raises(NotImplementedError, match="non-1D"):
+        # Seed with a LinOp whose primal_aval is 2D — synthesize via a
+        # Pivoted of the right shape? Easiest: use a 1D seed but pass a
+        # linear_fn that trace-expects 2D. Do that via a wrapper.
+        class Fake:
+            def primal_aval(self):
+                import jax
+                return jax.core.ShapedArray((3, 3), jnp.float64)
+        sparsify(lin)(Fake())
+
+
+# ----------------------- shape-witness correctness -----------------------
+
+
+def test_seed_dtype_flows_to_trace():
+    """The trace placeholder should use the seed's aval dtype."""
+    captured = {}
+
+    def lin(x):
+        captured["dtype"] = x.dtype
+        return x
+
+    sparsify(lin)(Identity(4, dtype=jnp.float32))
+    assert captured["dtype"] == jnp.float32

@@ -1,0 +1,366 @@
+{
+  "_format_version": 1,
+  "_note": "nse (number of stored entries) regression manifest for bcoo_jacobian over sif2jax CUTEst problems. Increases fail tests. Decreases require a manifest bump \u2014 run `uv run python -m tests.update_nse_manifest` to regenerate.",
+  "problems": {
+    "BDEXP": {
+      "n": 5000,
+      "nse": 124950,
+      "group": "bounded"
+    },
+    "CHNROSNB": {
+      "n": 50,
+      "nse": 441,
+      "group": "unconstrained"
+    },
+    "CHNRSNBM": {
+      "n": 50,
+      "nse": 294,
+      "group": "unconstrained"
+    },
+    "CMPC1": {
+      "n": 2550,
+      "nse": 1192,
+      "group": "quadratic"
+    },
+    "CMPC10": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC12": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC15": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC2": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC3": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC4": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC5": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC6": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "CMPC8": {
+      "n": 1530,
+      "nse": 772,
+      "group": "quadratic"
+    },
+    "DIAGIQB": {
+      "n": 10,
+      "nse": 10,
+      "group": "bounded"
+    },
+    "DIAGIQE": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGIQT": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGNQB": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGNQE": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGNQT": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGPQB": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGPQE": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIAGPQT": {
+      "n": 1000,
+      "nse": 1000,
+      "group": "bounded"
+    },
+    "DIXMAANA1": {
+      "n": 3,
+      "nse": 13,
+      "group": "unconstrained"
+    },
+    "DIXMAANB": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANC": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAAND": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANE1": {
+      "n": 3000,
+      "nse": 13000,
+      "group": "unconstrained"
+    },
+    "DIXMAANF": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANG": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANH": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANI1": {
+      "n": 3000,
+      "nse": 13000,
+      "group": "unconstrained"
+    },
+    "DIXMAANJ": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANK": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANL": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANM1": {
+      "n": 3000,
+      "nse": 13000,
+      "group": "unconstrained"
+    },
+    "DIXMAANN": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANO": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DIXMAANP": {
+      "n": 3000,
+      "nse": 33993,
+      "group": "unconstrained"
+    },
+    "DQDRTIC": {
+      "n": 5000,
+      "nse": 14994,
+      "group": "unconstrained"
+    },
+    "DQRTIC": {
+      "n": 5000,
+      "nse": 5000,
+      "group": "unconstrained"
+    },
+    "DUALC1": {
+      "n": 9,
+      "nse": 162,
+      "group": "quadratic"
+    },
+    "DUALC2": {
+      "n": 7,
+      "nse": 98,
+      "group": "quadratic"
+    },
+    "DUALC5": {
+      "n": 8,
+      "nse": 128,
+      "group": "quadratic"
+    },
+    "DUALC8": {
+      "n": 8,
+      "nse": 128,
+      "group": "quadratic"
+    },
+    "EDENSCH": {
+      "n": 2000,
+      "nse": 25987,
+      "group": "unconstrained"
+    },
+    "ENGVAL1": {
+      "n": 5000,
+      "nse": 29994,
+      "group": "unconstrained"
+    },
+    "ERRINROS": {
+      "n": 50,
+      "nse": 294,
+      "group": "unconstrained"
+    },
+    "EXPLIN": {
+      "n": 1200,
+      "nse": 600,
+      "group": "bounded"
+    },
+    "EXPLIN2": {
+      "n": 1200,
+      "nse": 600,
+      "group": "bounded"
+    },
+    "FLETCHCR": {
+      "n": 1000,
+      "nse": 5994,
+      "group": "unconstrained"
+    },
+    "FREUROTH": {
+      "n": 5000,
+      "nse": 109978,
+      "group": "unconstrained"
+    },
+    "GENHUMPS": {
+      "n": 5000,
+      "nse": 49990,
+      "group": "unconstrained"
+    },
+    "GENROSE": {
+      "n": 500,
+      "nse": 2994,
+      "group": "unconstrained"
+    },
+    "GOULDQP1": {
+      "n": 32,
+      "nse": 15,
+      "group": "quadratic"
+    },
+    "HS88": {
+      "n": 2,
+      "nse": 2,
+      "group": "quadratic"
+    },
+    "HS89": {
+      "n": 3,
+      "nse": 3,
+      "group": "quadratic"
+    },
+    "HS90": {
+      "n": 4,
+      "nse": 4,
+      "group": "quadratic"
+    },
+    "HS91": {
+      "n": 5,
+      "nse": 5,
+      "group": "quadratic"
+    },
+    "HS92": {
+      "n": 6,
+      "nse": 6,
+      "group": "quadratic"
+    },
+    "NONCVXU2": {
+      "n": 5000,
+      "nse": 135000,
+      "group": "unconstrained"
+    },
+    "NONCVXUN": {
+      "n": 5000,
+      "nse": 135000,
+      "group": "unconstrained"
+    },
+    "QING": {
+      "n": 100,
+      "nse": 100,
+      "group": "unconstrained"
+    },
+    "QINGB": {
+      "n": 5,
+      "nse": 5,
+      "group": "bounded"
+    },
+    "QUARTC": {
+      "n": 5000,
+      "nse": 5000,
+      "group": "unconstrained"
+    },
+    "QUDLIN": {
+      "n": 5000,
+      "nse": 5000,
+      "group": "bounded"
+    },
+    "TABLE1": {
+      "n": 1584,
+      "nse": 1584,
+      "group": "quadratic"
+    },
+    "TABLE3": {
+      "n": 4992,
+      "nse": 4992,
+      "group": "quadratic"
+    },
+    "TABLE6": {
+      "n": 1584,
+      "nse": 1584,
+      "group": "quadratic"
+    },
+    "TABLE7": {
+      "n": 624,
+      "nse": 624,
+      "group": "quadratic"
+    },
+    "TABLE8": {
+      "n": 1271,
+      "nse": 1271,
+      "group": "quadratic"
+    },
+    "TOINTGSS": {
+      "n": 5000,
+      "nse": 249900,
+      "group": "unconstrained"
+    },
+    "YAO": {
+      "n": 2002,
+      "nse": 2002,
+      "group": "quadratic"
+    }
+  }
+}

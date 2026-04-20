@@ -32,3 +32,8 @@ include = ["lineaxpr*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "benchmarks"]
+markers = [
+    "slow: sweep tests over large problem sets; opt in with `pytest -m slow`",
+]
+# Don't run slow tests by default — opt in with `-m slow`.
+addopts = "-m 'not slow'"

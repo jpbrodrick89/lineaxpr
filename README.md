@@ -1,10 +1,13 @@
 # lineaxpr
 
-Coloring-free Jacobian/Hessian extraction for JAX. Walks the linearized
-jaxpr of a callable and emits either a dense `jnp.ndarray` or a
-`jax.experimental.sparse.BCOO` matrix with per-linearization-point
-sparsity — no up-front coloring, no second AD pass, no closure-of-constants
-tricks.
+Structural Jacobian/Hessian extraction for JAX. Walks the linearized
+jaxpr of a callable with per-primitive rules over mixed sparse forms
+(Identity / Diagonal / Pivoted / BCOO / ndarray) and emits either a
+dense `jnp.ndarray` or a `jax.experimental.sparse.BCOO` matrix. No
+up-front coloring, no second AD pass, per-linearization-point sparsity.
+
+Inspired by — and interoperable with — `jax.experimental.sparse.sparsify`;
+see `docs/RESEARCH_NOTES.md` §10 for the design comparison.
 
 > **Status**: exploratory / pre-alpha. Design will shift as we go.
 
@@ -39,6 +42,29 @@ def H_sparse_of(y):
     return bcoo_jacobian(hvp, y)        # -> BCOO or ndarray
 ```
 
+## Lower-level transform
+
+`materialize` and `bcoo_jacobian` are thin wrappers around a more general
+transform:
+
+```python
+from lineaxpr import sparsify, Identity, to_dense, to_bcoo
+
+seed = Identity(y.size, dtype=y.dtype)
+linop = sparsify(hvp)(seed)          # returns a LinOp (our class, BCOO, or ndarray)
+dense = to_dense(linop)              # uniform densification
+bcoo  = to_bcoo(linop)               # uniform sparsification
+
+# Non-identity seeds also work — useful for matrix-matrix products
+# where one factor is structured:
+from lineaxpr import ConstantDiagonal, Diagonal
+scaled = to_dense(sparsify(hvp)(ConstantDiagonal(y.size, 2.0)))  # == 2 * dense
+```
+
+No implicit Identity cast inside `sparsify` — pass your seed explicitly.
+The seed's `.primal_aval()` method provides the shape/dtype that
+`jax.make_jaxpr` traces against.
+
 ## Why lineaxpr
 
 - **Non-conservative sparsity**: the pattern reflects the Hessian at this
@@ -46,26 +72,52 @@ def H_sparse_of(y):
 - **One pass over the linear jaxpr**, not two (coloring + AD).
 - **Fully jittable**: construction happens at trace time, runtime is the
   fused emitted HLO.
-- **BCOO output** for sparse problems yields massive speedups (100-6000×
-  over `jax.hessian` at n=3000-5000 on CUTEst problems).
+- **Mixed-format walk**: Identity / Diagonal / Pivoted / BCOO coexist in
+  the same env with promotion at incompatibility; no unnecessary
+  densification.
+- **2–4× over pure-BCOO** `jax.experimental.sparse.sparsify` on
+  y-dependent sparse problems (DIXMAAN / EDENSCH / FLETCHCR), plus
+  robust handling of primitive-coverage gaps where upstream sparsify
+  fails (HART6, ARGTRIGLS). Const-H wins over `jax.hessian` depend on
+  the EAGER_CONSTANT_FOLDING regime — see `docs/RESEARCH_NOTES.md` §10.
 
 ## Coverage
 
-Bit-exact on **100%** of 300 CUTEst unconstrained / bounded / quadratic
-problems at `n ≤ 5000` tested so far. See `docs/RESEARCH_NOTES.md`.
+Bit-exact on **100%** of ~200 CUTEst unconstrained / bounded / quadratic
+problems at `n ≤ 5000` tested so far. See `docs/RESEARCH_NOTES.md` and
+the `tests/test_sif2jax_sweep.py` slow sweep.
+
+## Tests
+
+```bash
+# Fast (unit + hand-rolled + transform + curated CUTEst):
+uv run pytest tests/
+
+# Slow sweep across all sif2jax problems + nse regression:
+uv run pytest -m slow tests/test_sif2jax_sweep.py
+```
+
+nse (number of stored entries) per problem is pinned in
+`tests/nse_manifest.json`. Increases fail; decreases require running
+`uv run python -m tests.update_nse_manifest` to update the golden file.
+Regressions need an explicit justification in the commit message.
 
 ## Layout
 
 ```
 lineaxpr/
 ├── lineaxpr/              # package
-│   ├── __init__.py        # public API
-│   └── materialize.py     # structural walk + per-primitive rules
-├── tests/                 # correctness (vs vmap(hvp)(eye) reference)
+│   ├── __init__.py        # public API (sparsify, materialize, bcoo_jacobian,
+│   │                      #   to_dense, to_bcoo, Identity, ConstantDiagonal,
+│   │                      #   Diagonal, Pivoted, materialize_rules)
+│   ├── _base.py           # LinOp classes with methods
+│   └── materialize.py     # sparsify transform + rule registry + rules
+├── experiments/           # monkeypatch studies (not production)
+├── tests/                 # unit + hand-rolled + transform + sweep + nse manifest
 ├── benchmarks/            # pytest-benchmark suites
 └── docs/
-    ├── ARCHITECTURE.md    # how the walk / forms work
-    ├── RESEARCH_NOTES.md  # key empirical findings
+    ├── ARCHITECTURE.md    # walk algorithm, LinOp methods, rule pattern
+    ├── RESEARCH_NOTES.md  # empirical findings + sparsify comparison
     └── TODO.md            # prioritized future work
 ```
 
