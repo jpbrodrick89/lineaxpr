@@ -212,7 +212,7 @@ and pick the most efficient format per eqn.
 **Future readiness of current design**: good. The LinOp class hierarchy
 is the extension point; adding a new form (e.g. the "banded Pivoted" from
 TODO #1) only requires new densification rules and new cases in
-`_add_like` — existing rules stay put. The alternative (sparsify
+`_add_rule` — existing rules stay put. The alternative (sparsify
 migration) would pay a framework-rewrite cost for zero capability gain.
 
 ### Monkeypatch experiment: pure-BCOO floor

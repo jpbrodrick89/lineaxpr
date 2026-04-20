@@ -21,10 +21,10 @@ produce a "multi-column Pivoted" that stores one out_row array and a list
 of `(in_cols, values)` pairs. Matvec: `sum(v * values[i] for each col)`.
 Densify: scatter per pair.
 
-**Affects**: `_add_like` (new fast path), new class in `_base.py` with
+**Affects**: `_add_rule` (new fast path), new class in `_base.py` with
 `.to_dense`/`.to_bcoo`/`.negate`/`.scale_scalar`/`.scale_per_out_row`
 methods mirroring Pivoted. After the Step-3 method extraction, the only
-rule touch is `_add_like`.
+rule touch is `_add_rule`.
 
 **Win**: ~2× BCOO size reduction on banded Hessians. Closes LEVYMONT
 regression. Moves us closer to CSR-native output.
@@ -130,7 +130,7 @@ this; we don't.
 with dense fallbacks, retained dense tensors can OOM. Compute `last_use`
 per var, `del env[v]` after its last read.
 
-### 11. `_add_like` kind-dispatch refactor — DONE
+### 11. `_add_rule` kind-dispatch refactor — DONE
 
 Compressed 7 cascading `all(isinstance...)` passes into 4 kind-set
 checks + a shared `_bcoo_concat` helper + `_linop_matrix_shape`. Rules

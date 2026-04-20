@@ -123,7 +123,7 @@ def _bcoo_concat(bcoo_vals, shape):
     )
 
 
-def _add_like(invals, traced, n, **params):
+def _add_rule(invals, traced, n, **params):
     """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
     the least-specific form needed. Dispatch is on the set of input kinds."""
     del params
@@ -193,11 +193,11 @@ def _add_like(invals, traced, n, **params):
     return functools.reduce(operator.add, dense_vals)
 
 
-materialize_rules[lax.add_p] = _add_like
+materialize_rules[lax.add_p] = _add_rule
 try:
     from jax._src.ad_util import add_jaxvals_p
 
-    materialize_rules[add_jaxvals_p] = _add_like
+    materialize_rules[add_jaxvals_p] = _add_rule
 except ImportError:
     pass
 
@@ -242,7 +242,7 @@ def _sub_rule(invals, traced, n, **params):
         return _neg_rule([b], [True], n)
     # both traced
     neg_b = _neg_rule([b], [True], n)
-    return _add_like([a, neg_b], [True, True], n)
+    return _add_rule([a, neg_b], [True, True], n)
 
 materialize_rules[lax.sub_p] = _sub_rule
 
