@@ -12,6 +12,10 @@ __pycache__/
 .benchmarks/*/*_full.json
 !.benchmarks/*/*_refs-*.json
 !.benchmarks/*/*_full-refs-*.json
+!.benchmarks/*/*_full-jaxhes-*.json
+!.benchmarks/*/*_full-jaxhes-folded-*.json
+!.benchmarks/*/*_full-asdex-dense-*.json
+!.benchmarks/*/*_full-asdex-bcoo-*.json
 
 # Generated plots — regenerate with benchmarks/plots.py.
 benchmarks/plots/*.png

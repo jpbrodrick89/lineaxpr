@@ -131,22 +131,40 @@ def _index(json_path: Path) -> dict[tuple[str, str], tuple[float, int]]:
 
 
 def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
-    """Return (lineaxpr_json_path, refs_json_path, unified_idx).
+    """Return (lineaxpr_json_path, refs_json_path_list, unified_idx).
 
     `unified_idx` is a single dict keyed by (problem, method) where
     method may be any of the canonical names (including `jax_min` which
-    is synthesized from min(jaxhes, jaxhes_folded))."""
-    if refs_tag is None:
-        refs_tag = "full-refs-jax" if "full" in lineaxpr_tag else "refs-jax"
+    is synthesized from min(jaxhes, jaxhes_folded)).
 
+    For --full, refs may live in per-method files (full-jaxhes,
+    full-jaxhes-folded, full-asdex-dense, full-asdex-bcoo) as well as
+    in the combined full-refs. All are loaded and merged."""
     lx_path = _latest_matching(rf"_{re.escape(lineaxpr_tag)}\.json$")
-    refs_path = _latest_matching(rf"{re.escape(refs_tag)}.*\.json$")
+
+    refs_paths = []
+    if refs_tag is not None:
+        # Explicit refs tag — load just that one.
+        p = _latest_matching(rf"{re.escape(refs_tag)}.*\.json$")
+        if p:
+            refs_paths.append(p)
+    else:
+        # Auto-discover. For full, look for any per-method + combined refs.
+        patterns = (
+            ["full-refs-jax", "full-jaxhes-jax", "full-jaxhes-folded-jax",
+             "full-asdex-dense-jax", "full-asdex-bcoo-jax"]
+            if "full" in lineaxpr_tag else ["refs-jax"]
+        )
+        for pat in patterns:
+            p = _latest_matching(rf"{re.escape(pat)}.*\.json$")
+            if p and p not in refs_paths:
+                refs_paths.append(p)
 
     idx: dict[tuple[str, str], tuple[float, int]] = {}
     if lx_path:
         idx.update(_index(lx_path))
-    if refs_path:
-        idx.update(_index(refs_path))
+    for p in refs_paths:
+        idx.update(_index(p))
 
     # Synthesize jax_min = min(jax_hessian, jax_hessian_folded).
     problems = {p for (p, _) in idx}
@@ -160,7 +178,7 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
         elif f:
             idx[(p, "jax_min")] = f
 
-    return lx_path, refs_path, idx
+    return lx_path, refs_paths, idx
 
 
 def times_for(idx, method: str) -> dict[str, tuple[float, int]]:
@@ -289,9 +307,13 @@ def main():
                     help="Override output filename stem.")
     args = ap.parse_args()
 
-    lx, refs, idx = load_runs(args.tag, args.refs_tag)
+    lx, refs_paths, idx = load_runs(args.tag, args.refs_tag)
     print(f"lineaxpr: {lx.name if lx else '(not found)'}")
-    print(f"refs:     {refs.name if refs else '(not found)'}")
+    if refs_paths:
+        for p in refs_paths:
+            print(f"refs:     {p.name}")
+    else:
+        print("refs:     (not found)")
     if lx is None:
         return 1
 

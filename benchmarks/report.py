@@ -171,24 +171,40 @@ def main():
                     help="Skip the per-problem table; show aggregate stats + top-N only")
     args = ap.parse_args()
 
-    if args.refs_tag is None:
-        args.refs_tag = "full-refs-jax" if args.tag == "full" else "refs-jax"
-
     lx = _latest(rf"_{re.escape(args.tag)}\.json$")
-    refs = _latest(rf"{re.escape(args.refs_tag)}.*\.json$")
     if lx is None:
         print(f"no lineaxpr JSON matching tag={args.tag!r}")
         return
-    if refs is None:
-        print(f"warning: no refs JSON matching tag={args.refs_tag!r}; reporting lineaxpr only")
+
+    # Auto-discover all matching refs JSONs when --refs-tag not given.
+    # `full` mode picks up combined full-refs plus per-method splits
+    # (full-jaxhes, full-jaxhes-folded, full-asdex-dense, full-asdex-bcoo).
+    if args.refs_tag is not None:
+        ref_patterns = [args.refs_tag]
+    elif args.tag == "full":
+        ref_patterns = ["full-refs-jax", "full-jaxhes-jax",
+                        "full-jaxhes-folded-jax", "full-asdex-dense-jax",
+                        "full-asdex-bcoo-jax"]
+    else:
+        ref_patterns = ["refs-jax"]
+
+    refs_paths = []
+    for pat in ref_patterns:
+        p = _latest(rf"{re.escape(pat)}.*\.json$")
+        if p and p not in refs_paths:
+            refs_paths.append(p)
+    if not refs_paths:
+        print("warning: no refs JSON found; reporting lineaxpr only")
 
     print(f"lineaxpr: {lx.name}")
-    if refs:
-        print(f"refs:     {refs.name}")
+    for p in refs_paths:
+        print(f"refs:     {p.name}")
     print()
 
     lx_idx = _index(lx)
-    refs_idx = _index(refs) if refs else {}
+    refs_idx = {}
+    for p in refs_paths:
+        refs_idx.update(_index(p))
     problems = sorted(_problems(lx_idx) | _problems(refs_idx),
                       key=lambda p: (_n(lx_idx, p) or _n(refs_idx, p), p))
 
