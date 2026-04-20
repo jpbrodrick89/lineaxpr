@@ -1,0 +1,2667 @@
+{
+    "machine_info": {
+        "node": "MacBook-Pro-5.local",
+        "processor": "arm",
+        "machine": "arm64",
+        "python_compiler": "Clang 20.1.4 ",
+        "python_implementation": "CPython",
+        "python_implementation_version": "3.13.5",
+        "python_version": "3.13.5",
+        "python_build": [
+            "main",
+            "Jun 12 2025 12:22:43"
+        ],
+        "release": "23.6.0",
+        "system": "Darwin",
+        "cpu": {
+            "python_version": "3.13.5.final.0 (64 bit)",
+            "cpuinfo_version": [
+                9,
+                0,
+                0
+            ],
+            "cpuinfo_version_string": "9.0.0",
+            "arch": "ARM_8",
+            "bits": 64,
+            "count": 12,
+            "arch_string_raw": "arm64",
+            "brand_raw": "Apple M2 Pro"
+        }
+    },
+    "commit_info": {
+        "id": "aee1eb732c79a6902eb3c32cb0521f1c9c27379b",
+        "time": "2026-04-20T14:41:49+01:00",
+        "author_time": "2026-04-20T14:41:49+01:00",
+        "dirty": true,
+        "project": "lineaxpr",
+        "branch": "main"
+    },
+    "benchmarks": [
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[HS110]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[HS110]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HS110()]"
+            },
+            "param": "HS110",
+            "extra_info": {
+                "problem_name": "HS110",
+                "dimensionality": 10,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.33275306224823e-06,
+                "max": 0.00010033277794718742,
+                "mean": 6.171107047893962e-06,
+                "stddev": 2.653761473650827e-06,
+                "rounds": 6100,
+                "median": 5.9157609939575195e-06,
+                "iqr": 2.9243528842926025e-07,
+                "q1": 5.749985575675964e-06,
+                "q3": 6.042420864105225e-06,
+                "iqr_outliers": 365,
+                "stddev_outliers": 106,
+                "outliers": "106;365",
+                "ld15iqr": 5.33275306224823e-06,
+                "hd15iqr": 6.4997002482414246e-06,
+                "ops": 162045.47939923906,
+                "total": 0.03764375299215317,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[HART6]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[HART6]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HART6()]"
+            },
+            "param": "HART6",
+            "extra_info": {
+                "problem_name": "HART6",
+                "dimensionality": 6,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 7.084105163812637e-06,
+                "max": 8.175009861588478e-05,
+                "mean": 8.992479890266625e-06,
+                "stddev": 4.085283424301896e-06,
+                "rounds": 27619,
+                "median": 8.166767656803131e-06,
+                "iqr": 5.825422704219818e-07,
+                "q1": 7.917173206806183e-06,
+                "q3": 8.499715477228165e-06,
+                "iqr_outliers": 2276,
+                "stddev_outliers": 1009,
+                "outliers": "1009;2276",
+                "ld15iqr": 7.084105163812637e-06,
+                "hd15iqr": 9.374693036079407e-06,
+                "ops": 111204.02961171928,
+                "total": 0.24836330208927393,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[QING]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[QING]",
+            "params": {
+                "problem": "UNSERIALIZABLE[QING()]"
+            },
+            "param": "QING",
+            "extra_info": {
+                "problem_name": "QING",
+                "dimensionality": 100,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.2875068932771683e-05,
+                "max": 0.0001409579999744892,
+                "mean": 3.247910657826299e-05,
+                "stddev": 8.882617565678306e-06,
+                "rounds": 16878,
+                "median": 3.17087396979332e-05,
+                "iqr": 1.3208482414484024e-05,
+                "q1": 2.587493509054184e-05,
+                "q3": 3.9083417505025864e-05,
+                "iqr_outliers": 49,
+                "stddev_outliers": 5722,
+                "outliers": "5722;49",
+                "ld15iqr": 1.2875068932771683e-05,
+                "hd15iqr": 5.8957841247320175e-05,
+                "ops": 30789.024248261227,
+                "total": 0.5481823608279228,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[CHNROSNB]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[CHNROSNB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CHNROSNB()]"
+            },
+            "param": "CHNROSNB",
+            "extra_info": {
+                "problem_name": "CHNROSNB",
+                "dimensionality": 50,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.916947990655899e-06,
+                "max": 9.870808571577072e-05,
+                "mean": 2.2165520429667072e-05,
+                "stddev": 6.128191041704156e-06,
+                "rounds": 29340,
+                "median": 2.258317545056343e-05,
+                "iqr": 8.334172889590263e-06,
+                "q1": 1.795799471437931e-05,
+                "q3": 2.6292167603969574e-05,
+                "iqr_outliers": 288,
+                "stddev_outliers": 8479,
+                "outliers": "8479;288",
+                "ld15iqr": 8.916947990655899e-06,
+                "hd15iqr": 3.88328917324543e-05,
+                "ops": 45115.11485476184,
+                "total": 0.6503363694064319,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[DUAL1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[DUAL1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL1()]"
+            },
+            "param": "DUAL1",
+            "extra_info": {
+                "problem_name": "DUAL1",
+                "dimensionality": 85,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 7.037492468953133e-05,
+                "max": 0.0001759999431669712,
+                "mean": 8.040731739457786e-05,
+                "stddev": 4.4097343944106055e-06,
+                "rounds": 10341,
+                "median": 7.88751058280468e-05,
+                "iqr": 2.541113644838333e-06,
+                "q1": 7.858406752347946e-05,
+                "q3": 8.11251811683178e-05,
+                "iqr_outliers": 1137,
+                "stddev_outliers": 1734,
+                "outliers": "1734;1137",
+                "ld15iqr": 7.491698488593102e-05,
+                "hd15iqr": 8.49580392241478e-05,
+                "ops": 12436.679053633414,
+                "total": 0.8314920691773295,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[DUAL3]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[DUAL3]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL3()]"
+            },
+            "param": "DUAL3",
+            "extra_info": {
+                "problem_name": "DUAL3",
+                "dimensionality": 111,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0001497906632721424,
+                "max": 0.00023924978449940681,
+                "mean": 0.00015685040451294093,
+                "stddev": 6.359168771998329e-06,
+                "rounds": 5789,
+                "median": 0.00015420885756611824,
+                "iqr": 5.166046321392059e-06,
+                "q1": 0.00015354203060269356,
+                "q3": 0.00015870807692408562,
+                "iqr_outliers": 392,
+                "stddev_outliers": 636,
+                "outliers": "636;392",
+                "ld15iqr": 0.0001497906632721424,
+                "hd15iqr": 0.00016645807772874832,
+                "ops": 6375.501568550275,
+                "total": 0.908006991725415,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[LEVYMONT]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[LEVYMONT]",
+            "params": {
+                "problem": "UNSERIALIZABLE[LEVYMONT()]"
+            },
+            "param": "LEVYMONT",
+            "extra_info": {
+                "problem_name": "LEVYMONT",
+                "dimensionality": 100,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 4.3540727347135544e-05,
+                "max": 0.00020574964582920074,
+                "mean": 7.51800558643657e-05,
+                "stddev": 9.880387086740813e-06,
+                "rounds": 11402,
+                "median": 7.587485015392303e-05,
+                "iqr": 1.3999640941619873e-05,
+                "q1": 6.77923671901226e-05,
+                "q3": 8.179200813174248e-05,
+                "iqr_outliers": 105,
+                "stddev_outliers": 3607,
+                "outliers": "3607;105",
+                "ld15iqr": 4.683295264840126e-05,
+                "hd15iqr": 0.00010287528857588768,
+                "ops": 13301.400065519052,
+                "total": 0.8572029969654977,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[ARGTRIGLS]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[ARGTRIGLS]",
+            "params": {
+                "problem": "UNSERIALIZABLE[ARGTRIGLS()]"
+            },
+            "param": "ARGTRIGLS",
+            "extra_info": {
+                "problem_name": "ARGTRIGLS",
+                "dimensionality": 200,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.00026083411648869514,
+                "max": 0.00035241711884737015,
+                "mean": 0.00029240081185017336,
+                "stddev": 1.2439302735630026e-05,
+                "rounds": 3431,
+                "median": 0.00029133306816220284,
+                "iqr": 1.6626203432679176e-05,
+                "q1": 0.0002834161277860403,
+                "q3": 0.0003000423312187195,
+                "iqr_outliers": 48,
+                "stddev_outliers": 1076,
+                "outliers": "1076;48",
+                "ld15iqr": 0.00026083411648869514,
+                "hd15iqr": 0.00032516708597540855,
+                "ops": 3419.9631446728044,
+                "total": 1.0032271854579449,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[GENROSE]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[GENROSE]",
+            "params": {
+                "problem": "UNSERIALIZABLE[GENROSE()]"
+            },
+            "param": "GENROSE",
+            "extra_info": {
+                "problem_name": "GENROSE",
+                "dimensionality": 500,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.9874728322029114e-05,
+                "max": 0.0003819586709141731,
+                "mean": 0.00010187479979034905,
+                "stddev": 2.2609992673687783e-05,
+                "rounds": 7581,
+                "median": 9.529199451208115e-05,
+                "iqr": 2.676062285900116e-05,
+                "q1": 8.599972352385521e-05,
+                "q3": 0.00011276034638285637,
+                "iqr_outliers": 247,
+                "stddev_outliers": 1983,
+                "outliers": "1983;247",
+                "ld15iqr": 5.9874728322029114e-05,
+                "hd15iqr": 0.00015295809134840965,
+                "ops": 9815.97021106228,
+                "total": 0.7723128572106361,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[FLETCHCR]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[FLETCHCR]",
+            "params": {
+                "problem": "UNSERIALIZABLE[FLETCHCR()]"
+            },
+            "param": "FLETCHCR",
+            "extra_info": {
+                "problem_name": "FLETCHCR",
+                "dimensionality": 1000,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0003321669064462185,
+                "max": 0.0014316248707473278,
+                "mean": 0.0003929918190035187,
+                "stddev": 6.922436366985692e-05,
+                "rounds": 881,
+                "median": 0.00037999963387846947,
+                "iqr": 3.8312748074531555e-05,
+                "q1": 0.00036473944783210754,
+                "q3": 0.0004030521959066391,
+                "iqr_outliers": 53,
+                "stddev_outliers": 51,
+                "outliers": "51;53",
+                "ld15iqr": 0.0003321669064462185,
+                "hd15iqr": 0.00046083424240350723,
+                "ops": 2544.582232107601,
+                "total": 0.34622579254209995,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[CMPC1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[CMPC1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC1()]"
+            },
+            "param": "CMPC1",
+            "extra_info": {
+                "problem_name": "CMPC1",
+                "dimensionality": 2550,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.01364775002002716,
+                "max": 0.02388254227116704,
+                "mean": 0.014651499063957756,
+                "stddev": 0.0015904026501617583,
+                "rounds": 41,
+                "median": 0.014285166747868061,
+                "iqr": 0.0007249265909194946,
+                "q1": 0.014037761138752103,
+                "q3": 0.014762687729671597,
+                "iqr_outliers": 2,
+                "stddev_outliers": 2,
+                "outliers": "2;2",
+                "ld15iqr": 0.01364775002002716,
+                "hd15iqr": 0.016822374891489744,
+                "ops": 68.25240172590733,
+                "total": 0.600711461622268,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[CMPC2]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[CMPC2]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC2()]"
+            },
+            "param": "CMPC2",
+            "extra_info": {
+                "problem_name": "CMPC2",
+                "dimensionality": 1530,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0037502911873161793,
+                "max": 0.006732082925736904,
+                "mean": 0.004314018888787056,
+                "stddev": 0.00033097141824535984,
+                "rounds": 240,
+                "median": 0.0042636876460164785,
+                "iqr": 0.00038516754284501076,
+                "q1": 0.004095332929864526,
+                "q3": 0.0044805004727095366,
+                "iqr_outliers": 7,
+                "stddev_outliers": 54,
+                "outliers": "54;7",
+                "ld15iqr": 0.0037502911873161793,
+                "hd15iqr": 0.005072583444416523,
+                "ops": 231.8024157472253,
+                "total": 1.0353645333088934,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[DIXMAANB]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[DIXMAANB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANB()]"
+            },
+            "param": "DIXMAANB",
+            "extra_info": {
+                "problem_name": "DIXMAANB",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0070770420134067535,
+                "max": 0.010919916909188032,
+                "mean": 0.007845937931012336,
+                "stddev": 0.0005660753771521133,
+                "rounds": 139,
+                "median": 0.007809542119503021,
+                "iqr": 0.0006248959107324481,
+                "q1": 0.007441791822202504,
+                "q3": 0.008066687732934952,
+                "iqr_outliers": 7,
+                "stddev_outliers": 38,
+                "outliers": "38;7",
+                "ld15iqr": 0.0070770420134067535,
+                "hd15iqr": 0.009009750094264746,
+                "ops": 127.45448776077346,
+                "total": 1.0905853724107146,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[DIXMAANE1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[DIXMAANE1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANE1()]"
+            },
+            "param": "DIXMAANE1",
+            "extra_info": {
+                "problem_name": "DIXMAANE1",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.003844750113785267,
+                "max": 0.00620895903557539,
+                "mean": 0.00467345343120602,
+                "stddev": 0.0003333350137883533,
+                "rounds": 181,
+                "median": 0.0046317498199641705,
+                "iqr": 0.00042441696859896183,
+                "q1": 0.004435468348674476,
+                "q3": 0.004859885317273438,
+                "iqr_outliers": 1,
+                "stddev_outliers": 54,
+                "outliers": "54;1",
+                "ld15iqr": 0.003844750113785267,
+                "hd15iqr": 0.00620895903557539,
+                "ops": 213.97452969632835,
+                "total": 0.8458950710482895,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[DIXMAANI1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[DIXMAANI1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANI1()]"
+            },
+            "param": "DIXMAANI1",
+            "extra_info": {
+                "problem_name": "DIXMAANI1",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0037017501890659332,
+                "max": 0.021000375039875507,
+                "mean": 0.0051273383051157,
+                "stddev": 0.0016483286223858147,
+                "rounds": 250,
+                "median": 0.004665333312004805,
+                "iqr": 0.0005558342672884464,
+                "q1": 0.004507499746978283,
+                "q3": 0.005063334014266729,
+                "iqr_outliers": 28,
+                "stddev_outliers": 19,
+                "outliers": "19;28",
+                "ld15iqr": 0.0037017501890659332,
+                "hd15iqr": 0.005926040932536125,
+                "ops": 195.03296652032301,
+                "total": 1.281834576278925,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes",
+            "name": "test_jaxhes[EDENSCH]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian[EDENSCH]",
+            "params": {
+                "problem": "UNSERIALIZABLE[EDENSCH()]"
+            },
+            "param": "EDENSCH",
+            "extra_info": {
+                "problem_name": "EDENSCH",
+                "dimensionality": 2000,
+                "implementation": "jax.hessian"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0016507082618772984,
+                "max": 0.00472475029528141,
+                "mean": 0.0018379605083747674,
+                "stddev": 0.0002536994137019155,
+                "rounds": 262,
+                "median": 0.0017545209266245365,
+                "iqr": 0.00017695827409625053,
+                "q1": 0.0017151245847344398,
+                "q3": 0.0018920828588306904,
+                "iqr_outliers": 16,
+                "stddev_outliers": 21,
+                "outliers": "21;16",
+                "ld15iqr": 0.0016507082618772984,
+                "hd15iqr": 0.002175457775592804,
+                "ops": 544.0813311512654,
+                "total": 0.48154565319418907,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[HS110]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[HS110]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HS110()]"
+            },
+            "param": "HS110",
+            "extra_info": {
+                "problem_name": "HS110",
+                "dimensionality": 10,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.916226655244827e-06,
+                "max": 0.00012470781803131104,
+                "mean": 7.548431965953801e-06,
+                "stddev": 4.238834189813504e-06,
+                "rounds": 6579,
+                "median": 6.875023245811462e-06,
+                "iqr": 5.00120222568512e-07,
+                "q1": 6.6659413278102875e-06,
+                "q3": 7.1660615503787994e-06,
+                "iqr_outliers": 456,
+                "stddev_outliers": 223,
+                "outliers": "223;456",
+                "ld15iqr": 5.916226655244827e-06,
+                "hd15iqr": 7.916707545518875e-06,
+                "ops": 132477.84500282537,
+                "total": 0.04966113390401006,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[HART6]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[HART6]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HART6()]"
+            },
+            "param": "HART6",
+            "extra_info": {
+                "problem_name": "HART6",
+                "dimensionality": 6,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 7.791910320520401e-06,
+                "max": 7.295934483408928e-05,
+                "mean": 9.823737100599764e-06,
+                "stddev": 3.7272333150228003e-06,
+                "rounds": 11484,
+                "median": 8.999835699796677e-06,
+                "iqr": 7.916241884231567e-07,
+                "q1": 8.66735354065895e-06,
+                "q3": 9.458977729082108e-06,
+                "iqr_outliers": 1049,
+                "stddev_outliers": 500,
+                "outliers": "500;1049",
+                "ld15iqr": 7.791910320520401e-06,
+                "hd15iqr": 1.0665971785783768e-05,
+                "ops": 101794.25505380712,
+                "total": 0.11281579686328769,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[QING]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[QING]",
+            "params": {
+                "problem": "UNSERIALIZABLE[QING()]"
+            },
+            "param": "QING",
+            "extra_info": {
+                "problem_name": "QING",
+                "dimensionality": 100,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.0833144187927246e-05,
+                "max": 9.345775470137596e-05,
+                "mean": 2.2447873300439874e-05,
+                "stddev": 4.694929963007654e-06,
+                "rounds": 12780,
+                "median": 2.208305522799492e-05,
+                "iqr": 3.375113010406494e-06,
+                "q1": 2.0041130483150482e-05,
+                "q3": 2.3416243493556976e-05,
+                "iqr_outliers": 1146,
+                "stddev_outliers": 2020,
+                "outliers": "2020;1146",
+                "ld15iqr": 1.4999881386756897e-05,
+                "hd15iqr": 2.8499867767095566e-05,
+                "ops": 44547.64986491636,
+                "total": 0.2868838207796216,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[CHNROSNB]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[CHNROSNB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CHNROSNB()]"
+            },
+            "param": "CHNROSNB",
+            "extra_info": {
+                "problem_name": "CHNROSNB",
+                "dimensionality": 50,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.041039109230042e-06,
+                "max": 0.00010195793583989143,
+                "mean": 1.1701792632197301e-05,
+                "stddev": 5.065364207040552e-06,
+                "rounds": 12245,
+                "median": 1.0082963854074478e-05,
+                "iqr": 8.749775588512421e-07,
+                "q1": 9.750016033649445e-06,
+                "q3": 1.0624993592500687e-05,
+                "iqr_outliers": 2125,
+                "stddev_outliers": 1221,
+                "outliers": "1221;2125",
+                "ld15iqr": 8.457805961370468e-06,
+                "hd15iqr": 1.1957716196775436e-05,
+                "ops": 85456.99205509038,
+                "total": 0.14328845078125596,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[DUAL1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[DUAL1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL1()]"
+            },
+            "param": "DUAL1",
+            "extra_info": {
+                "problem_name": "DUAL1",
+                "dimensionality": 85,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.958136171102524e-06,
+                "max": 9.195879101753235e-05,
+                "mean": 6.604250477712595e-06,
+                "stddev": 1.4671576935584699e-06,
+                "rounds": 11327,
+                "median": 6.458256393671036e-06,
+                "iqr": 3.3294782042503357e-07,
+                "q1": 6.250105798244476e-06,
+                "q3": 6.58305361866951e-06,
+                "iqr_outliers": 709,
+                "stddev_outliers": 374,
+                "outliers": "374;709",
+                "ld15iqr": 5.958136171102524e-06,
+                "hd15iqr": 7.082708179950714e-06,
+                "ops": 151417.63677418145,
+                "total": 0.07480634516105056,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[DUAL3]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[DUAL3]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL3()]"
+            },
+            "param": "DUAL3",
+            "extra_info": {
+                "problem_name": "DUAL3",
+                "dimensionality": 111,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 6.916932761669159e-06,
+                "max": 5.870824679732323e-05,
+                "mean": 7.513335243080578e-06,
+                "stddev": 1.1433167567458063e-06,
+                "rounds": 12726,
+                "median": 7.292255759239197e-06,
+                "iqr": 1.6624107956886292e-07,
+                "q1": 7.2089023888111115e-06,
+                "q3": 7.375143468379974e-06,
+                "iqr_outliers": 1494,
+                "stddev_outliers": 687,
+                "outliers": "687;1494",
+                "ld15iqr": 6.9998204708099365e-06,
+                "hd15iqr": 7.624737918376923e-06,
+                "ops": 133096.68311698883,
+                "total": 0.09561470430344343,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[LEVYMONT]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[LEVYMONT]",
+            "params": {
+                "problem": "UNSERIALIZABLE[LEVYMONT()]"
+            },
+            "param": "LEVYMONT",
+            "extra_info": {
+                "problem_name": "LEVYMONT",
+                "dimensionality": 100,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 9.462470188736916e-05,
+                "max": 0.00019075023010373116,
+                "mean": 0.00010323262274089205,
+                "stddev": 7.118096728351721e-06,
+                "rounds": 4739,
+                "median": 0.00010112486779689789,
+                "iqr": 7.834169082343578e-06,
+                "q1": 9.820808190852404e-05,
+                "q3": 0.00010604225099086761,
+                "iqr_outliers": 189,
+                "stddev_outliers": 631,
+                "outliers": "631;189",
+                "ld15iqr": 9.462470188736916e-05,
+                "hd15iqr": 0.00011783279478549957,
+                "ops": 9686.860349464749,
+                "total": 0.4892193991690874,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[ARGTRIGLS]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[ARGTRIGLS]",
+            "params": {
+                "problem": "UNSERIALIZABLE[ARGTRIGLS()]"
+            },
+            "param": "ARGTRIGLS",
+            "extra_info": {
+                "problem_name": "ARGTRIGLS",
+                "dimensionality": 200,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.00016733258962631226,
+                "max": 0.0006095832213759422,
+                "mean": 0.00020941733713059787,
+                "stddev": 2.3574799542767648e-05,
+                "rounds": 3481,
+                "median": 0.00020783301442861557,
+                "iqr": 1.7052050679922104e-05,
+                "q1": 0.0001989477314054966,
+                "q3": 0.0002159997820854187,
+                "iqr_outliers": 123,
+                "stddev_outliers": 372,
+                "outliers": "372;123",
+                "ld15iqr": 0.000174790620803833,
+                "hd15iqr": 0.0002415827475488186,
+                "ops": 4775.153832542408,
+                "total": 0.7289817505516112,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[GENROSE]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[GENROSE]",
+            "params": {
+                "problem": "UNSERIALIZABLE[GENROSE()]"
+            },
+            "param": "GENROSE",
+            "extra_info": {
+                "problem_name": "GENROSE",
+                "dimensionality": 500,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.00011233286932110786,
+                "max": 0.0021339580416679382,
+                "mean": 0.00017288551715337493,
+                "stddev": 7.251411746416371e-05,
+                "rounds": 2051,
+                "median": 0.00015416694805026054,
+                "iqr": 6.090605165809393e-05,
+                "q1": 0.00013809418305754662,
+                "q3": 0.00019900023471564054,
+                "iqr_outliers": 33,
+                "stddev_outliers": 57,
+                "outliers": "57;33",
+                "ld15iqr": 0.00011233286932110786,
+                "hd15iqr": 0.00029237521812319756,
+                "ops": 5784.174501516241,
+                "total": 0.35458819568157196,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[FLETCHCR]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[FLETCHCR]",
+            "params": {
+                "problem": "UNSERIALIZABLE[FLETCHCR()]"
+            },
+            "param": "FLETCHCR",
+            "extra_info": {
+                "problem_name": "FLETCHCR",
+                "dimensionality": 1000,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0010868748649954796,
+                "max": 0.0022205831483006477,
+                "mean": 0.0014698041000558981,
+                "stddev": 0.0001943368246985845,
+                "rounds": 521,
+                "median": 0.0014774580486118793,
+                "iqr": 0.00023265602067112923,
+                "q1": 0.0013412293046712875,
+                "q3": 0.0015738853253424168,
+                "iqr_outliers": 13,
+                "stddev_outliers": 151,
+                "outliers": "151;13",
+                "ld15iqr": 0.0010868748649954796,
+                "hd15iqr": 0.0019445843063294888,
+                "ops": 680.3627775714933,
+                "total": 0.765767936129123,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[CMPC1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[CMPC1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC1()]"
+            },
+            "param": "CMPC1",
+            "extra_info": {
+                "problem_name": "CMPC1",
+                "dimensionality": 2550,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0014954591169953346,
+                "max": 0.005607999861240387,
+                "mean": 0.0019375899739367825,
+                "stddev": 0.0004075624947354101,
+                "rounds": 457,
+                "median": 0.0018440000712871552,
+                "iqr": 0.00010414561256766319,
+                "q1": 0.0017919271485880017,
+                "q3": 0.001896072761155665,
+                "iqr_outliers": 79,
+                "stddev_outliers": 41,
+                "outliers": "41;79",
+                "ld15iqr": 0.0016471249982714653,
+                "hd15iqr": 0.0020592077635228634,
+                "ops": 516.105065287991,
+                "total": 0.8854786180891097,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[CMPC2]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[CMPC2]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC2()]"
+            },
+            "param": "CMPC2",
+            "extra_info": {
+                "problem_name": "CMPC2",
+                "dimensionality": 1530,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0005577909760177135,
+                "max": 0.0013537909835577011,
+                "mean": 0.0006610400900574385,
+                "stddev": 5.0806156061793616e-05,
+                "rounds": 1130,
+                "median": 0.0006490836385637522,
+                "iqr": 4.5583583414554596e-05,
+                "q1": 0.0006316662766039371,
+                "q3": 0.0006772498600184917,
+                "iqr_outliers": 54,
+                "stddev_outliers": 119,
+                "outliers": "119;54",
+                "ld15iqr": 0.0005696252919733524,
+                "hd15iqr": 0.0007489579729735851,
+                "ops": 1512.7675538001167,
+                "total": 0.7469753017649055,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[DIXMAANB]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[DIXMAANB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANB()]"
+            },
+            "param": "DIXMAANB",
+            "extra_info": {
+                "problem_name": "DIXMAANB",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.04876595875248313,
+                "max": 0.05060591595247388,
+                "mean": 0.04929703758098185,
+                "stddev": 0.0004777756923868938,
+                "rounds": 20,
+                "median": 0.049111333675682545,
+                "iqr": 0.0006252285093069077,
+                "q1": 0.0489510630723089,
+                "q3": 0.049576291581615806,
+                "iqr_outliers": 1,
+                "stddev_outliers": 3,
+                "outliers": "3;1",
+                "ld15iqr": 0.04876595875248313,
+                "hd15iqr": 0.05060591595247388,
+                "ops": 20.28519458917318,
+                "total": 0.985940751619637,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[DIXMAANE1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[DIXMAANE1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANE1()]"
+            },
+            "param": "DIXMAANE1",
+            "extra_info": {
+                "problem_name": "DIXMAANE1",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.02493375027552247,
+                "max": 0.027905083261430264,
+                "mean": 0.025920524127095154,
+                "stddev": 0.000704838418902994,
+                "rounds": 38,
+                "median": 0.02571408310905099,
+                "iqr": 0.0009336667135357857,
+                "q1": 0.025421583093702793,
+                "q3": 0.02635524980723858,
+                "iqr_outliers": 1,
+                "stddev_outliers": 11,
+                "outliers": "11;1",
+                "ld15iqr": 0.02493375027552247,
+                "hd15iqr": 0.027905083261430264,
+                "ops": 38.57946680000515,
+                "total": 0.9849799168296158,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[DIXMAANI1]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[DIXMAANI1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANI1()]"
+            },
+            "param": "DIXMAANI1",
+            "extra_info": {
+                "problem_name": "DIXMAANI1",
+                "dimensionality": 3000,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.02515770820900798,
+                "max": 0.027688167057931423,
+                "mean": 0.025686278951187164,
+                "stddev": 0.000493265107791833,
+                "rounds": 39,
+                "median": 0.02557962527498603,
+                "iqr": 0.0004526047268882394,
+                "q1": 0.02537816669791937,
+                "q3": 0.025830771424807608,
+                "iqr_outliers": 2,
+                "stddev_outliers": 7,
+                "outliers": "7;2",
+                "ld15iqr": 0.02515770820900798,
+                "hd15iqr": 0.026847708970308304,
+                "ops": 38.931290978360344,
+                "total": 1.0017648790962994,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "jaxhes_folded",
+            "name": "test_jaxhes_folded[EDENSCH]",
+            "fullname": "benchmarks/test_curated.py::test_jax_hessian_folded[EDENSCH]",
+            "params": {
+                "problem": "UNSERIALIZABLE[EDENSCH()]"
+            },
+            "param": "EDENSCH",
+            "extra_info": {
+                "problem_name": "EDENSCH",
+                "dimensionality": 2000,
+                "implementation": "jax.hessian (folded)"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.014362833928316832,
+                "max": 0.015669959131628275,
+                "mean": 0.014899668201585026,
+                "stddev": 0.0003168654872743488,
+                "rounds": 51,
+                "median": 0.014857749920338392,
+                "iqr": 0.00044587417505681515,
+                "q1": 0.01466390653513372,
+                "q3": 0.015109780710190535,
+                "iqr_outliers": 0,
+                "stddev_outliers": 16,
+                "outliers": "16;0",
+                "ld15iqr": 0.014362833928316832,
+                "hd15iqr": 0.015669959131628275,
+                "ops": 67.11558851314689,
+                "total": 0.7598830782808363,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[HS110]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[HS110]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HS110()]"
+            },
+            "param": "HS110",
+            "extra_info": {
+                "problem_name": "HS110",
+                "dimensionality": 10,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.83333894610405e-06,
+                "max": 0.00010058283805847168,
+                "mean": 1.9024986137767205e-05,
+                "stddev": 1.0800111787742242e-05,
+                "rounds": 17292,
+                "median": 1.6666948795318604e-05,
+                "iqr": 2.2459309548139572e-05,
+                "q1": 6.9998204708099365e-06,
+                "q3": 2.945913001894951e-05,
+                "iqr_outliers": 14,
+                "stddev_outliers": 9809,
+                "outliers": "9809;14",
+                "ld15iqr": 5.83333894610405e-06,
+                "hd15iqr": 6.487499922513962e-05,
+                "ops": 52562.45616993449,
+                "total": 0.3289800602942705,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[HART6]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[HART6]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HART6()]"
+            },
+            "param": "HART6",
+            "extra_info": {
+                "problem_name": "HART6",
+                "dimensionality": 6,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 7.91577622294426e-06,
+                "max": 0.000161709263920784,
+                "mean": 1.496504659594641e-05,
+                "stddev": 1.107543363920125e-05,
+                "rounds": 18086,
+                "median": 9.708106517791748e-06,
+                "iqr": 2.5830231606960297e-06,
+                "q1": 9.125098586082458e-06,
+                "q3": 1.1708121746778488e-05,
+                "iqr_outliers": 3746,
+                "stddev_outliers": 3192,
+                "outliers": "3192;3746",
+                "ld15iqr": 7.91577622294426e-06,
+                "hd15iqr": 1.5583354979753494e-05,
+                "ops": 66822.37797180467,
+                "total": 0.2706578327342868,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[QING]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[QING]",
+            "params": {
+                "problem": "UNSERIALIZABLE[QING()]"
+            },
+            "param": "QING",
+            "extra_info": {
+                "problem_name": "QING",
+                "dimensionality": 100,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 7.041729986667633e-06,
+                "max": 5.179131403565407e-05,
+                "mean": 7.686753195232614e-06,
+                "stddev": 1.3240234324764082e-06,
+                "rounds": 72073,
+                "median": 7.4999406933784485e-06,
+                "iqr": 2.919696271419525e-07,
+                "q1": 7.416121661663055e-06,
+                "q3": 7.708091288805008e-06,
+                "iqr_outliers": 1876,
+                "stddev_outliers": 1384,
+                "outliers": "1384;1876",
+                "ld15iqr": 7.041729986667633e-06,
+                "hd15iqr": 8.165836334228516e-06,
+                "ops": 130093.93883235486,
+                "total": 0.5540073630400002,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[CHNROSNB]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[CHNROSNB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CHNROSNB()]"
+            },
+            "param": "CHNROSNB",
+            "extra_info": {
+                "problem_name": "CHNROSNB",
+                "dimensionality": 50,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.832873284816742e-06,
+                "max": 0.00010129064321517944,
+                "mean": 8.077250920109296e-06,
+                "stddev": 4.414398217764785e-06,
+                "rounds": 33195,
+                "median": 6.541144102811813e-06,
+                "iqr": 6.249174475669861e-07,
+                "q1": 6.332993507385254e-06,
+                "q3": 6.95791095495224e-06,
+                "iqr_outliers": 5809,
+                "stddev_outliers": 4173,
+                "outliers": "4173;5809",
+                "ld15iqr": 5.832873284816742e-06,
+                "hd15iqr": 7.91577622294426e-06,
+                "ops": 123804.49857146057,
+                "total": 0.2681243442930281,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[DUAL1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[DUAL1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL1()]"
+            },
+            "param": "DUAL1",
+            "extra_info": {
+                "problem_name": "DUAL1",
+                "dimensionality": 85,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 5.832873284816742e-06,
+                "max": 7.89170153439045e-05,
+                "mean": 6.339172608129091e-06,
+                "stddev": 7.784671421888954e-07,
+                "rounds": 51722,
+                "median": 6.249640136957169e-06,
+                "iqr": 1.2479722499847412e-07,
+                "q1": 6.167218089103699e-06,
+                "q3": 6.292015314102173e-06,
+                "iqr_outliers": 3493,
+                "stddev_outliers": 1627,
+                "outliers": "1627;3493",
+                "ld15iqr": 5.999580025672913e-06,
+                "hd15iqr": 6.4997002482414246e-06,
+                "ops": 157749.29345158412,
+                "total": 0.3278746856376529,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[DUAL3]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[DUAL3]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL3()]"
+            },
+            "param": "DUAL3",
+            "extra_info": {
+                "problem_name": "DUAL3",
+                "dimensionality": 111,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 6.874557584524155e-06,
+                "max": 5.245814099907875e-05,
+                "mean": 7.232059678719091e-06,
+                "stddev": 9.256050160950097e-07,
+                "rounds": 60452,
+                "median": 7.124617695808411e-06,
+                "iqr": 1.2479722499847412e-07,
+                "q1": 7.042195647954941e-06,
+                "q3": 7.166992872953415e-06,
+                "iqr_outliers": 2185,
+                "stddev_outliers": 1341,
+                "outliers": "1341;2185",
+                "ld15iqr": 6.874557584524155e-06,
+                "hd15iqr": 7.374677807092667e-06,
+                "ops": 138273.1952479014,
+                "total": 0.4371924716979265,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[LEVYMONT]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[LEVYMONT]",
+            "params": {
+                "problem": "UNSERIALIZABLE[LEVYMONT()]"
+            },
+            "param": "LEVYMONT",
+            "extra_info": {
+                "problem_name": "LEVYMONT",
+                "dimensionality": 100,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.3040844351053238e-05,
+                "max": 0.00010429089888930321,
+                "mean": 3.181776483903105e-05,
+                "stddev": 4.699254161993395e-06,
+                "rounds": 20392,
+                "median": 3.216695040464401e-05,
+                "iqr": 2.7082860469818115e-06,
+                "q1": 3.116670995950699e-05,
+                "q3": 3.38749960064888e-05,
+                "iqr_outliers": 3058,
+                "stddev_outliers": 3801,
+                "outliers": "3801;3058",
+                "ld15iqr": 2.7124769985675812e-05,
+                "hd15iqr": 3.795791417360306e-05,
+                "ops": 31428.983307252744,
+                "total": 0.6488278605975211,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[ARGTRIGLS]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[ARGTRIGLS]",
+            "params": {
+                "problem": "UNSERIALIZABLE[ARGTRIGLS()]"
+            },
+            "param": "ARGTRIGLS",
+            "extra_info": {
+                "problem_name": "ARGTRIGLS",
+                "dimensionality": 200,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0002770419232547283,
+                "max": 0.0005025826394557953,
+                "mean": 0.00031389778471813557,
+                "stddev": 1.679347419785189e-05,
+                "rounds": 2982,
+                "median": 0.00031062494963407516,
+                "iqr": 1.766672357916832e-05,
+                "q1": 0.00030362512916326523,
+                "q3": 0.00032129185274243355,
+                "iqr_outliers": 52,
+                "stddev_outliers": 405,
+                "outliers": "405;52",
+                "ld15iqr": 0.00028520915657281876,
+                "hd15iqr": 0.00034837517887353897,
+                "ops": 3185.7504215837325,
+                "total": 0.9360431940294802,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[GENROSE]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[GENROSE]",
+            "params": {
+                "problem": "UNSERIALIZABLE[GENROSE()]"
+            },
+            "param": "GENROSE",
+            "extra_info": {
+                "problem_name": "GENROSE",
+                "dimensionality": 500,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 3.3833086490631104e-05,
+                "max": 0.0003397916443645954,
+                "mean": 7.898347080036953e-05,
+                "stddev": 2.939514912756054e-05,
+                "rounds": 3948,
+                "median": 6.977049633860588e-05,
+                "iqr": 1.6292091459035873e-05,
+                "q1": 6.200000643730164e-05,
+                "q3": 7.829209789633751e-05,
+                "iqr_outliers": 665,
+                "stddev_outliers": 811,
+                "outliers": "811;665",
+                "ld15iqr": 3.816699609160423e-05,
+                "hd15iqr": 0.00010483385995030403,
+                "ops": 12660.876888121275,
+                "total": 0.3118267427198589,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[FLETCHCR]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[FLETCHCR]",
+            "params": {
+                "problem": "UNSERIALIZABLE[FLETCHCR()]"
+            },
+            "param": "FLETCHCR",
+            "extra_info": {
+                "problem_name": "FLETCHCR",
+                "dimensionality": 1000,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0002726246602833271,
+                "max": 0.001000833697617054,
+                "mean": 0.0003648331217110004,
+                "stddev": 3.5951070062114607e-05,
+                "rounds": 2728,
+                "median": 0.0003608334809541702,
+                "iqr": 1.937616616487503e-05,
+                "q1": 0.0003518329467624426,
+                "q3": 0.0003712091129273176,
+                "iqr_outliers": 213,
+                "stddev_outliers": 229,
+                "outliers": "229;213",
+                "ld15iqr": 0.0003232499584555626,
+                "hd15iqr": 0.0004002917557954788,
+                "ops": 2740.979205260157,
+                "total": 0.9952647560276091,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[CMPC1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[CMPC1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC1()]"
+            },
+            "param": "CMPC1",
+            "extra_info": {
+                "problem_name": "CMPC1",
+                "dimensionality": 2550,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0014917082153260708,
+                "max": 0.0022301250137388706,
+                "mean": 0.0018133671239834942,
+                "stddev": 0.0001085144869979374,
+                "rounds": 511,
+                "median": 0.0018278746865689754,
+                "iqr": 0.0001139896921813488,
+                "q1": 0.0017482811817899346,
+                "q3": 0.0018622708739712834,
+                "iqr_outliers": 32,
+                "stddev_outliers": 127,
+                "outliers": "127;32",
+                "ld15iqr": 0.0015779170207679272,
+                "hd15iqr": 0.0020356252789497375,
+                "ops": 551.4603120206906,
+                "total": 0.9266306003555655,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[CMPC2]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[CMPC2]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC2()]"
+            },
+            "param": "CMPC2",
+            "extra_info": {
+                "problem_name": "CMPC2",
+                "dimensionality": 1530,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.0006001251749694347,
+                "max": 0.0011607920750975609,
+                "mean": 0.0006937351631254028,
+                "stddev": 5.9882434069808106e-05,
+                "rounds": 1257,
+                "median": 0.0006769169121980667,
+                "iqr": 5.1250215619802475e-05,
+                "q1": 0.000659239711239934,
+                "q3": 0.0007104899268597364,
+                "iqr_outliers": 77,
+                "stddev_outliers": 119,
+                "outliers": "119;77",
+                "ld15iqr": 0.0006001251749694347,
+                "hd15iqr": 0.0007893750444054604,
+                "ops": 1441.472269467816,
+                "total": 0.8720251000486314,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[DIXMAANB]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[DIXMAANB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANB()]"
+            },
+            "param": "DIXMAANB",
+            "extra_info": {
+                "problem_name": "DIXMAANB",
+                "dimensionality": 3000,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.002261541783809662,
+                "max": 0.008074500132352114,
+                "mean": 0.0028776723925505628,
+                "stddev": 0.0003244111606426155,
+                "rounds": 356,
+                "median": 0.0027986045461148024,
+                "iqr": 0.00023479131050407887,
+                "q1": 0.0027472295332700014,
+                "q3": 0.0029820208437740803,
+                "iqr_outliers": 9,
+                "stddev_outliers": 18,
+                "outliers": "18;9",
+                "ld15iqr": 0.002556332852691412,
+                "hd15iqr": 0.003355999942868948,
+                "ops": 347.503073174244,
+                "total": 1.0244513717480004,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[DIXMAANE1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[DIXMAANE1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANE1()]"
+            },
+            "param": "DIXMAANE1",
+            "extra_info": {
+                "problem_name": "DIXMAANE1",
+                "dimensionality": 3000,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.002625875174999237,
+                "max": 0.0034770830534398556,
+                "mean": 0.0028212490668963817,
+                "stddev": 0.00014339064940822866,
+                "rounds": 357,
+                "median": 0.0027589998207986355,
+                "iqr": 0.0002073858631774783,
+                "q1": 0.002721030730754137,
+                "q3": 0.0029284165939316154,
+                "iqr_outliers": 4,
+                "stddev_outliers": 78,
+                "outliers": "78;4",
+                "ld15iqr": 0.002625875174999237,
+                "hd15iqr": 0.0032407501712441444,
+                "ops": 354.45293070139553,
+                "total": 1.0071859168820083,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[DIXMAANI1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[DIXMAANI1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANI1()]"
+            },
+            "param": "DIXMAANI1",
+            "extra_info": {
+                "problem_name": "DIXMAANI1",
+                "dimensionality": 3000,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.002202874980866909,
+                "max": 0.0034044161438941956,
+                "mean": 0.0028385538363465417,
+                "stddev": 0.00015870713871897664,
+                "rounds": 343,
+                "median": 0.0027834163047373295,
+                "iqr": 0.00022912537679076195,
+                "q1": 0.00272815627977252,
+                "q3": 0.002957281656563282,
+                "iqr_outliers": 6,
+                "stddev_outliers": 74,
+                "outliers": "74;6",
+                "ld15iqr": 0.0025486662052571774,
+                "hd15iqr": 0.0033215833827853203,
+                "ops": 352.2920675998467,
+                "total": 0.9736239658668637,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_dense",
+            "name": "test_asdex_dense[EDENSCH]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_dense[EDENSCH]",
+            "params": {
+                "problem": "UNSERIALIZABLE[EDENSCH()]"
+            },
+            "param": "EDENSCH",
+            "extra_info": {
+                "problem_name": "EDENSCH",
+                "dimensionality": 2000,
+                "implementation": "asdex_dense"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.001061000395566225,
+                "max": 0.002864749636501074,
+                "mean": 0.001265458926996764,
+                "stddev": 0.00014908025153282842,
+                "rounds": 782,
+                "median": 0.0012288126163184643,
+                "iqr": 0.000126624945551157,
+                "q1": 0.0011852500028908253,
+                "q3": 0.0013118749484419823,
+                "iqr_outliers": 35,
+                "stddev_outliers": 84,
+                "outliers": "84;35",
+                "ld15iqr": 0.001061000395566225,
+                "hd15iqr": 0.001517707947641611,
+                "ops": 790.2271489547579,
+                "total": 0.9895888809114695,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[HS110]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[HS110]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HS110()]"
+            },
+            "param": "HS110",
+            "extra_info": {
+                "problem_name": "HS110",
+                "dimensionality": 10,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.875038474798203e-06,
+                "max": 0.00012516696006059647,
+                "mean": 2.4142031708286713e-05,
+                "stddev": 1.0603958563750341e-05,
+                "rounds": 25105,
+                "median": 3.1041912734508514e-05,
+                "iqr": 1.779245212674141e-05,
+                "q1": 1.5082769095897675e-05,
+                "q3": 3.2875221222639084e-05,
+                "iqr_outliers": 26,
+                "stddev_outliers": 8594,
+                "outliers": "8594;26",
+                "ld15iqr": 8.875038474798203e-06,
+                "hd15iqr": 5.983375012874603e-05,
+                "ops": 41421.53452879244,
+                "total": 0.6060857060365379,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[HART6]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[HART6]",
+            "params": {
+                "problem": "UNSERIALIZABLE[HART6()]"
+            },
+            "param": "HART6",
+            "extra_info": {
+                "problem_name": "HART6",
+                "dimensionality": 6,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.0500196367502213e-05,
+                "max": 0.00015158392488956451,
+                "mean": 2.8786168083799417e-05,
+                "stddev": 8.511476773332791e-06,
+                "rounds": 20017,
+                "median": 2.9041897505521774e-05,
+                "iqr": 8.123926818370819e-06,
+                "q1": 2.5167129933834076e-05,
+                "q3": 3.3291056752204895e-05,
+                "iqr_outliers": 1803,
+                "stddev_outliers": 4963,
+                "outliers": "4963;1803",
+                "ld15iqr": 1.2999866157770157e-05,
+                "hd15iqr": 4.54997643828392e-05,
+                "ops": 34738.90644593264,
+                "total": 0.5762127265334129,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[QING]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[QING]",
+            "params": {
+                "problem": "UNSERIALIZABLE[QING()]"
+            },
+            "param": "QING",
+            "extra_info": {
+                "problem_name": "QING",
+                "dimensionality": 100,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.457805961370468e-06,
+                "max": 7.708277553319931e-05,
+                "mean": 9.152278307464534e-06,
+                "stddev": 1.6552227139502998e-06,
+                "rounds": 56469,
+                "median": 9.000301361083984e-06,
+                "iqr": 2.9103830456733704e-07,
+                "q1": 8.875038474798203e-06,
+                "q3": 9.16607677936554e-06,
+                "iqr_outliers": 1576,
+                "stddev_outliers": 869,
+                "outliers": "869;1576",
+                "ld15iqr": 8.457805961370468e-06,
+                "hd15iqr": 9.624753147363663e-06,
+                "ops": 109262.41165376353,
+                "total": 0.5168200037442148,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[CHNROSNB]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[CHNROSNB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CHNROSNB()]"
+            },
+            "param": "CHNROSNB",
+            "extra_info": {
+                "problem_name": "CHNROSNB",
+                "dimensionality": 50,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.707866072654724e-06,
+                "max": 8.712522685527802e-05,
+                "mean": 1.1830211491278195e-05,
+                "stddev": 5.227070243661549e-06,
+                "rounds": 30189,
+                "median": 9.417068213224411e-06,
+                "iqr": 4.5406632125377655e-06,
+                "q1": 9.125098586082458e-06,
+                "q3": 1.3665761798620224e-05,
+                "iqr_outliers": 1941,
+                "stddev_outliers": 2294,
+                "outliers": "2294;1941",
+                "ld15iqr": 8.707866072654724e-06,
+                "hd15iqr": 2.0499806851148605e-05,
+                "ops": 84529.3425850627,
+                "total": 0.35714225471019745,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[DUAL1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[DUAL1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL1()]"
+            },
+            "param": "DUAL1",
+            "extra_info": {
+                "problem_name": "DUAL1",
+                "dimensionality": 85,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.0791700333356857e-05,
+                "max": 5.39170578122139e-05,
+                "mean": 1.154129683696453e-05,
+                "stddev": 9.709657126359517e-07,
+                "rounds": 41026,
+                "median": 1.1333730071783066e-05,
+                "iqr": 2.0815059542655945e-07,
+                "q1": 1.1249911040067673e-05,
+                "q3": 1.1458061635494232e-05,
+                "iqr_outliers": 4665,
+                "stddev_outliers": 1991,
+                "outliers": "1991;4665",
+                "ld15iqr": 1.095794141292572e-05,
+                "hd15iqr": 1.1791009455919266e-05,
+                "ops": 86645.37565632958,
+                "total": 0.47349324403330684,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[DUAL3]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[DUAL3]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DUAL3()]"
+            },
+            "param": "DUAL3",
+            "extra_info": {
+                "problem_name": "DUAL3",
+                "dimensionality": 111,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.1916738003492355e-05,
+                "max": 4.691584035754204e-05,
+                "mean": 1.264256779697162e-05,
+                "stddev": 1.1814804088407722e-06,
+                "rounds": 38278,
+                "median": 1.2416858226060867e-05,
+                "iqr": 1.6577541828155518e-07,
+                "q1": 1.233397051692009e-05,
+                "q3": 1.2499745935201645e-05,
+                "iqr_outliers": 2873,
+                "stddev_outliers": 1686,
+                "outliers": "1686;2873",
+                "ld15iqr": 1.2124888598918915e-05,
+                "hd15iqr": 1.2749806046485901e-05,
+                "ops": 79097.85544037489,
+                "total": 0.48393221013247967,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[LEVYMONT]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[LEVYMONT]",
+            "params": {
+                "problem": "UNSERIALIZABLE[LEVYMONT()]"
+            },
+            "param": "LEVYMONT",
+            "extra_info": {
+                "problem_name": "LEVYMONT",
+                "dimensionality": 100,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.1917203664779663e-05,
+                "max": 9.950017556548119e-05,
+                "mean": 2.8679314851380595e-05,
+                "stddev": 8.448134155827367e-06,
+                "rounds": 13715,
+                "median": 3.233412280678749e-05,
+                "iqr": 6.500165909528732e-06,
+                "q1": 2.7041882276535034e-05,
+                "q3": 3.3542048186063766e-05,
+                "iqr_outliers": 2724,
+                "stddev_outliers": 3398,
+                "outliers": "3398;2724",
+                "ld15iqr": 1.750001683831215e-05,
+                "hd15iqr": 4.337495192885399e-05,
+                "ops": 34868.336471150425,
+                "total": 0.39333680318668485,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[ARGTRIGLS]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[ARGTRIGLS]",
+            "params": {
+                "problem": "UNSERIALIZABLE[ARGTRIGLS()]"
+            },
+            "param": "ARGTRIGLS",
+            "extra_info": {
+                "problem_name": "ARGTRIGLS",
+                "dimensionality": 200,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 0.00023837527260184288,
+                "max": 0.00037970906123518944,
+                "mean": 0.00027952652310700394,
+                "stddev": 1.2461775558640361e-05,
+                "rounds": 3206,
+                "median": 0.0002775834873318672,
+                "iqr": 1.533282920718193e-05,
+                "q1": 0.0002708751708269119,
+                "q3": 0.00028620800003409386,
+                "iqr_outliers": 69,
+                "stddev_outliers": 828,
+                "outliers": "828;69",
+                "ld15iqr": 0.00024862494319677353,
+                "hd15iqr": 0.0003096656873822212,
+                "ops": 3577.4780471089525,
+                "total": 0.8961620330810547,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[GENROSE]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[GENROSE]",
+            "params": {
+                "problem": "UNSERIALIZABLE[GENROSE()]"
+            },
+            "param": "GENROSE",
+            "extra_info": {
+                "problem_name": "GENROSE",
+                "dimensionality": 500,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.707866072654724e-06,
+                "max": 9.349966421723366e-05,
+                "mean": 1.0588785446392245e-05,
+                "stddev": 4.05374460942506e-06,
+                "rounds": 35928,
+                "median": 9.665731340646744e-06,
+                "iqr": 5.420297384262085e-07,
+                "q1": 9.417068213224411e-06,
+                "q3": 9.95909795165062e-06,
+                "iqr_outliers": 2958,
+                "stddev_outliers": 1846,
+                "outliers": "1846;2958",
+                "ld15iqr": 8.707866072654724e-06,
+                "hd15iqr": 1.0790769010782242e-05,
+                "ops": 94439.53747695537,
+                "total": 0.3804338835179806,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[FLETCHCR]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[FLETCHCR]",
+            "params": {
+                "problem": "UNSERIALIZABLE[FLETCHCR()]"
+            },
+            "param": "FLETCHCR",
+            "extra_info": {
+                "problem_name": "FLETCHCR",
+                "dimensionality": 1000,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 1.237494871020317e-05,
+                "max": 0.00010870909318327904,
+                "mean": 3.0215301275076126e-05,
+                "stddev": 4.661020299611752e-06,
+                "rounds": 27587,
+                "median": 3.062468022108078e-05,
+                "iqr": 1.9166618585586548e-06,
+                "q1": 2.9667280614376068e-05,
+                "q3": 3.158394247293472e-05,
+                "iqr_outliers": 5264,
+                "stddev_outliers": 4136,
+                "outliers": "4136;5264",
+                "ld15iqr": 2.6792287826538086e-05,
+                "hd15iqr": 3.445940092206001e-05,
+                "ops": 33095.81429938863,
+                "total": 0.8335495162755251,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[CMPC1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[CMPC1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC1()]"
+            },
+            "param": "CMPC1",
+            "extra_info": {
+                "problem_name": "CMPC1",
+                "dimensionality": 2550,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.499715477228165e-06,
+                "max": 7.087504491209984e-05,
+                "mean": 8.985577555460823e-06,
+                "stddev": 8.570921907652435e-07,
+                "rounds": 54297,
+                "median": 8.833128958940506e-06,
+                "iqr": 2.0815059542655945e-07,
+                "q1": 8.750241249799728e-06,
+                "q3": 8.958391845226288e-06,
+                "iqr_outliers": 3901,
+                "stddev_outliers": 1530,
+                "outliers": "1530;3901",
+                "ld15iqr": 8.499715477228165e-06,
+                "hd15iqr": 9.290874004364014e-06,
+                "ops": 111289.45177177488,
+                "total": 0.4878899045288563,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[CMPC2]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[CMPC2]",
+            "params": {
+                "problem": "UNSERIALIZABLE[CMPC2()]"
+            },
+            "param": "CMPC2",
+            "extra_info": {
+                "problem_name": "CMPC2",
+                "dimensionality": 1530,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 8.37491825222969e-06,
+                "max": 6.645917892456055e-05,
+                "mean": 9.038699182805756e-06,
+                "stddev": 9.771263264552096e-07,
+                "rounds": 53334,
+                "median": 8.875038474798203e-06,
+                "iqr": 1.6670674085617065e-07,
+                "q1": 8.792150765657425e-06,
+                "q3": 8.958857506513596e-06,
+                "iqr_outliers": 4233,
+                "stddev_outliers": 2105,
+                "outliers": "2105;4233",
+                "ld15iqr": 8.542090654373169e-06,
+                "hd15iqr": 9.20938327908516e-06,
+                "ops": 110635.38898410204,
+                "total": 0.48206998221576214,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[DIXMAANB]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[DIXMAANB]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANB()]"
+            },
+            "param": "DIXMAANB",
+            "extra_info": {
+                "problem_name": "DIXMAANB",
+                "dimensionality": 3000,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 4.4292304664850235e-05,
+                "max": 0.00013295887038111687,
+                "mean": 8.008884321829293e-05,
+                "stddev": 7.61584109802785e-06,
+                "rounds": 8377,
+                "median": 8.166581392288208e-05,
+                "iqr": 8.000177331268787e-06,
+                "q1": 7.65407457947731e-05,
+                "q3": 8.454092312604189e-05,
+                "iqr_outliers": 418,
+                "stddev_outliers": 1936,
+                "outliers": "1936;418",
+                "ld15iqr": 6.454112008213997e-05,
+                "hd15iqr": 9.654229506850243e-05,
+                "ops": 12486.133646285354,
+                "total": 0.6709042396396399,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[DIXMAANE1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[DIXMAANE1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANE1()]"
+            },
+            "param": "DIXMAANE1",
+            "extra_info": {
+                "problem_name": "DIXMAANE1",
+                "dimensionality": 3000,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 2.8166919946670532e-05,
+                "max": 0.00013337517157196999,
+                "mean": 4.630051398924062e-05,
+                "stddev": 4.814546356659373e-06,
+                "rounds": 13699,
+                "median": 4.5666005462408066e-05,
+                "iqr": 2.2919848561286926e-06,
+                "q1": 4.5082997530698776e-05,
+                "q3": 4.737498238682747e-05,
+                "iqr_outliers": 2533,
+                "stddev_outliers": 2420,
+                "outliers": "2420;2533",
+                "ld15iqr": 4.1665975004434586e-05,
+                "hd15iqr": 5.083298310637474e-05,
+                "ops": 21598.03237243503,
+                "total": 0.6342707411386073,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[DIXMAANI1]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[DIXMAANI1]",
+            "params": {
+                "problem": "UNSERIALIZABLE[DIXMAANI1()]"
+            },
+            "param": "DIXMAANI1",
+            "extra_info": {
+                "problem_name": "DIXMAANI1",
+                "dimensionality": 3000,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 2.9957853257656097e-05,
+                "max": 0.00012916699051856995,
+                "mean": 4.6773483002937675e-05,
+                "stddev": 4.032174093886527e-06,
+                "rounds": 16450,
+                "median": 4.624994471669197e-05,
+                "iqr": 1.62515789270401e-06,
+                "q1": 4.583364352583885e-05,
+                "q3": 4.745880141854286e-05,
+                "iqr_outliers": 3234,
+                "stddev_outliers": 2718,
+                "outliers": "2718;3234",
+                "ld15iqr": 4.341593012213707e-05,
+                "hd15iqr": 4.9915630370378494e-05,
+                "ops": 21379.6351222592,
+                "total": 0.7694237953983247,
+                "iterations": 1
+            }
+        },
+        {
+            "group": "asdex_bcoo",
+            "name": "test_asdex_bcoo[EDENSCH]",
+            "fullname": "benchmarks/test_curated.py::test_asdex_bcoo[EDENSCH]",
+            "params": {
+                "problem": "UNSERIALIZABLE[EDENSCH()]"
+            },
+            "param": "EDENSCH",
+            "extra_info": {
+                "problem_name": "EDENSCH",
+                "dimensionality": 2000,
+                "implementation": "asdex_bcoo"
+            },
+            "options": {
+                "disable_gc": false,
+                "timer": "perf_counter",
+                "min_rounds": 5,
+                "max_time": 1.0,
+                "min_time": 5e-06,
+                "warmup": false
+            },
+            "stats": {
+                "min": 2.3541972041130066e-05,
+                "max": 0.00013754097744822502,
+                "mean": 3.983368092588973e-05,
+                "stddev": 4.0235592819065725e-06,
+                "rounds": 15687,
+                "median": 3.974977880716324e-05,
+                "iqr": 2.9586954042315483e-06,
+                "q1": 3.804138395935297e-05,
+                "q3": 4.100007936358452e-05,
+                "iqr_outliers": 1422,
+                "stddev_outliers": 2826,
+                "outliers": "2826;1422",
+                "ld15iqr": 3.3624935895204544e-05,
+                "hd15iqr": 4.5457854866981506e-05,
+                "ops": 25104.38344526815,
+                "total": 0.6248709526844323,
+                "iterations": 1
+            }
+        }
+    ],
+    "datetime": "2026-04-20T14:01:50.883975+00:00",
+    "version": "5.2.3"
+}

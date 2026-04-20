@@ -53,7 +53,10 @@ case "$MODE" in
     ;;
   refs)
     NAME="refs-jax${JAX_VERSION}"
-    SELECT=(benchmarks/test_curated.py -k "test_jax_hessian or test_asdex_dense or test_asdex_bcoo")
+    # jax_hessian (unfolded + folded) and asdex (dense + bcoo). The
+    # folded variant is the "fair headline" comparison; the unfolded one
+    # is kept for visibility into how much EAGER_CONSTANT_FOLDING helps.
+    SELECT=(benchmarks/test_curated.py -k "test_jax_hessian or test_jax_hessian_folded or test_asdex_dense or test_asdex_bcoo")
     ;;
   curated)
     NAME="${SHORT_SHA}_curated"

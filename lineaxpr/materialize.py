@@ -51,6 +51,27 @@ from ._base import (
 materialize_rules: dict[core.Primitive, Callable] = {}
 
 
+def _input_size(invals, traced):
+    """Derive n (walk input dimension) from any traced input.
+
+    Rules that need n should prefer this helper over the `n` arg so they
+    can eventually drop it from their signature. See docs/TODO.md — the
+    `n`-parameter threading is being phased out as rules are touched.
+    """
+    for v, t in zip(invals, traced):
+        if not t:
+            continue
+        if isinstance(v, (ConstantDiagonal, Diagonal)):
+            return v.n
+        if isinstance(v, Pivoted):
+            return v.in_size
+        if isinstance(v, sparse.BCOO):
+            return v.shape[-1]
+        # Traced ndarray fallback: last axis is the input coordinate.
+        return v.shape[-1]
+    raise ValueError("_input_size: no traced input among invals")
+
+
 # -------------------------- rules --------------------------
 
 

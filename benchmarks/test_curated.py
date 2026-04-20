@@ -76,6 +76,16 @@ def _block(out):
     return out
 
 
+def _compile(fn, primal):
+    """Compile `fn.lower(primal).compile()` — helper for _make."""
+    try:
+        compiled = fn.lower(primal).compile()
+        _block(compiled(primal))
+        return compiled
+    except Exception:
+        return None
+
+
 def _make(extractor_kind, problem):
     args_c = problem.args
 
@@ -83,41 +93,57 @@ def _make(extractor_kind, problem):
         return problem.objective(y, args_c)
 
     if extractor_kind == "jaxhes":
+        # jax.hessian WITHOUT eager_constant_folding (off by default) —
+        # constant-H quadratics stay symbolic, pay n HVPs at runtime.
         @jax.jit
         def fn(y): return jax.hessian(f)(y)
-    elif extractor_kind == "mat":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "jaxhes_folded":
+        # jax.hessian WITH eager_constant_folding — the "release config"
+        # that JAX's production uses. For constant-H problems this
+        # folds the entire Hessian to a literal at compile time (at a
+        # possibly large compile-time cost on big sparse H). This is
+        # the fair "vs jax" comparison for release-target users.
+        from jax._src import config
+        @jax.jit
+        def fn(y): return jax.hessian(f)(y)
+        with config.eager_constant_folding(True):
+            return _compile(fn, problem.y0)
+
+    if extractor_kind == "mat":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y)
-    elif extractor_kind == "bcoo":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "bcoo":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return bcoo_jacobian(h, y)
-    elif extractor_kind == "asdex_bcoo":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "asdex_bcoo":
         if not HAS_ASDEX: return None
         try:
             fn = jax.jit(asdex.hessian(f, input_shape=problem.y0.shape,
                                         output_format="bcoo", symmetric=True))
         except Exception:
             return None
-    elif extractor_kind == "asdex_dense":
+        return _compile(fn, problem.y0)
+
+    if extractor_kind == "asdex_dense":
         if not HAS_ASDEX: return None
         try:
             fn = jax.jit(asdex.hessian(f, input_shape=problem.y0.shape,
                                         output_format="dense", symmetric=True))
         except Exception:
             return None
-    else:
-        raise ValueError(extractor_kind)
+        return _compile(fn, problem.y0)
 
-    try:
-        compiled = fn.lower(problem.y0).compile()
-        _block(compiled(problem.y0))
-        return compiled
-    except Exception:
-        return None
+    raise ValueError(extractor_kind)
 
 
 def _run(benchmark, kind, problem, label):
@@ -132,7 +158,23 @@ def _run(benchmark, kind, problem, label):
 
 @pytest.mark.parametrize("problem", PROBLEMS, ids=_id)
 def test_jax_hessian(benchmark, problem):
+    """jax.hessian with eager_constant_folding OFF (default JAX config).
+
+    Kept for visibility — on constant-H problems this does n HVPs per
+    call at runtime. Most release-target users run with folding on; for
+    the fair headline ratio, see `test_jax_hessian_folded`.
+    """
     _run(benchmark, "jaxhes", problem, "jax.hessian")
+
+
+@pytest.mark.parametrize("problem", PROBLEMS, ids=_id)
+def test_jax_hessian_folded(benchmark, problem):
+    """jax.hessian with eager_constant_folding=True (release config).
+
+    The fair "vs jax.hessian" comparison for release-target users.
+    Constant-H quadratics fold to a dense literal at compile time.
+    """
+    _run(benchmark, "jaxhes_folded", problem, "jax.hessian (folded)")
 
 
 @pytest.mark.parametrize("problem", PROBLEMS, ids=_id)
