@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lineaxpr"
+version = "0.0.1"
+description = "Coloring-free Jacobian/Hessian extraction via linear-jaxpr interpretation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Jonathan Brodrick" }]
+dependencies = [
+    "jax>=0.4.30",
+    "numpy",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-benchmark",
+]
+benchmark = [
+    "pytest",
+    "pytest-benchmark",
+    "asdex",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lineaxpr*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "benchmarks"]
