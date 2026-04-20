@@ -101,29 +101,32 @@ case "$MODE" in
     SELECT=(benchmarks/test_full.py -k "$REFS_FILTER")
     ;;
   full-jaxhes)
-    # jax.hessian WITHOUT folding. Fast compile; runtime = n HVPs.
-    # Default DENSE_MAX=2000 matches the lineaxpr bench.
+    # jax.hessian WITHOUT folding. Compile ~60-110ms across all n (fast);
+    # runtime grows with n² on dense-ish problems (BDQRTIC@5000 = 84ms).
+    # Empirical ceiling: 5000 (probe_caps.py run 2026-04-20).
+    export DENSE_MAX="${DENSE_MAX:-5000}"
     NAME="full-jaxhes-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_jax_hessian and not test_jax_hessian_folded")
     ;;
   full-jaxhes-folded)
-    # jax.hessian WITH eager_constant_folding. Folding cost explodes on
-    # constant-H problems (CMPC1 at n=2550 takes 5s to fold). Tighter
-    # cap by default — override DENSE_MAX to extend if you're patient.
-    export DENSE_MAX="${DENSE_MAX:-1200}"
+    # jax.hessian WITH eager_constant_folding. Both compile AND runtime
+    # explode above n≈2000: CMPC1@2550 folding = 5.6s compile,
+    # BDQRTIC@5000 = 17s compile + 157s runtime. Hard cap at 2000.
+    export DENSE_MAX="${DENSE_MAX:-2000}"
     NAME="full-jaxhes-folded-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_jax_hessian_folded")
     ;;
   full-asdex-dense)
-    # asdex dense: coloring cost grows with n; dense output is the
-    # bandwidth-bound floor.
-    export DENSE_MAX="${DENSE_MAX:-1500}"
+    # asdex dense: compile ~30-540ms stable across n; runtime scales
+    # with n² (dense alloc). BDEXP@5000 = 14ms runtime, tolerable.
+    export DENSE_MAX="${DENSE_MAX:-5000}"
     NAME="full-asdex-dense-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_asdex_dense")
     ;;
   full-asdex-bcoo)
-    # asdex bcoo: coloring cost grows with n but output stays sparse.
-    export BCOO_MAX="${BCOO_MAX:-3000}"
+    # asdex bcoo: compile ~20-540ms; runtime stays ~100-250µs across
+    # n=100→5000 (cheapest method by far).
+    export BCOO_MAX="${BCOO_MAX:-5000}"
     NAME="full-asdex-bcoo-jax${JAX_VERSION}"
     SELECT=(benchmarks/test_full.py -k "test_asdex_bcoo")
     ;;

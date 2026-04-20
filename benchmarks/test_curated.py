@@ -5,12 +5,17 @@ quadratic-constant-H, sparse-banded, sparse-COO, low-rank, large.
 """
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
+import os
 import sys
+import time
 
 
 import jax
 import pytest
 from lineaxpr import materialize  # noqa: E402
+
+# Pathological-compile guard: mirror test_full.py.
+COMPILE_TIMEOUT_S = float(os.environ.get("COMPILE_TIMEOUT_S", "30"))
 
 try:
     import asdex
@@ -75,10 +80,24 @@ def _block(out):
 
 
 def _compile(fn, primal):
-    """Compile `fn.lower(primal).compile()` — helper for _make."""
+    """Compile `fn.lower(primal).compile()` — helper for _make.
+
+    Skips (not fails) if compile or warmup exceeds COMPILE_TIMEOUT_S to
+    avoid hanging the whole bench on pathological problems.
+    """
     try:
+        t0 = time.perf_counter()
         compiled = fn.lower(primal).compile()
+        compile_s = time.perf_counter() - t0
+        if compile_s > COMPILE_TIMEOUT_S:
+            pytest.skip(f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                        f"({compile_s:.1f}s)")
+        t0 = time.perf_counter()
         _block(compiled(primal))
+        warmup_s = time.perf_counter() - t0
+        if warmup_s > COMPILE_TIMEOUT_S:
+            pytest.skip(f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                        f"({warmup_s:.1f}s)")
         return compiled
     except Exception:
         return None

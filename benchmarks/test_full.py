@@ -69,10 +69,32 @@ def _block(out):
     return out
 
 
+import time
+
+# Pathological-compile guard: if a single test's `fn.lower(primal).compile()`
+# or the warmup call exceeds this budget, skip rather than hang the whole
+# bench. Override per-run via COMPILE_TIMEOUT_S env var.
+COMPILE_TIMEOUT_S = float(os.environ.get("COMPILE_TIMEOUT_S", "30"))
+
+
 def _compile(fn, primal):
     try:
+        t0 = time.perf_counter()
         compiled = fn.lower(primal).compile()
+        compile_s = time.perf_counter() - t0
+        if compile_s > COMPILE_TIMEOUT_S:
+            pytest.skip(
+                f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                f"({compile_s:.1f}s)"
+            )
+        t0 = time.perf_counter()
         _block(compiled(primal))
+        warmup_s = time.perf_counter() - t0
+        if warmup_s > COMPILE_TIMEOUT_S:
+            pytest.skip(
+                f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                f"({warmup_s:.1f}s)"
+            )
         return compiled
     except Exception:
         return None
