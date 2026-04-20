@@ -2,34 +2,74 @@
 
 Empirically-grounded; see `RESEARCH_NOTES.md` for the reasoning.
 
-## Priority 0 — next up (post-refactor)
+## Priority 0 — next up
 
-### 1. Banded Pivoted via `(out_rows, list[(in_cols, values)])`
+### 1. SPARSINE — static gather densifies (should stay sparse)
 
-**Motivation** (reinforced by `RESEARCH_NOTES.md` §10 monkeypatch): on
-LEVYMONT, pure-BCOO sparsify BEATS us (17µs vs 20µs). We also lose to
-asdex on the same problem (24µs vs 50µs). Banded Hessians are the main
-regression class; BandedPivoted directly addresses it.
+Full sweep flagged **SPARSINE at n=5000: 183ms bcoo_jacobian**. The
+problem uses a static gather rather than slice; `_gather_rule` has
+narrower structural support than `_slice_rule` and hits the dense
+fallback. The output SHOULD be sparse.
 
-**Context**: 15/20 observed `add_any(Pivoted, Pivoted)` cases in our
-benchmark set have **same out_rows, different in_cols** (diagonal +
-off-diagonal band patterns in LEVYMONT, FLETCHCR, DIXMAAN). Current impl
-concatenates entries → `nse` doubles per-row for bandwidth-2 Hessians.
+**Scope**: broaden `_gather_rule`'s `dnums` guard at
+`lineaxpr/materialize.py:_gather_rule` to emit `Ellpack` for the gather
+patterns SPARSINE actually uses (likely non-scalar `slice_sizes` or
+different `offset_dims`/`collapsed_slice_dims`). The `ConstantDiagonal`
+→ `Ellpack` path already handles the 1D indexed case; extend to the
+patterns that currently raise `NotImplementedError`.
 
-**Proposal**: when add_any detects same out_rows with different in_cols,
-produce a "multi-column Pivoted" that stores one out_row array and a list
-of `(in_cols, values)` pairs. Matvec: `sum(v * values[i] for each col)`.
-Densify: scatter per pair.
+**Win**: closes SPARSINE regression; small code change; high leverage.
 
-**Affects**: `_add_rule` (new fast path), new class in `_base.py` with
-`.to_dense`/`.to_bcoo`/`.negate`/`.scale_scalar`/`.scale_per_out_row`
-methods mirroring Pivoted. After the Step-3 method extraction, the only
-rule touch is `_add_rule`.
+### 2. Internal CSR representation for arrowhead / disjoint-row adds
 
-**Win**: ~2× BCOO size reduction on banded Hessians. Closes LEVYMONT
-regression. Moves us closer to CSR-native output.
+**Motivation**: `Ellpack`'s `(start_row, end_row)` + uniform `k` forces
+padding or BCOO promotion when rows have very different entry counts
+(classic arrowhead: one dense row, many unit rows → padded `k = n`).
+Currently `_scatter_add_rule` and mismatched-range `_add_rule` fall
+through to BCOO concat, dropping structural information that downstream
+rules could exploit.
 
-### 2. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
+**Proposal**: add a CSR-shaped LinOp class `Csr(row_ptr, col_ind,
+values, out_size, in_size)` that stays structural through:
+
+- `_scatter_add_rule` with arbitrary scatter targets
+- `_add_rule` with disjoint `(start_row, end_row)` Ellpacks
+- Arrowhead patterns (one dense row stitched onto a banded body)
+
+**Also**: the final conversion path for `materialize(...,
+format='csr')` lands naturally — direct hand-off to cuDSS without a
+reconstruction pass.
+
+**Affects**: new class in `_base.py`, new `_to_csr` helpers,
+`_scatter_add_rule` emits `Csr` instead of BCOO, `_add_rule` gets a
+"mixed-Ellpack → Csr" path, `materialize` accepts `format='csr'`.
+
+**Win**: unlocks arrowhead problems that currently densify; enables
+cuDSS-native output.
+
+## Priority 1 — further structural wins
+
+### 3. Structural upgrades for the remaining "densifying 9"
+
+Per `RESEARCH_NOTES.md` §10 "Densifying vs structure-preserving" audit,
+these rules unconditionally densify but have plausible structural
+alternatives:
+
+- `transpose`: swap `out_rows ↔ in_cols` on Ellpack / swap BCOO index
+  columns (note: only fires on 2D+ output, which doesn't happen in
+  R^n → R^n linearize-of-grad).
+- `reshape`: map linear → multi-dim indices on BCOO when shape is
+  preserved structurally.
+- `reduce_sum`: sum along axis of BCOO → smaller BCOO; Ellpack row-sum
+  → Diagonal.
+- `broadcast_in_dim`: BCOO can broadcast length-1 sparse dims (sparsify
+  already supports this; length-≠1 fails upstream).
+- `split`: partition entries by index along split axis.
+
+Low priority — these rarely fire on the curated set. Revisit if a
+benchmark flags them.
+
+### 4. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
 
 **Motivation**: `experiments/sparsify_monkeypatch.py` provides working
 implementations. 14/16 CUTEst curated compile as pure-BCOO with these
@@ -41,62 +81,9 @@ who don't need lineaxpr's specializations.
 **Scope**: PR to `jax.experimental.sparse.transform` — ~200 LoC, mostly
 mechanical. Out of scope for lineaxpr itself.
 
-## Priority 1 — further structural wins
-
-### 3. Range-based `out_rows` when no scatter has fired
-
-**Context**: before any `scatter_add`, `out_rows` is always a concatenation
-of contiguous ranges (arange(k) + offsets from pad). We currently
-materialize these as full arrays.
-
-**Proposal**: represent `out_rows` as `list[(start, stop)]` until the
-first `scatter_add` forces materialization. Benefits:
-
-- Trace-time state: O(#ranges) vs O(k) ints
-- O(1) equality for same-indices fast path
-- Natural merging of adjacent ranges
-
-**Affects**: `Pivoted` class (new field type), all rules that construct
-or mutate `out_rows`.
-
-**Win**: minor trace-time speedup; enables more accurate same-indices
-detection.
-
-### 4. Static-numpy filter in slice/pad negative-range paths
-
-**Context**: current `slice(Pivoted)` and `pad(Pivoted, negative)` use
-`values * mask` to zero-out-of-range entries but keep them in the Pivoted.
-This bloats `nse` permanently.
-
-**Proposal**: when `out_rows` is static numpy, use `np.nonzero(mask)[0]` to
-actually filter entries. Values array shrinks via `jnp.take(values, keep)`.
-
-**Affects**: `_slice_rule`, `Pivoted.pad_rows`.
-
-**Win**: genuine `nse` compression; real runtime savings downstream.
-
-### 5. Structural upgrades for the remaining "densifying 9"
-
-Per `RESEARCH_NOTES.md` §10 "Densifying vs structure-preserving" audit,
-these rules unconditionally densify but have plausible structural
-alternatives:
-
-- `transpose`: swap `out_rows ↔ in_cols` on Pivoted / swap BCOO index
-  columns (note: only fires on 2D+ output, which doesn't happen in
-  R^n → R^n linearize-of-grad).
-- `reshape`: map linear → multi-dim indices on BCOO when shape is
-  preserved structurally.
-- `reduce_sum`: sum along axis of BCOO → smaller BCOO; Pivoted → Diagonal.
-- `broadcast_in_dim`: BCOO can broadcast length-1 sparse dims (sparsify
-  already supports this; length-≠1 fails upstream).
-- `split`: partition entries by index along split axis.
-
-Low priority — these rarely fire on the curated set. Revisit if a
-benchmark flags them.
-
 ## Priority 2 — JAX idiom alignment
 
-### 6. Use `jax.experimental.sparse` ops instead of hand-rolling
+### 5. Use `jax.experimental.sparse` ops instead of hand-rolling
 
 Current: `jnp.concatenate([v.data, v.indices])` for BCOO adds, manual
 scatter for scale, etc. Lose `indices_sorted` / `unique_indices` metadata.
@@ -106,18 +93,18 @@ Proposal: delegate to `sparse.bcoo_concatenate`, `sparse.bcoo_multiply_dense`,
 
 **Risk**: per-op perf validation needed (some sparse ops have overhead).
 
-### 7. `safe_map` / `safe_zip` from `jax._src.util`
+### 6. `safe_map` / `safe_zip` from `jax._src.util`
 
 Replace raw `zip()` calls to catch length mismatches early.
 
-### 8. Tracer mode for `sparsify`
+### 7. Tracer mode for `sparsify`
 
 Implement `LineaxprTrace(core.Trace)` / `LineaxprTracer` hooking
 `process_primitive`, matching `jax.experimental.sparse.sparsify(...,
 use_tracer=True)`. Lets `sparsify` compose with other transforms without
 upfront `make_jaxpr`. Defer until a concrete use case emerges.
 
-### 9c. jax-style kwargs on jacfwd/jacrev/hessian
+### 8a. jax-style kwargs on jacfwd/jacrev/hessian
 
 Match `jax.jacfwd` / `jax.jacrev` / `jax.hessian`'s full signature:
 
@@ -131,7 +118,7 @@ Today our wrappers hard-code `argnums=0`, single-output, float, no aux.
 Low priority until a user hits one; the building block (`materialize` on
 a traced linear_fn) doesn't care.
 
-### 9d. Multi-input / multi-output + vmap composition
+### 8b. Multi-input / multi-output + vmap composition
 
 Currently `sparsify(linear_fn)(seed)` rejects multi-input and
 multi-output linear fns. And the walk hasn't been tested against
@@ -154,17 +141,7 @@ the custom-JVP'd function and re-runs through our walk. Sparsify has
 this; we don't. (Confirmed 2026-04-20: sif2jax has 0 `custom_jvp`
 calls, so this is not blocking. Revisit if a user reports it.)
 
-### 9b. SPARSINE — static gather densifies (should stay sparse)
-
-Full sweep flagged **SPARSINE at n=5000: 183ms bcoo_jacobian**. Cause
-is that the problem uses a static gather rather than slice; our
-`_gather_rule` has narrower structural support than `_slice_rule` and
-hits the dense fallback. The output SHOULD be sparse. Related to
-BandedPivoted since the fix likely involves extending how Pivoted
-handles multi-column gather patterns. Investigate as part of
-BandedPivoted #1.
-
-### 9a. Primitive-coverage gaps — 18 problems skipped by --full sweep
+### 10. Primitive-coverage gaps — 18 problems skipped by --full sweep
 
 Full bench at commit `4562b8f` found 18 `bcoo_jacobian` compile failures
 (NotImplementedError in walk). They form two clusters:
@@ -177,24 +154,46 @@ Full bench at commit `4562b8f` found 18 `bcoo_jacobian` compile failures
 
 Audit: set `_SMALL_N_VMAP_THRESHOLD = 0` and run one of them; the
 improved NIE message names the missing primitive. Add the rule or
-document the shape limitation. Not BandedPivoted-blocking.
+document the shape limitation.
+
+### 10a. ARGLIN family — 6–45× slower than jax.hessian (folded)
+
+The `--full` sweep (commit 4562b8f) + full-refs shows only 3 problems
+
+> 2× slower than `min(jax.hessian folded, unfolded)`, all linear-
+> regression quadratics:
+
+ARGLINC n=200 44.5x slower (471µs vs 10.6µs)
+ARGLINB n=200 23.0x slower (241µs vs 10.5µs)
+ARGLINA n=200 12.0x slower (127µs vs 10.6µs)
+
+Both `lineaxpr.hessian` and `lineaxpr.bcoo_hessian` are affected
+(bcoo slightly worse). All are constant-H problems. `jax.hessian` with
+`eager_constant_folding=True` folds the entire `AᵀA` matrix to a
+literal (~10µs to memcpy 320KB into the runtime). Our walk computes
+a dense ndarray at trace time but may not be emitting it as a folded
+literal — need to audit the `dot_general(closure_matrix, Identity_seed)`
+path.
+
+Hypothesis: the walk produces `closure_matrix @ closure_matrix`-style
+intermediates that are closure-only but still carry trace-time arith
+ops, rather than a single concrete ndarray literal. Next steps:
+
+1. Inspect the jaxpr our walk produces on ARGLINA.
+2. Test `with eager_constant_folding(True)` around
+   `lineaxpr.hessian(ARGLINA)` to see if XLA can fold what we emit.
+3. If XLA folding doesn't help, force-fold at trace time via explicit
+   `jnp.asarray(...)` on closure-produced arrays.
+
+Not BandedPivoted-blocking; absolute times are modest (≤471µs).
 
 ## Priority 3 — memory / hygiene
 
-### 10. Last-use analysis in `_walk_jaxpr`
+### 11. Last-use analysis in `_walk_jaxpr`
 
 `env` retains every intermediate LinOp until walk ends. For long jaxprs
 with dense fallbacks, retained dense tensors can OOM. Compute `last_use`
 per var, `del env[v]` after its last read.
-
-### 11. `_add_rule` kind-dispatch refactor — DONE
-
-Compressed 7 cascading `all(isinstance...)` passes into 4 kind-set
-checks + a shared `_bcoo_concat` helper + `_linop_matrix_shape`. Rules
-that accept any combo of {ConstantDiagonal, Diagonal, Pivoted, BCOO} at
-matching matrix shape promote via `_to_bcoo` and concat. BandedPivoted
-will add one more isinstance check in `_linop_matrix_shape` + one more
-"try to stay structural" branch (same-out-rows fast path).
 
 ### 12. Per-rule unit tests
 
@@ -214,7 +213,7 @@ gather.
 
 Low priority because: only wins on small-n (asdex itself loses at large
 n and on tiny/dense problems); adds substantial new machinery. Also
-somewhat subsumed by BandedPivoted (#1).
+partly subsumed by Ellpack (for banded cases).
 
 ### 14. True `scan` structural support
 
@@ -225,7 +224,7 @@ concrete failing problem to motivate.
 
 ### 15. Cross-eqn pattern matching for prod-tree
 
-HS110's `(∏x)^k` HVP fragments into many small Pivoteds that our walk
+HS110's `(∏x)^k` HVP fragments into many small Ellpacks that our walk
 processes one-by-one. asdex also doesn't fix this. The analytical form
 is `α · uuᵀ + diag(...)`. Detecting this from the jaxpr structure would
 need multi-eqn lookahead — substantial new machinery. Currently handled
@@ -246,12 +245,7 @@ guaranteed, but adds a new API surface.
 `c_tr`, `c_M`, `cx`, `cy` → `traced_contract`, `closure_contract`, etc.
 Readability across ~80 lines of that rule.
 
-### 18. Delete dead `_slice_rule` Pivoted branch
-
-Empirically `slice(Pivoted)` never fires in our problem set (only
-`slice(ConstantDiagonal)` does). Can delete until a use case appears.
-
-### 19. Honest README reframe
+### 18. Honest README reframe
 
 Per `RESEARCH_NOTES.md` §10 monkeypatch findings: headline should be
 "2–4× over pure-BCOO sparsify on y-dependent problems + robust handling
@@ -259,3 +253,23 @@ of upstream-sparsify primitive gaps (HART6, ARGTRIGLS); const-H wins
 over jax.hessian depend on `EAGER_CONSTANT_FOLDING` regime and
 closure-vs-input placement of y." Not the "100-6000×" story the
 benchmarks-vs-jax.hessian alone would suggest.
+
+## Recently landed
+
+### Ellpack replaces Pivoted (2026-04-20)
+
+Pivoted's "at most one nonzero per row" representation is replaced by
+Ellpack: `(start_row, end_row)` contiguous row range + tuple of bands
+`(in_cols, values)` where `values` is a uniform 2D `(nrows, k)` array.
+`in_cols` entries of `-1` are sentinels for padding. Same-range adds
+extend the bands tuple rather than concatenating entry arrays; same-
+`in_cols` adds sum values (old Pivoted same-indices fast path). Rules
+touched: `_slice_rule`, `_pad_rule`, `_gather_rule`, `_scatter_add_rule`
+(promotes to BCOO since non-contiguous output rows), `_add_rule`
+(new same-range / same-cols paths), `_mul_rule`, `_neg_rule`.
+Motivated the subsequent SPARSINE and CSR-internal work above.
+
+### `_add_rule` kind-dispatch refactor (pre-Ellpack)
+
+Compressed 7 cascading `all(isinstance...)` passes into 4 kind-set
+checks + a shared `_bcoo_concat` helper + `_linop_matrix_shape`.
