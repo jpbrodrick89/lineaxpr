@@ -1,20 +1,21 @@
 """Coloring-free Jacobian extraction for linear callables.
 
-Two public entry points:
+Public API (see `lineaxpr/__init__.py`):
 
-* `materialize(linear_fn, primal) -> jnp.ndarray` — always returns a dense
-  matrix, mirroring `jax.hessian`'s output convention.
-* `bcoo_jacobian(linear_fn, primal) -> jnp.ndarray | sparse.BCOO` — returns
-  a `BCOO` when the linear function's structure is sparse-friendly, otherwise
-  a dense `jnp.ndarray`. Use when downstream code can consume `BCOO` matvecs
-  / `sparsify`-style ops directly.
+* `jacfwd(f)(y)` / `bcoo_jacfwd(f)(y)` — forward-mode Jacobian.
+* `jacrev(f)(y)` / `bcoo_jacrev(f)(y)` — reverse-mode Jacobian.
+* `hessian(f)(y)` / `bcoo_hessian(f)(y)` — full Hessian.
+* `materialize(linear_fn, primal, format='dense'|'bcoo')` — core helper,
+  when you already have a linearized callable.
+* `sparsify(linear_fn)(seed_linop)` — primitive transform returning a
+  LinOp (before format conversion).
 
-Both work by tracing `linear_fn` to a jaxpr and walking its equations with
-per-primitive rules that propagate structural per-var operators. The internal
-forms (`ConstantDiagonal`, `Diagonal`) are private — they let common patterns
-(scalar · I, vector-scaled I, sparse banded blocks) avoid materialising
-intermediate identity matrices, but they are converted to BCOO or dense at
-the boundary.
+All of the above trace `linear_fn` to a jaxpr and walk its equations
+with per-primitive rules that propagate structural per-var operators.
+The LinOp classes (`ConstantDiagonal`, `Diagonal`, `Pivoted`; see
+`_base.py`) let common patterns (scalar · I, vector-scaled I, sparse
+banded blocks) avoid materialising intermediate identity matrices; they
+are converted to BCOO or dense at the boundary.
 """
 
 from __future__ import annotations
@@ -812,20 +813,13 @@ def sparsify(linear_fn):
 
     Seeds are explicit — no automatic Identity cast. For the common case
     of extracting the full Jacobian, the public wrappers `materialize` /
-    `bcoo_jacobian` build `Identity(primal.size, dtype=primal.dtype)` and
-    pass it through.
+    `jacfwd` / `jacrev` / `hessian` build
+    `Identity(primal.size, dtype=primal.dtype)` and pass it through.
     """
     def inner(seed_linop):
         return _walk_with_seed(linear_fn, seed_linop)
 
     return inner
-
-
-# Back-compat for direct users of `_walk`.
-def _walk(linear_fn, primal):
-    seed = ConstantDiagonal(primal.size)
-    out = _walk_with_seed(linear_fn, seed)
-    return out, primal.size
 
 
 _SMALL_N_VMAP_THRESHOLD = 16
@@ -861,11 +855,6 @@ def to_bcoo(op):
     if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
         return op.to_bcoo()
     return op
-
-
-# Legacy internal aliases (still referenced in benchmarks / older tests).
-_linop_to_dense = lambda op, n: to_dense(op)  # noqa: E731
-_linop_to_bcoo = lambda op: to_bcoo(op)  # noqa: E731
 
 
 _VALID_FORMATS = ("dense", "bcoo")

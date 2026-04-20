@@ -2,10 +2,34 @@
 
 Internal structural forms used by the sparsify walk. They live in the env
 during a single walk and are converted to BCOO or ndarray at the public
-API boundary.
+API boundary (`materialize`, `to_dense`, `to_bcoo`).
 
 Public API consumers should use `Identity(n, dtype=...)` as the seed for
 `lineaxpr.sparsify`.
+
+### Adding a new LinOp form (e.g. BandedPivoted)
+
+To extend the format space:
+
+1. Define the class in this file. Give it the standard method set:
+   `.shape`, `.n`, `.primal_aval()`, `.todense()`, `.to_bcoo()`,
+   `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`, and any
+   form-specific ops (e.g. `Pivoted.pad_rows`).
+2. Update `_to_dense(op, n)` and `_to_bcoo(op, n)` to handle it.
+3. Export it from `lineaxpr/__init__.py`.
+4. In `materialize.py`, touch:
+   - `_linop_matrix_shape(v)` — add an `isinstance` branch for shape.
+   - `_add_rule`'s kind-dispatch — decide which combos with the new
+     form stay structural vs promote to BCOO. Shared path is "any mix
+     of {CD, D, Pivoted, <new>, BCOO} at matching shape → BCOO via
+     `_to_bcoo` and concat", so no per-combo isinstance soup needed.
+   - `_mul_rule` / `_neg_rule` just dispatch to the LinOp methods — no
+     new branches unless the new form needs special-case BCOO fallbacks.
+   - Rules that currently return Pivoted (e.g. `_slice_rule`,
+     `_gather_rule`) may opportunistically return the new form when
+     the pattern warrants it.
+
+See `docs/TODO.md` #1 (BandedPivoted) for the concrete motivation.
 """
 
 from __future__ import annotations
@@ -231,7 +255,9 @@ def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
 
 
 def _to_bcoo(op, n: int):
-    """Convert any internal LinOp to BCOO (used at the bcoo_jacobian boundary)."""
+    """Convert any internal LinOp to BCOO (used at the `materialize`
+    boundary when `format='bcoo'`, and internally by `_add_rule` to
+    promote mixed-form operands to a common BCOO before concatenation)."""
     if isinstance(op, sparse.BCOO):
         return op
     if isinstance(op, (ConstantDiagonal, Diagonal)):

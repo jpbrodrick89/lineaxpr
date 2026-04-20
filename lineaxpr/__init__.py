@@ -1,18 +1,29 @@
-"""lineaxpr — coloring-free Jacobian/Hessian extraction for JAX linear callables.
+"""lineaxpr — structural Jacobian/Hessian extraction for JAX linear callables.
 
-Works on linearized jaxprs. Inspired by lineax linear-algebra rules; focused
-on per-linearization-point sparsity and non-conservative extraction.
+Works on linearized jaxprs. Inspired by lineax linear-algebra rules;
+focused on per-linearization-point sparsity and non-conservative
+extraction.
 
 Public API:
 
-    from lineaxpr import materialize, bcoo_jacobian
+    import lineaxpr
 
-    # Hessian of a scalar objective f at y:
-    import jax
-    _, hvp = jax.linearize(jax.grad(f), y)
+    # jax-like wrappers (preferred):
+    H  = lineaxpr.hessian(f)(y)          # -> jnp.ndarray
+    Hs = lineaxpr.bcoo_hessian(f)(y)     # -> BCOO | jnp.ndarray
+    Jf = lineaxpr.jacfwd(f)(y)           # same as jax.jacfwd shape
+    Jr = lineaxpr.jacrev(f)(y)           # same as jax.jacrev shape
+    # All six accept format='dense'|'bcoo'; bcoo_* are shorthands.
 
-    H_dense = materialize(hvp, y)             # -> jnp.ndarray
-    H_bcoo  = bcoo_jacobian(hvp, y)           # -> BCOO | jnp.ndarray
+    # Core helper — use when you already have a linear callable:
+    H = lineaxpr.materialize(linear_fn, primal, format='dense')
+    S = lineaxpr.materialize(linear_fn, primal, format='bcoo')
+
+    # Primitive transform — returns a LinOp to post-process:
+    seed = lineaxpr.Identity(primal.size, dtype=primal.dtype)
+    linop = lineaxpr.sparsify(linear_fn)(seed)
+    H = lineaxpr.to_dense(linop)
+    S = lineaxpr.to_bcoo(linop)
 """
 
 from .materialize import (
