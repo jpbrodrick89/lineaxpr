@@ -130,11 +130,14 @@ this; we don't.
 with dense fallbacks, retained dense tensors can OOM. Compute `last_use`
 per var, `del env[v]` after its last read.
 
-### 11. `_add_like` kind-dispatch refactor
+### 11. `_add_like` kind-dispatch refactor — DONE
 
-Currently 5 cascading `all(isinstance...)` passes. Compute
-`kinds = tuple(type(v) for v in vals)` once, dispatch by membership.
-Cleaner; no runtime effect (trace-time only).
+Compressed 7 cascading `all(isinstance...)` passes into 4 kind-set
+checks + a shared `_bcoo_concat` helper + `_linop_matrix_shape`. Rules
+that accept any combo of {ConstantDiagonal, Diagonal, Pivoted, BCOO} at
+matching matrix shape promote via `_to_bcoo` and concat. BandedPivoted
+will add one more isinstance check in `_linop_matrix_shape` + one more
+"try to stay structural" branch (same-out-rows fast path).
 
 ### 12. Per-rule unit tests
 

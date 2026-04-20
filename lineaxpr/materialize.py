@@ -19,6 +19,8 @@ the boundary.
 
 from __future__ import annotations
 
+import functools
+import operator
 from typing import Callable
 
 import jax
@@ -96,18 +98,49 @@ def _mul_rule(invals, traced, n, **params):
 
 materialize_rules[lax.mul_p] = _mul_rule
 
+def _linop_matrix_shape(v):
+    """Return the (out_size, in_size) of any LinOp/BCOO, or None for ndarray."""
+    if isinstance(v, (ConstantDiagonal, Diagonal)):
+        return (v.n, v.n)
+    if isinstance(v, Pivoted):
+        return (v.out_size, v.in_size)
+    if isinstance(v, sparse.BCOO):
+        return v.shape
+    return None
+
+
+def _bcoo_concat(bcoo_vals, shape):
+    """Concatenate a list of BCOOs (matching shape) entry-wise.
+
+    Structural duplicates (same index appearing in multiple operands) are
+    resolved at densification via scatter-add, matching the semantics of
+    `lax.add_any` on summed entries.
+    """
+    return sparse.BCOO(
+        (jnp.concatenate([v.data for v in bcoo_vals]),
+         jnp.concatenate([v.indices for v in bcoo_vals])),
+        shape=shape,
+    )
+
+
 def _add_like(invals, traced, n, **params):
+    """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
+    the least-specific form needed. Dispatch is on the set of input kinds."""
     del params
     vals = [v for v, t in zip(invals, traced) if t]
     if not vals:
         return None
     if len(vals) == 1:
         return vals[0]
-    if all(isinstance(v, ConstantDiagonal) and v.n == vals[0].n for v in vals):
+
+    kinds = {type(v) for v in vals}
+
+    # All-ConstantDiagonal with matching n: sum the scalar values.
+    if kinds == {ConstantDiagonal} and all(v.n == vals[0].n for v in vals):
         return ConstantDiagonal(vals[0].n, sum(v.value for v in vals))
-    if all(isinstance(v, (ConstantDiagonal, Diagonal)) and v.n == vals[0].n
-           for v in vals):
-        # Dtype from the first operand's values where available.
+
+    # Subset of {ConstantDiagonal, Diagonal} with matching n: emit Diagonal.
+    if kinds <= {ConstantDiagonal, Diagonal} and all(v.n == vals[0].n for v in vals):
         dtype = next((v.values.dtype for v in vals if isinstance(v, Diagonal)),
                      jnp.result_type(float))
         total = jnp.zeros(vals[0].n, dtype=dtype)
@@ -117,90 +150,47 @@ def _add_like(invals, traced, n, **params):
                 if isinstance(v, ConstantDiagonal) else v.values
             )
         return Diagonal(total)
-    # Two Pivoteds at the same shape: try the same-indices fast path first.
-    if all(isinstance(v, Pivoted) and v.shape == vals[0].shape for v in vals):
-        # Same-indices fast path: if all out_rows AND all in_cols are
-        # statically equal, just sum the values — no entry duplication.
+
+    # All-Pivoted at matching shape: same-indices fast path, else concat entries.
+    if kinds == {Pivoted} and all(v.shape == vals[0].shape for v in vals):
         first = vals[0]
-        if (isinstance(first.out_rows, np.ndarray)
-                and isinstance(first.in_cols, np.ndarray)
-                and all(
-                    isinstance(v.out_rows, np.ndarray)
-                    and isinstance(v.in_cols, np.ndarray)
-                    and np.array_equal(v.out_rows, first.out_rows)
-                    and np.array_equal(v.in_cols, first.in_cols)
-                    for v in vals[1:]
-                )):
+        static_equal = (
+            isinstance(first.out_rows, np.ndarray)
+            and isinstance(first.in_cols, np.ndarray)
+            and all(
+                isinstance(v.out_rows, np.ndarray)
+                and isinstance(v.in_cols, np.ndarray)
+                and np.array_equal(v.out_rows, first.out_rows)
+                and np.array_equal(v.in_cols, first.in_cols)
+                for v in vals[1:]
+            )
+        )
+        if static_equal:
             summed = vals[0].values
             for v in vals[1:]:
                 summed = summed + v.values
             return Pivoted(first.out_rows, first.in_cols, summed,
                            first.out_size, first.in_size)
-        # Fallback: concat entries. Disjoint row sets stay "one per row";
-        # overlaps get fixed at densification by scatter-add.
+        # Concat — disjoint rows stay "one per row"; overlaps fixed at
+        # densification by scatter-add.
         return Pivoted(
             _concat(v.out_rows for v in vals),
             _concat(v.in_cols for v in vals),
             jnp.concatenate([v.values for v in vals]),
             vals[0].out_size, vals[0].in_size,
         )
-    if all(isinstance(v, sparse.BCOO) and v.shape == vals[0].shape for v in vals):
-        return sparse.BCOO(
-            (jnp.concatenate([v.data for v in vals]),
-             jnp.concatenate([v.indices for v in vals])),
-            shape=vals[0].shape,
-        )
-    # Mixed Pivoted + BCOO at same shape: convert Pivoted to BCOO and concat.
-    if all(isinstance(v, (Pivoted, sparse.BCOO)) and v.shape == vals[0].shape
-           for v in vals):
-        bcoo_vals = [_pivoted_to_bcoo(v) if isinstance(v, Pivoted) else v
-                     for v in vals]
-        return sparse.BCOO(
-            (jnp.concatenate([v.data for v in bcoo_vals]),
-             jnp.concatenate([v.indices for v in bcoo_vals])),
-            shape=vals[0].shape,
-        )
-    # Mixed Pivoted + (Constant)Diagonal at compatible shape: convert all to
-    # BCOO and concatenate (Pivoted is square iff out_size == in_size).
-    if all(isinstance(v, (Pivoted, ConstantDiagonal, Diagonal)) for v in vals):
-        # Check shapes are compatible (square n×n where n is consistent).
-        sizes = [v.out_size if isinstance(v, Pivoted) else v.n for v in vals]
-        in_sizes = [v.in_size if isinstance(v, Pivoted) else v.n for v in vals]
-        if all(s == sizes[0] == in_sizes[0] for s in sizes + in_sizes):
-            n_out = sizes[0]
-            bcoo_vals = []
-            for v in vals:
-                if isinstance(v, Pivoted):
-                    bcoo_vals.append(_pivoted_to_bcoo(v))
-                else:
-                    bcoo_vals.append(_diag_to_bcoo(v, n))
-            return sparse.BCOO(
-                (jnp.concatenate([v.data for v in bcoo_vals]),
-                 jnp.concatenate([v.indices for v in bcoo_vals])),
-                shape=(n_out, n_out),
-            )
-    if all(isinstance(v, (ConstantDiagonal, Diagonal, sparse.BCOO)) for v in vals):
-        n_out = (vals[0].n if isinstance(vals[0], (ConstantDiagonal, Diagonal))
-                 else vals[0].shape[0])
-        if all(
-            (isinstance(v, sparse.BCOO) and v.shape == (n_out, n_out))
-            or (isinstance(v, (ConstantDiagonal, Diagonal)) and v.n == n_out)
-            for v in vals
-        ):
-            bcoo_vals = [
-                _diag_to_bcoo(v, n) if not isinstance(v, sparse.BCOO) else v
-                for v in vals
-            ]
-            return sparse.BCOO(
-                (jnp.concatenate([v.data for v in bcoo_vals]),
-                 jnp.concatenate([v.indices for v in bcoo_vals])),
-                shape=(n_out, n_out),
-            )
+
+    # Any combination of {ConstantDiagonal, Diagonal, Pivoted, BCOO} at
+    # compatible matrix shape: promote each to BCOO and concat.
+    if kinds <= {ConstantDiagonal, Diagonal, Pivoted, sparse.BCOO}:
+        shapes = [_linop_matrix_shape(v) for v in vals]
+        if all(s == shapes[0] for s in shapes):
+            bcoo_vals = [_to_bcoo(v, n) for v in vals]
+            return _bcoo_concat(bcoo_vals, shape=shapes[0])
+
+    # Dense fallback: densify everything and sum.
     dense_vals = [_to_dense(v, n) for v in vals]
-    result = dense_vals[0]
-    for t in dense_vals[1:]:
-        result = result + t
-    return result
+    return functools.reduce(operator.add, dense_vals)
 
 
 materialize_rules[lax.add_p] = _add_like
