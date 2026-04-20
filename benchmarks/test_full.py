@@ -28,8 +28,15 @@ try:
 except ImportError:
     HAS_ASDEX = False
 
-DENSE_MAX = int(os.environ.get("DENSE_MAX", "1200"))
-BCOO_MAX = int(os.environ.get("BCOO_MAX", "3000"))
+# Thresholds empirically derived (see threshold probe in docs/RESEARCH_NOTES.md
+# or re-run with `uv run python benchmarks/probe_thresholds.py`):
+#   DENSE_MAX=2000 keeps materialize runtime under ~5ms/call (dense alloc
+#     dominates above this; n=5000 still works but costs ~15ms/call).
+#   BCOO_MAX=5000 is the empirical ceiling for bcoo_jacobian; problems
+#     that would produce near-dense BCOO fall back to ndarray at runtime
+#     and cost similar to materialize (e.g. CRAGGLVY at n=5000 ≈ 20ms).
+DENSE_MAX = int(os.environ.get("DENSE_MAX", "2000"))
+BCOO_MAX = int(os.environ.get("BCOO_MAX", "5000"))
 
 ALL = list(sif2jax.problems)
 SCALAR = [

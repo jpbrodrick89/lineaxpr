@@ -2,7 +2,16 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-.benchmarks/
+
+# Per-commit bench results are local-only (noisy across machines).
+# Reference runs (tagged `refs-<jaxversion>`) ARE committed so users can
+# compare against them without rerunning jax.hessian / asdex.
+.benchmarks/*/*_lineaxpr.json
+.benchmarks/*/*_curated.json
+.benchmarks/*/*_highn.json
+.benchmarks/*/*_full.json
+!.benchmarks/*/*_refs-*.json
+
 *.egg-info/
 build/
 dist/

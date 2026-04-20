@@ -72,11 +72,14 @@ uv run pytest tests/test_sif2jax_sweep.py -m slow -v
 # Regenerate the nse manifest after an intentional structural change:
 uv run python -m tests.update_nse_manifest
 
-# Benchmarks (local):
-uv run pytest benchmarks/ --benchmark-only
+# Per-commit lineaxpr bench (materialize + bcoo_jacobian only, commit-tagged):
+bash benchmarks/run_bench.sh
 
-# In-container benchmarks (matches CI config):
-bash benchmarks/run_in_container.sh benchmarks/test_curated.py --benchmark-save=0001_curated
+# Reference bench (jax.hessian / asdex; tagged by JAX version, rerun only on upstream update):
+bash benchmarks/run_bench.sh --refs
+
+# Other modes: --curated (5-way), --highn (n>2500), --full (all scalar problems)
+# Add USE_CONTAINER=1 for EAGER_CONSTANT_FOLDING=TRUE release parity.
 
 # Monkeypatch experiment (pure-BCOO comparison):
 uv run python -m experiments.run_monkeypatch
@@ -101,10 +104,12 @@ tests/
   test_sif2jax_sweep.py     # slow sweep + nse regression
   nse_manifest.json         # golden nse values per problem
   update_nse_manifest.py    # regenerator
-  coverage_sweep.py         # legacy standalone sweep (pre-pytest version)
 benchmarks/
-  test_curated.py           # curated comparison bench
-  test_full.py / test_highn.py  # broader perf sweeps
+  run_bench.sh              # commit-tagged bench runner (lineaxpr/refs/curated/highn/full)
+  test_curated.py           # 16-problem curated bench (5-way comparison)
+  test_full.py              # all sif2jax scalar problems (DENSE_MAX=2000, BCOO_MAX=5000)
+  test_highn.py             # n > 2500 sweep
+  run_in_container.sh       # docker runner for EAGER_CONSTANT_FOLDING parity
 docs/
   ARCHITECTURE.md           # walk algorithm, LinOp forms, rule pattern
   RESEARCH_NOTES.md         # empirical findings, sparsify comparison, DUAL deep-dive
