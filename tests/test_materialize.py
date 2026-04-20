@@ -138,10 +138,10 @@ def test_heat_equation_hessian_is_tridiagonal(n):
     S = lineaxpr.bcoo_hessian(_heat_energy)(T)
     dense_S = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
     np.testing.assert_allclose(dense_S, H_np, atol=1e-10)
-    # Tridiagonal nnz upper bound = 3n - 2. Current extractor emits
-    # structural duplicates from add_any concat (same out_rows, different
-    # in_cols); BandedPivoted (docs/TODO.md #1) will tighten this to ~1×.
-    # For now, allow 3× slack.
+    # Tridiagonal nnz lower bound = 3n-2. The nonlinear κ(T)=T^2.5 produces
+    # multiple bands per row (derivatives hit both endpoints of each diff),
+    # so the Ellpack has k≈3 and the BCOO lands at roughly 2.66x the
+    # minimum. Loose 3x bound catches structural regressions.
     if isinstance(S, sparse.BCOO):
         assert S.nse <= 3 * (3 * n - 2)
 

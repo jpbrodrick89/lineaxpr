@@ -7,29 +7,27 @@ API boundary (`materialize`, `to_dense`, `to_bcoo`).
 Public API consumers should use `Identity(n, dtype=...)` as the seed for
 `lineaxpr.sparsify`.
 
-### Adding a new LinOp form (e.g. BandedPivoted)
+### Adding a new LinOp form
 
 To extend the format space:
 
 1. Define the class in this file. Give it the standard method set:
    `.shape`, `.n`, `.primal_aval()`, `.todense()`, `.to_bcoo()`,
    `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`, and any
-   form-specific ops (e.g. `Pivoted.pad_rows`).
+   form-specific ops (e.g. `Ellpack.pad_rows`).
 2. Update `_to_dense(op, n)` and `_to_bcoo(op, n)` to handle it.
 3. Export it from `lineaxpr/__init__.py`.
 4. In `materialize.py`, touch:
    - `_linop_matrix_shape(v)` — add an `isinstance` branch for shape.
    - `_add_rule`'s kind-dispatch — decide which combos with the new
      form stay structural vs promote to BCOO. Shared path is "any mix
-     of {CD, D, Pivoted, <new>, BCOO} at matching shape → BCOO via
+     of {CD, D, Ellpack, <new>, BCOO} at matching shape → BCOO via
      `_to_bcoo` and concat", so no per-combo isinstance soup needed.
    - `_mul_rule` / `_neg_rule` just dispatch to the LinOp methods — no
      new branches unless the new form needs special-case BCOO fallbacks.
-   - Rules that currently return Pivoted (e.g. `_slice_rule`,
+   - Rules that currently return Ellpack (e.g. `_slice_rule`,
      `_gather_rule`) may opportunistically return the new form when
      the pattern warrants it.
-
-See `docs/TODO.md` #1 (BandedPivoted) for the concrete motivation.
 """
 
 from __future__ import annotations
@@ -127,26 +125,60 @@ class Diagonal:
         return Diagonal(self.values * jnp.asarray(v))
 
 
-class Pivoted:
-    """A linear operator with at most one nonzero per row.
+class Ellpack:
+    """Multi-band sparse operator with a contiguous row range.
 
-    Represents the `(out_size, in_size)` matrix
-        M[out_rows[i], in_cols[i]] = values[i]
-        M[r, c] = 0 otherwise.
+    Represents the (out_size, in_size) matrix where rows in
+    [start_row, end_row) each hold up to k entries (one per band) and
+    all other rows are zero:
 
-    Captures `slice(Identity)`, `gather(Identity)`, scaled versions, and
-    pad/add chains thereof — common in sparse-banded problems.
-    Avoids BCOO's `(nse, 2)` indices array by keeping rows + cols as 1D.
+        M[start_row + r, in_cols[b][r]] += values[...][b][r]   for b in range(k)
+
+    Storage:
+      - `in_cols`: tuple of length k. Each entry is a ColArr —
+        `slice` (step=1), static `np.ndarray`, or traced
+        `jnp.ndarray` of length `nrows = end_row - start_row`. `-1`
+        entries are sentinels: that slot contributes 0 and is
+        filtered at CSR/BCOO conversion.
+      - `values`: a single `jnp.ndarray`. Shape `(nrows,)` when k==1,
+        `(nrows, k)` when k>=2.
+
+    The **hybrid 1D-for-k=1 / 2D-for-k>=2** layout was tuned from
+    hand-roll benchmarks (2026-04-20):
+      * k=1 with 1D values avoids the `v[:, None]` axis-insertion
+        `broadcast_in_dim` that XLA would emit for `(n, 1)` values.
+        This is the common case for slice/gather/scaled-Identity
+        walks.
+      * k>=2 with 2D values lets a single `(n, k)` multiply fuse in
+        one XLA kernel instead of k separate per-band kernels. For
+        k=10 this was ~5× faster than tuple-per-band in isolation.
+      * Band-widening from two k=1 Ellpacks stacks to 2D via one
+        `jnp.stack(axis=1)`; from mixed k via `jnp.concatenate`.
+
+    Duplicate `(row, col)` entries across bands are allowed; they sum
+    at densification (`.at[...].add`) and are left unsummed in BCOO
+    output (downstream `segment_sum` dedups).
     """
 
-    __slots__ = ("out_rows", "in_cols", "values", "out_size", "in_size")
+    __slots__ = ("start_row", "end_row", "in_cols", "values",
+                 "out_size", "in_size")
 
-    def __init__(self, out_rows, in_cols, values, out_size, in_size):
-        self.out_rows = out_rows
-        self.in_cols = in_cols
-        self.values = values
-        self.out_size = out_size
-        self.in_size = in_size
+    def __init__(self, start_row, end_row, in_cols, values,
+                 out_size, in_size):
+        self.start_row = int(start_row)
+        self.end_row = int(end_row)
+        self.in_cols = tuple(in_cols)
+        self.values = _normalize_values(values, len(self.in_cols))
+        self.out_size = int(out_size)
+        self.in_size = int(in_size)
+
+    @property
+    def nrows(self):
+        return self.end_row - self.start_row
+
+    @property
+    def k(self):
+        return len(self.in_cols)
 
     @property
     def shape(self):
@@ -158,50 +190,123 @@ class Pivoted:
 
     @property
     def nse(self):
-        return self.out_rows.shape[0]
+        return self.nrows * self.k
+
+    @property
+    def dtype(self):
+        return self.values.dtype
 
     def primal_aval(self):
-        return core.ShapedArray((self.in_size,), self.values.dtype)
+        return core.ShapedArray((self.in_size,), self.dtype)
 
     def todense(self):
-        return (jnp.zeros((self.out_size, self.in_size), self.values.dtype)
-                .at[self.out_rows, self.in_cols].add(self.values))
+        rows_1d = np.arange(self.start_row, self.end_row)
+        dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
+        k = self.k
+        for b in range(k):
+            cols_b = _resolve_col(self.in_cols[b], self.nrows)
+            vals_b = self.values if k == 1 else self.values[:, b]
+            if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
+                dense = dense.at[rows_1d, cols_b].add(vals_b)
+            else:
+                mask = cols_b >= 0
+                safe_cols = jnp.where(mask, cols_b, 0)
+                safe_vals = jnp.where(mask, vals_b, jnp.zeros((), self.dtype))
+                dense = dense.at[rows_1d, safe_cols].add(safe_vals)
+        return dense
 
     def to_bcoo(self):
-        return _pivoted_to_bcoo(self)
+        return _ellpack_to_bcoo(self)
 
     def negate(self):
-        return Pivoted(self.out_rows, self.in_cols, -self.values,
-                       self.out_size, self.in_size)
+        return Ellpack(self.start_row, self.end_row, self.in_cols,
+                       -self.values, self.out_size, self.in_size)
 
     def scale_scalar(self, s):
-        return Pivoted(self.out_rows, self.in_cols, s * self.values,
-                       self.out_size, self.in_size)
+        return Ellpack(self.start_row, self.end_row, self.in_cols,
+                       s * self.values, self.out_size, self.in_size)
 
     def scale_per_out_row(self, v):
         v_arr = jnp.asarray(v)
-        # Fast path: scale length equals nse (true when out_rows == arange(k)).
-        if v_arr.shape[0] == self.nse:
-            new_values = self.values * v_arr
+        if v_arr.shape[0] == self.nrows:
+            v_slice = v_arr
         else:
-            new_values = self.values * jnp.take(v_arr, self.out_rows)
-        return Pivoted(self.out_rows, self.in_cols, new_values,
-                       self.out_size, self.in_size)
+            # v is length out_size; slice to our row range.
+            v_slice = v_arr[self.start_row:self.end_row]
+        # 1D values: direct 1D mul. 2D values: broadcast v along columns.
+        if self.values.ndim == 1:
+            scaled = v_slice * self.values
+        else:
+            scaled = v_slice[:, None] * self.values
+        return Ellpack(self.start_row, self.end_row, self.in_cols,
+                       scaled, self.out_size, self.in_size)
 
     def pad_rows(self, before: int, after: int):
         """Pad along the out_size axis. Negative before/after truncates."""
-        out_size = self.out_size + before + after
-        new_rows = self.out_rows + before
-        if before >= 0 and after >= 0:
-            return Pivoted(new_rows, self.in_cols, self.values,
-                           out_size, self.in_size)
-        is_np = isinstance(new_rows, np.ndarray)
-        mask = (new_rows >= 0) & (new_rows < out_size)
-        safe_rows = (np.where(mask, new_rows, 0) if is_np
-                     else jnp.where(mask, new_rows, 0))
-        val_mask = jnp.asarray(mask, dtype=self.values.dtype) if is_np else mask
-        return Pivoted(safe_rows, self.in_cols, self.values * val_mask,
-                       out_size, self.in_size)
+        new_out_size = self.out_size + before + after
+        new_start = self.start_row + before
+        new_end = self.end_row + before
+        # Clip the row range to [0, new_out_size), slicing bands/values in sync.
+        trim_top = max(0, -new_start)
+        trim_bottom = max(0, new_end - new_out_size)
+        if trim_top == 0 and trim_bottom == 0:
+            return Ellpack(new_start, new_end, self.in_cols, self.values,
+                           new_out_size, self.in_size)
+        nrows_old = self.nrows
+        lo = trim_top
+        hi = nrows_old - trim_bottom
+        if hi <= lo:
+            empty_cols = tuple(np.empty(0, dtype=np.int64) for _ in self.in_cols)
+            empty_shape = (0,) if self.k == 1 else (0, self.k)
+            empty_vals = jnp.empty(empty_shape, self.dtype)
+            return Ellpack(0, 0, empty_cols, empty_vals,
+                           new_out_size, self.in_size)
+        new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
+        new_values = self.values[lo:hi]
+        return Ellpack(new_start + lo, new_end - trim_bottom,
+                       new_in_cols, new_values,
+                       new_out_size, self.in_size)
+
+
+def _normalize_values(values, k: int):
+    """Coerce a user-supplied `values` into the canonical hybrid layout.
+
+    Accepts:
+      - 1D `jnp.ndarray` (only when k==1).
+      - 2D `jnp.ndarray` of shape `(nrows, k)` (only when k>=2).
+      - Tuple of k 1D arrays (stacks axis=1 if k>=2, unwraps if k==1).
+    """
+    if isinstance(values, tuple):
+        if k == 1:
+            assert len(values) == 1, f"k=1 but got {len(values)} bands"
+            return jnp.asarray(values[0])
+        assert len(values) == k, f"k={k} but got {len(values)} bands"
+        return jnp.stack(list(values), axis=1)
+    arr = jnp.asarray(values)
+    if k == 1:
+        assert arr.ndim == 1, f"k=1 needs 1D values, got shape {arr.shape}"
+    else:
+        assert arr.ndim == 2 and arr.shape[1] == k, (
+            f"k={k} needs (n, k) 2D values, got shape {arr.shape}"
+        )
+    return arr
+
+
+def _resolve_col(col, nrows):
+    """Materialize a ColArr (slice | ndarray) to a length-nrows 1D array."""
+    if isinstance(col, slice):
+        start = 0 if col.start is None else col.start
+        stop = nrows if col.stop is None else col.stop
+        return np.arange(start, stop)
+    return col
+
+
+def _slice_col(col, lo, hi):
+    """Slice a ColArr along its row axis: col[lo:hi]."""
+    if isinstance(col, slice):
+        start = 0 if col.start is None else col.start
+        return slice(start + lo, start + hi)
+    return col[lo:hi]
 
 
 # -------------------------- densification helpers --------------------------
@@ -216,28 +321,81 @@ def _to_dense(op, n: int) -> jnp.ndarray:
         m = op.values.shape[0]
         idx = jnp.arange(m)
         return jnp.zeros((m, m), op.values.dtype).at[idx, idx].set(op.values)
-    if isinstance(op, Pivoted):
-        return (jnp.zeros((op.out_size, op.in_size), op.values.dtype)
-                .at[op.out_rows, op.in_cols].add(op.values))
+    if isinstance(op, Ellpack):
+        return op.todense()
     if isinstance(op, sparse.BCOO):
         return op.todense()
     return op
 
 
-def _pivoted_to_bcoo(p: "Pivoted") -> sparse.BCOO:
-    if isinstance(p.out_rows, np.ndarray) and isinstance(p.in_cols, np.ndarray):
-        # Stack statically; avoid two asarray + one jnp.stack HLO ops.
-        indices = np.stack([p.out_rows, p.in_cols], axis=1)
-    else:
-        indices = jnp.stack([jnp.asarray(p.out_rows), jnp.asarray(p.in_cols)], axis=1)
-    return sparse.BCOO((p.values, indices), shape=p.shape)
+def _ellpack_to_bcoo(e: "Ellpack") -> sparse.BCOO:
+    """Flatten Ellpack to BCOO, filtering -1-sentinel cols.
 
+    k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
+    total for the happy path.
 
-def _concat(arrs):
-    arrs = list(arrs)
-    if all(isinstance(a, np.ndarray) for a in arrs):
-        return np.concatenate(arrs)
-    return jnp.concatenate(arrs)
+    k>=2: values is (nrows, k); flatten band-by-band (all of band 0,
+    then band 1, ...) so `jnp.concatenate(values_band_slices, axis=0)`
+    emits a single 1D concat with no shape-manipulation overhead.
+    """
+    rows_1d = np.arange(e.start_row, e.end_row)
+    nrows = e.nrows
+    k = e.k
+
+    # k=1 fast path — single band, values already 1D.
+    if k == 1:
+        cols_b = _resolve_col(e.in_cols[0], nrows)
+        if isinstance(cols_b, np.ndarray):
+            if (cols_b >= 0).all():
+                indices = np.stack([rows_1d, cols_b], axis=1)
+                return sparse.BCOO((e.values, indices), shape=e.shape)
+            keep = np.nonzero(cols_b >= 0)[0]
+            indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
+            return sparse.BCOO((jnp.take(e.values, keep), indices),
+                               shape=e.shape)
+        # Traced cols — mask values.
+        cols_j = jnp.asarray(cols_b)
+        mask = cols_j >= 0
+        cols_safe = jnp.where(mask, cols_j, 0)
+        vals_safe = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
+        return sparse.BCOO((vals_safe, indices), shape=e.shape)
+
+    # k>=2 path — values is (nrows, k).
+    per_band_cols = [_resolve_col(c, nrows) for c in e.in_cols]
+    any_traced_cols = any(not isinstance(c, np.ndarray) for c in per_band_cols)
+    if not any_traced_cols:
+        kept_rows, kept_cols, kept_vals = [], [], []
+        for b in range(k):
+            cols_b = per_band_cols[b]
+            if (cols_b >= 0).all():
+                kept_rows.append(rows_1d)
+                kept_cols.append(cols_b)
+                kept_vals.append(e.values[:, b])
+            else:
+                keep = np.nonzero(cols_b >= 0)[0]
+                kept_rows.append(rows_1d[keep])
+                kept_cols.append(cols_b[keep])
+                kept_vals.append(jnp.take(e.values[:, b], keep))
+        rows_flat = np.concatenate(kept_rows)
+        cols_flat = np.concatenate(kept_cols)
+        indices = np.stack([rows_flat, cols_flat], axis=1)
+        vals_flat = jnp.concatenate(kept_vals)
+        return sparse.BCOO((vals_flat, indices), shape=e.shape)
+    # Traced cols in some band — mask values band-by-band.
+    rows_parts, cols_parts, vals_parts = [], [], []
+    for b in range(k):
+        cols_j = jnp.asarray(per_band_cols[b])
+        mask = cols_j >= 0
+        rows_parts.append(jnp.asarray(rows_1d))
+        cols_parts.append(jnp.where(mask, cols_j, 0))
+        vals_parts.append(jnp.where(mask, e.values[:, b],
+                                    jnp.zeros((), e.dtype)))
+    rows_flat = jnp.concatenate(rows_parts)
+    cols_flat = jnp.concatenate(cols_parts)
+    vals_flat = jnp.concatenate(vals_parts)
+    indices = jnp.stack([rows_flat, cols_flat], axis=1)
+    return sparse.BCOO((vals_flat, indices), shape=e.shape)
 
 
 def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
@@ -262,14 +420,14 @@ def _to_bcoo(op, n: int):
         return op
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return _diag_to_bcoo(op)
-    if isinstance(op, Pivoted):
-        return _pivoted_to_bcoo(op)
+    if isinstance(op, Ellpack):
+        return _ellpack_to_bcoo(op)
     return op  # plain ndarray — caller will keep dense
 
 
 def _traced_shape(op) -> tuple:
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return (op.n,)
-    if isinstance(op, Pivoted):
+    if isinstance(op, Ellpack):
         return (op.out_size,)
     return tuple(op.shape[:-1])

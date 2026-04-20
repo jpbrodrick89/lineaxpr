@@ -67,11 +67,6 @@
       "nse": 772,
       "group": "quadratic"
     },
-    "DIAGIQB": {
-      "n": 10,
-      "nse": 10,
-      "group": "bounded"
-    },
     "DIAGIQE": {
       "n": 1000,
       "nse": 1000,
@@ -111,11 +106,6 @@
       "n": 1000,
       "nse": 1000,
       "group": "bounded"
-    },
-    "DIXMAANA1": {
-      "n": 3,
-      "nse": 13,
-      "group": "unconstrained"
     },
     "DIXMAANB": {
       "n": 3000,
@@ -202,26 +192,6 @@
       "nse": 5000,
       "group": "unconstrained"
     },
-    "DUALC1": {
-      "n": 9,
-      "nse": 162,
-      "group": "quadratic"
-    },
-    "DUALC2": {
-      "n": 7,
-      "nse": 98,
-      "group": "quadratic"
-    },
-    "DUALC5": {
-      "n": 8,
-      "nse": 128,
-      "group": "quadratic"
-    },
-    "DUALC8": {
-      "n": 8,
-      "nse": 128,
-      "group": "quadratic"
-    },
     "EDENSCH": {
       "n": 2000,
       "nse": 25987,
@@ -272,31 +242,6 @@
       "nse": 15,
       "group": "quadratic"
     },
-    "HS88": {
-      "n": 2,
-      "nse": 2,
-      "group": "quadratic"
-    },
-    "HS89": {
-      "n": 3,
-      "nse": 3,
-      "group": "quadratic"
-    },
-    "HS90": {
-      "n": 4,
-      "nse": 4,
-      "group": "quadratic"
-    },
-    "HS91": {
-      "n": 5,
-      "nse": 5,
-      "group": "quadratic"
-    },
-    "HS92": {
-      "n": 6,
-      "nse": 6,
-      "group": "quadratic"
-    },
     "NONCVXU2": {
       "n": 5000,
       "nse": 135000,
@@ -311,11 +256,6 @@
       "n": 100,
       "nse": 100,
       "group": "unconstrained"
-    },
-    "QINGB": {
-      "n": 5,
-      "nse": 5,
-      "group": "bounded"
     },
     "QUARTC": {
       "n": 5000,

@@ -23,7 +23,7 @@ Lower-level building blocks:
 - `to_dense(linop)` / `to_bcoo(linop)` — format conversion helpers
   that work uniformly on LinOp classes, BCOO, and plain ndarrays.
 - `Identity(n, dtype=...)` — standard seed for `sparsify`.
-- `ConstantDiagonal`, `Diagonal`, `Pivoted` — LinOp classes (exposed
+- `ConstantDiagonal`, `Diagonal`, `Ellpack` — LinOp classes (exposed
   for tests/debugging and custom seeds; not a pytree-registered API).
 
 Current limitations (TODO #9c/#9d): no argnums, no has_aux, single
@@ -66,7 +66,7 @@ library.
   matrices for hand-rolled problems.
 - LinOp forms live in `lineaxpr/_base.py` with methods `.todense()`,
   `.to_bcoo()`, `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`,
-  `.primal_aval()` (and `Pivoted.pad_rows(lo, hi)`). Rules dispatch to
+  `.primal_aval()` (and `Ellpack.pad_rows(before, after)`). Rules dispatch to
   these methods rather than branching on LinOp type inside every rule.
 - Primitive rules are registered by direct dict assignment:
   `materialize_rules[lax.PRIM_p] = _rule_fn`. Each rule receives
@@ -154,7 +154,7 @@ benchmarks/
 docs/
   ARCHITECTURE.md           # walk algorithm, LinOp forms, rule pattern
   RESEARCH_NOTES.md         # empirical findings, sparsify comparison, DUAL deep-dive
-  TODO.md                   # prioritized future work (BandedPivoted is #1)
+  TODO.md                   # prioritized future work
 ```
 
 ## References

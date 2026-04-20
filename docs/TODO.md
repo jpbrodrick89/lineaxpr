@@ -20,7 +20,39 @@ patterns that currently raise `NotImplementedError`.
 
 **Win**: closes SPARSINE regression; small code change; high leverage.
 
-### 2. Internal CSR representation for arrowhead / disjoint-row adds
+### 2. Deferred `Sum` LinOp for order-independent add-chain bucketing
+
+**Motivation**: the heat-equation test in `tests/test_materialize.py`
+bloats a 3n-2 tridiagonal to 2.66× that. Walk instrumentation (2026-04-20)
+confirmed: `pad(X, (0,1)) + pad(X, (1,0))` hits different
+`(start_row, end_row)` ranges, forces an early BCOO promote, and the
+remaining `pad + add_any` chain for the neg/mirror term piles up concat
+duplicates. Reordering the add tree to group by-range first would keep
+everything Ellpack and flush to BCOO once.
+
+**Proposal**: `Sum(operands: tuple[LinOp, ...])` LinOp that `_add_rule`
+returns instead of eagerly BCOO-promoting mismatched kinds. Unary
+structural rules (`_mul_rule`, `_neg_rule`, `_pad_rule`, `_slice_rule`,
+`_squeeze_rule`, `_rev_rule`) distribute through Sum by pushing into
+each operand. Densifying rules (`_dot_general_rule`, `_scatter_add_rule`,
+`_reshape_rule`, `_broadcast_in_dim_rule`, `_reduce_sum_rule`, dense
+fallbacks, final walk output) flush via `_flush_sum` — bucket operands
+by matrix shape + `(start_row, end_row)`, emit per-bucket Ellpacks,
+BCOO-concat across buckets.
+
+**Expected win**: heat-equation 56 → 28 for n=8 (2.66× → 1.27× in
+general). Walk becomes order-independent for add-chains, robust against
+authorial style variations in sif2jax.
+
+**Affects**: new class in `_base.py`, new `_flush_sum` helper, ~8 rule
+touches. Carefully: any path reading operand attributes directly (e.g.
+`_linop_matrix_shape`) must handle Sum or be flushed first.
+
+**Ordering vs #3**: CSR (#3) partially subsumes Sum — disjoint-range
+union is natural in CSR. Defer Sum until after SPARSINE (#1) and
+possibly CSR (#3). If CSR closes the gap, Sum may not be needed.
+
+### 3. Internal CSR representation for arrowhead / disjoint-row adds
 
 **Motivation**: `Ellpack`'s `(start_row, end_row)` + uniform `k` forces
 padding or BCOO promotion when rows have very different entry counts

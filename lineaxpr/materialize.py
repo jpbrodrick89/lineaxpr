@@ -12,7 +12,7 @@ Public API (see `lineaxpr/__init__.py`):
 
 All of the above trace `linear_fn` to a jaxpr and walk its equations
 with per-primitive rules that propagate structural per-var operators.
-The LinOp classes (`ConstantDiagonal`, `Diagonal`, `Pivoted`; see
+The LinOp classes (`ConstantDiagonal`, `Diagonal`, `Ellpack`; see
 `_base.py`) let common patterns (scalar · I, vector-scaled I, sparse
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
@@ -35,9 +35,8 @@ from jax.extend import core
 from ._base import (
     ConstantDiagonal,
     Diagonal,
+    Ellpack,
     Identity,
-    Pivoted,
-    _concat,
     _to_bcoo,
     _to_dense,
     _traced_shape,
@@ -62,7 +61,7 @@ def _input_size(invals, traced):
             continue
         if isinstance(v, (ConstantDiagonal, Diagonal)):
             return v.n
-        if isinstance(v, Pivoted):
+        if isinstance(v, Ellpack):
             return v.in_size
         if isinstance(v, sparse.BCOO):
             return v.shape[-1]
@@ -104,12 +103,12 @@ def _mul_rule(invals, traced, n, **params):
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
         s = jnp.asarray(scale).reshape(())
-        if isinstance(traced_op, (ConstantDiagonal, Diagonal, Pivoted)):
+        if isinstance(traced_op, (ConstantDiagonal, Diagonal, Ellpack)):
             return traced_op.scale_scalar(s)
         if isinstance(traced_op, sparse.BCOO):
             return _bcoo_scale_scalar(traced_op, s)
         return s * traced_op
-    if isinstance(traced_op, (ConstantDiagonal, Diagonal, Pivoted)):
+    if isinstance(traced_op, (ConstantDiagonal, Diagonal, Ellpack)):
         return traced_op.scale_per_out_row(scale)
     if isinstance(traced_op, sparse.BCOO):
         return _bcoo_scale_per_out_row(traced_op, scale)
@@ -122,11 +121,26 @@ def _linop_matrix_shape(v):
     """Return the (out_size, in_size) of any LinOp/BCOO, or None for ndarray."""
     if isinstance(v, (ConstantDiagonal, Diagonal)):
         return (v.n, v.n)
-    if isinstance(v, Pivoted):
+    if isinstance(v, Ellpack):
         return (v.out_size, v.in_size)
     if isinstance(v, sparse.BCOO):
         return v.shape
     return None
+
+
+def _cols_equal(a, b) -> bool:
+    """Structural equality test for Ellpack ColArr (slice / np.ndarray).
+
+    Conservative: returns False for traced jnp arrays (can't compare at
+    trace time) and for heterogeneous pairs (slice vs array). That's
+    fine — the caller falls back to band concat, which is correct just
+    wider than necessary.
+    """
+    if isinstance(a, slice) and isinstance(b, slice):
+        return a.start == b.start and a.stop == b.stop and a.step == b.step
+    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
+        return a.shape == b.shape and np.array_equal(a, b)
+    return False
 
 
 def _bcoo_concat(bcoo_vals, shape):
@@ -171,38 +185,48 @@ def _add_rule(invals, traced, n, **params):
             )
         return Diagonal(total)
 
-    # All-Pivoted at matching shape: same-indices fast path, else concat entries.
-    if kinds == {Pivoted} and all(v.shape == vals[0].shape for v in vals):
+    # All-Ellpack with matching (start_row, end_row, out_size, in_size):
+    # extend bands (tuple concat + values stack on axis 1). O(1) bookkeeping,
+    # no per-row value copy. Mismatched ranges promote to BCOO below.
+    if kinds == {Ellpack}:
         first = vals[0]
-        static_equal = (
-            isinstance(first.out_rows, np.ndarray)
-            and isinstance(first.in_cols, np.ndarray)
-            and all(
-                isinstance(v.out_rows, np.ndarray)
-                and isinstance(v.in_cols, np.ndarray)
-                and np.array_equal(v.out_rows, first.out_rows)
-                and np.array_equal(v.in_cols, first.in_cols)
+        same_range = all(
+            v.start_row == first.start_row
+            and v.end_row == first.end_row
+            and v.out_size == first.out_size
+            and v.in_size == first.in_size
+            for v in vals[1:]
+        )
+        if same_range:
+            # Same-cols fast path: if every Ellpack has identical in_cols
+            # tuples (band for band), sum the values tensors directly
+            # (works uniformly for 1D k=1 and 2D k>=2 layouts).
+            same_cols = all(
+                len(v.in_cols) == len(first.in_cols)
+                and all(_cols_equal(c1, c2)
+                        for c1, c2 in zip(v.in_cols, first.in_cols))
                 for v in vals[1:]
             )
-        )
-        if static_equal:
-            summed = vals[0].values
-            for v in vals[1:]:
-                summed = summed + v.values
-            return Pivoted(first.out_rows, first.in_cols, summed,
+            if same_cols:
+                summed_values = vals[0].values
+                for v in vals[1:]:
+                    summed_values = summed_values + v.values
+                return Ellpack(first.start_row, first.end_row,
+                               first.in_cols, summed_values,
+                               first.out_size, first.in_size)
+            # Different cols: widen bands. Materialize each operand's
+            # values as (nrows, k_v) and concat on axis=1.
+            new_in_cols = tuple(c for v in vals for c in v.in_cols)
+            parts = [v.values if v.values.ndim == 2 else v.values[:, None]
+                     for v in vals]
+            new_values = jnp.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+            return Ellpack(first.start_row, first.end_row,
+                           new_in_cols, new_values,
                            first.out_size, first.in_size)
-        # Concat — disjoint rows stay "one per row"; overlaps fixed at
-        # densification by scatter-add.
-        return Pivoted(
-            _concat(v.out_rows for v in vals),
-            _concat(v.in_cols for v in vals),
-            jnp.concatenate([v.values for v in vals]),
-            vals[0].out_size, vals[0].in_size,
-        )
 
-    # Any combination of {ConstantDiagonal, Diagonal, Pivoted, BCOO} at
+    # Any combination of {ConstantDiagonal, Diagonal, Ellpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
-    if kinds <= {ConstantDiagonal, Diagonal, Pivoted, sparse.BCOO}:
+    if kinds <= {ConstantDiagonal, Diagonal, Ellpack, sparse.BCOO}:
         shapes = [_linop_matrix_shape(v) for v in vals]
         if all(s == shapes[0] for s in shapes):
             bcoo_vals = [_to_bcoo(v, n) for v in vals]
@@ -240,7 +264,7 @@ def _neg_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
         return op.negate()
     if isinstance(op, sparse.BCOO):
         return _bcoo_negate(op)
@@ -341,38 +365,30 @@ def _slice_rule(invals, traced, n, **params):
 
     # Structural fast path: 1D operand with unit stride and structural form.
     if (len(starts) == 1 and strides == (1,)
-            and isinstance(operand, (ConstantDiagonal, Diagonal, Pivoted, sparse.BCOO))):
+            and isinstance(operand, (ConstantDiagonal, Diagonal, Ellpack, sparse.BCOO))):
         s, e = starts[0], limits[0]
         k = e - s
         if isinstance(operand, ConstantDiagonal):
-            # Static numpy indices let downstream add_any dedup-by-equality.
-            return Pivoted(
-                np.arange(k),
-                np.arange(s, e),
-                jnp.broadcast_to(jnp.asarray(operand.value), (k,)),
-                k, operand.n,
+            # Single band with col indices [s..e); same-static arange in cols
+            # lets downstream add_any dedup-by-equality.
+            values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k,))
+            return Ellpack(
+                start_row=0, end_row=k,
+                in_cols=(np.arange(s, e),),
+                values=values_b,
+                out_size=k, in_size=operand.n,
             )
         if isinstance(operand, Diagonal):
-            return Pivoted(
-                np.arange(k),
-                np.arange(s, e),
-                operand.values[s:e],
-                k, operand.n,
+            return Ellpack(
+                start_row=0, end_row=k,
+                in_cols=(np.arange(s, e),),
+                values=operand.values[s:e],
+                out_size=k, in_size=operand.n,
             )
-        if isinstance(operand, Pivoted):
-            # Filter entries whose out_row is in [s, e); shift by -s. For
-            # masked-out entries we both zero the value AND clip the row
-            # index to a valid value (0) — the value is 0 so position
-            # doesn't matter, but the index must be in-bounds for scatter.
-            mask = (operand.out_rows >= s) & (operand.out_rows < e)
-            shifted = operand.out_rows - s
-            safe_rows = jnp.where(mask, shifted, 0)
-            return Pivoted(
-                safe_rows,
-                operand.in_cols,
-                operand.values * mask,
-                k, operand.in_size,
-            )
+        if isinstance(operand, Ellpack):
+            # slice(op, s, e) == op.pad_rows(-s, -(out_size - e)). pad_rows
+            # handles truncation + shift in one place.
+            return operand.pad_rows(-s, -(operand.out_size - e))
         rows = operand.indices[:, 0]
         mask = (rows >= s) & (rows < e)
         new_data = operand.data * mask
@@ -402,7 +418,7 @@ def _pad_rule(invals, traced, n, **params):
     config = params["padding_config"]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
     before, after = int(before), int(after)
-    if (isinstance(operand, Pivoted) and len(config) == 1
+    if (isinstance(operand, Ellpack) and len(config) == 1
             and int(interior) == 0):
         return operand.pad_rows(before, after)
     if (isinstance(operand, sparse.BCOO) and len(config) == 1
@@ -432,7 +448,7 @@ def _squeeze_rule(invals, traced, n, **params):
         if not dimensions:
             return op
         raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
-    if isinstance(op, (Pivoted, sparse.BCOO)):
+    if isinstance(op, (Ellpack, sparse.BCOO)):
         # Densify (sparse → (out_size, in_size)) then squeeze leading axes.
         return lax.squeeze(_to_dense(op, n), dimensions)
     # Dense: squeeze the specified axes (always output axes, never the last
@@ -654,11 +670,12 @@ def _gather_rule(invals, traced, n, **params):
     row_idx = start_indices[..., 0]
     if isinstance(operand, ConstantDiagonal):
         k = row_idx.shape[0]
-        return Pivoted(
-            np.arange(k),
-            row_idx,
-            jnp.broadcast_to(jnp.asarray(operand.value), (k,)),
-            k, operand.n,
+        values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k,))
+        return Ellpack(
+            start_row=0, end_row=k,
+            in_cols=(row_idx,),
+            values=values_b,
+            out_size=k, in_size=operand.n,
         )
     if isinstance(operand, sparse.BCOO):
         raise NotImplementedError("gather on BCOO operand")
@@ -690,20 +707,11 @@ def _scatter_add_rule(invals, traced, n, **params):
     # out_idx is 2D+ too; flatten the batch dims so we treat each element as
     # a scalar target position.
     out_idx_flat = out_idx.reshape(-1)
-    len(updates.shape) - 1  # all axes except the input-coord
-    if isinstance(updates, Pivoted):
-        # Pivoted's out_rows are 1D. If updates batches more dims, we need to
-        # flatten them. For now, support the 1D case directly and 2D via
-        # densify-and-scatter.
-        if updates.values.ndim == 1:
-            return Pivoted(
-                out_idx_flat[updates.out_rows],
-                updates.in_cols,
-                updates.values,
-                out_size, n,
-            )
-        # Fall through to dense
-        updates = _to_dense(updates, n)
+    if isinstance(updates, Ellpack):
+        # Output rows are non-contiguous in general (out_idx_flat is an
+        # arbitrary permutation), so fall back to BCOO — structural win
+        # of staying Ellpack is not available here.
+        updates = _to_bcoo(updates, n)
     if isinstance(updates, sparse.BCOO):
         new_rows = out_idx_flat[updates.indices[:, 0]]
         new_indices = jnp.stack([new_rows, updates.indices[:, 1]], axis=1)
@@ -829,11 +837,11 @@ def to_dense(op):
     """Densify a LinOp returned by `sparsify` to a jnp.ndarray.
 
     Uniform across all possible return types:
-    - Our LinOp classes (ConstantDiagonal, Diagonal, Pivoted) → `.todense()`.
+    - Our LinOp classes (ConstantDiagonal, Diagonal, Ellpack) → `.todense()`.
     - `jax.experimental.sparse.BCOO` → `.todense()`.
     - Plain ndarray → passthrough.
     """
-    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
         return op.todense()
     if isinstance(op, sparse.BCOO):
         return op.todense()
@@ -850,7 +858,7 @@ def to_bcoo(op):
     """
     if isinstance(op, sparse.BCOO):
         return op
-    if isinstance(op, (ConstantDiagonal, Diagonal, Pivoted)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
         return op.to_bcoo()
     return op
 

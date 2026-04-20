@@ -12,7 +12,7 @@ import pytest
 from jax import core
 from jax.experimental import sparse
 
-from lineaxpr import ConstantDiagonal, Diagonal, Identity, Pivoted
+from lineaxpr import ConstantDiagonal, Diagonal, Ellpack, Identity
 
 
 # ---------------------------- Identity / ConstantDiagonal -----------------
@@ -119,104 +119,173 @@ def test_diagonal_primal_aval():
     assert aval.dtype == jnp.float32
 
 
-# ---------------------------- Pivoted ------------------------------------
+# ---------------------------- Ellpack ------------------------------------
 
 
-def _simple_pivoted():
-    """3×4 Pivoted with entries M[0, 1]=5, M[2, 3]=7."""
-    return Pivoted(
-        out_rows=np.array([0, 2]),
-        in_cols=np.array([1, 3]),
-        values=jnp.asarray([5.0, 7.0]),
+def _simple_ellpack():
+    """3×4 Ellpack, two bands, rows [0, 3).
+
+    M[0,1]=5, M[0,2]=50; M[1,0]=6, M[1,3]=60; M[2,3]=7, M[2,2]=70.
+    """
+    return Ellpack(
+        start_row=0,
+        end_row=3,
+        in_cols=(np.array([1, 0, 3]), np.array([2, 3, 2])),
+        values=(jnp.asarray([5.0, 6.0, 7.0]),
+                jnp.asarray([50.0, 60.0, 70.0])),
         out_size=3,
         in_size=4,
     )
 
 
-def test_pivoted_to_dense():
-    p = _simple_pivoted()
-    expected = np.zeros((3, 4))
-    expected[0, 1] = 5.0
-    expected[2, 3] = 7.0
-    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
+def _ellpack_expected_dense():
+    m = np.zeros((3, 4))
+    m[0, 1] = 5.0; m[0, 2] = 50.0
+    m[1, 0] = 6.0; m[1, 3] = 60.0
+    m[2, 3] = 7.0; m[2, 2] = 70.0
+    return m
 
 
-def test_pivoted_to_bcoo_roundtrip():
-    p = _simple_pivoted()
-    b = p.to_bcoo()
+def test_ellpack_basic_properties():
+    e = _simple_ellpack()
+    assert e.shape == (3, 4)
+    assert e.nrows == 3
+    assert e.k == 2
+    assert e.nse == 6
+    assert e.n == 4
+
+
+def test_ellpack_to_dense():
+    e = _simple_ellpack()
+    np.testing.assert_array_equal(np.asarray(e.todense()), _ellpack_expected_dense())
+
+
+def test_ellpack_to_bcoo_roundtrip():
+    e = _simple_ellpack()
+    b = e.to_bcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (3, 4)
-    np.testing.assert_array_equal(np.asarray(b.todense()), p.todense())
+    np.testing.assert_array_equal(np.asarray(b.todense()), _ellpack_expected_dense())
 
 
-def test_pivoted_negate():
-    p = _simple_pivoted().negate()
-    expected = np.zeros((3, 4))
-    expected[0, 1] = -5.0
-    expected[2, 3] = -7.0
-    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
+def test_ellpack_negate():
+    e = _simple_ellpack().negate()
+    np.testing.assert_array_equal(
+        np.asarray(e.todense()), -_ellpack_expected_dense()
+    )
 
 
-def test_pivoted_scale_scalar():
-    p = _simple_pivoted().scale_scalar(jnp.asarray(2.0))
-    expected = np.zeros((3, 4))
-    expected[0, 1] = 10.0
-    expected[2, 3] = 14.0
-    np.testing.assert_array_equal(np.asarray(p.todense()), expected)
+def test_ellpack_scale_scalar():
+    e = _simple_ellpack().scale_scalar(jnp.asarray(2.0))
+    np.testing.assert_array_equal(
+        np.asarray(e.todense()), 2.0 * _ellpack_expected_dense()
+    )
 
 
-def test_pivoted_scale_per_out_row_fast_path():
-    # nse == scale.shape[0] fires the "no gather" fast path.
-    p = _simple_pivoted()
-    assert p.nse == 2
-    scaled = p.scale_per_out_row(jnp.asarray([10.0, 100.0]))
-    # Entries scaled element-wise (nse-length path).
-    expected = np.zeros((3, 4))
-    expected[0, 1] = 50.0
-    expected[2, 3] = 700.0
+def test_ellpack_scale_per_out_row_nrows_length():
+    e = _simple_ellpack()
+    scaled = e.scale_per_out_row(jnp.asarray([10.0, 100.0, 1000.0]))
+    expected = _ellpack_expected_dense() * np.array([[10.0], [100.0], [1000.0]])
     np.testing.assert_array_equal(np.asarray(scaled.todense()), expected)
 
 
-def test_pivoted_scale_per_out_row_gather_path():
-    # scale.shape[0] == out_size takes the gather path: values *= scale[out_rows].
-    p = _simple_pivoted()
-    scaled = p.scale_per_out_row(jnp.asarray([10.0, 20.0, 100.0]))  # len 3 = out_size
-    expected = np.zeros((3, 4))
-    expected[0, 1] = 50.0      # 5 * scale[0]
-    expected[2, 3] = 700.0     # 7 * scale[2]
+def test_ellpack_scale_per_out_row_out_size_length():
+    # Ellpack with start_row > 0 so out_size > nrows.
+    e = Ellpack(
+        start_row=1, end_row=3,
+        in_cols=(np.array([0, 2]),),
+        values=(jnp.asarray([5.0, 7.0]),),
+        out_size=4, in_size=3,
+    )
+    # Scale vector is length out_size = 4; only entries at rows 1 and 2 hit.
+    scaled = e.scale_per_out_row(jnp.asarray([1.0, 10.0, 100.0, 1000.0]))
+    expected = np.zeros((4, 3))
+    expected[1, 0] = 50.0
+    expected[2, 2] = 700.0
     np.testing.assert_array_equal(np.asarray(scaled.todense()), expected)
 
 
-def test_pivoted_pad_rows_positive():
-    p = _simple_pivoted()           # shape (3, 4)
-    padded = p.pad_rows(1, 2)       # shape (6, 4); rows shifted by +1
+def test_ellpack_pad_rows_positive():
+    e = _simple_ellpack()
+    padded = e.pad_rows(1, 2)  # out_size 3+1+2=6, rows shift by +1
     assert padded.shape == (6, 4)
     expected = np.zeros((6, 4))
-    expected[1, 1] = 5.0
-    expected[3, 3] = 7.0
+    src = _ellpack_expected_dense()
+    expected[1:4, :] = src
     np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
 
 
-def test_pivoted_pad_rows_negative_truncates():
-    # Truncate top row with before=-1: entry at row 0 falls out; entry at row 2 stays at 1.
-    p = _simple_pivoted()                    # out_rows [0, 2]
-    padded = p.pad_rows(-1, 0)               # out_size 2; new rows [-1 (drop), 1 (keep)]
+def test_ellpack_pad_rows_negative_truncates_top():
+    e = _simple_ellpack()
+    # before=-1: row 0 falls out; rows 1,2 shift to 0,1. new out_size = 2.
+    padded = e.pad_rows(-1, 0)
     assert padded.shape == (2, 4)
     expected = np.zeros((2, 4))
-    expected[1, 3] = 7.0
+    expected[0, 0] = 6.0; expected[0, 3] = 60.0
+    expected[1, 3] = 7.0; expected[1, 2] = 70.0
     np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
 
 
-def test_pivoted_primal_aval():
-    p = _simple_pivoted()
-    aval = p.primal_aval()
+def test_ellpack_pad_rows_negative_truncates_bottom():
+    e = _simple_ellpack()
+    # after=-2: new out_size = 1; only row 0 survives.
+    padded = e.pad_rows(0, -2)
+    assert padded.shape == (1, 4)
+    expected = np.zeros((1, 4))
+    expected[0, 1] = 5.0; expected[0, 2] = 50.0
+    np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
+
+
+def test_ellpack_minus_one_sentinel_masks_slot():
+    e = Ellpack(
+        start_row=0, end_row=3,
+        in_cols=(np.array([0, 1, 2]), np.array([2, -1, 0])),
+        values=(jnp.asarray([1.0, 2.0, 3.0]),
+                jnp.asarray([10.0, 20.0, 30.0])),
+        out_size=3, in_size=3,
+    )
+    expected = np.zeros((3, 3))
+    expected[0, 0] = 1.0; expected[0, 2] = 10.0
+    expected[1, 1] = 2.0  # sentinel drops the 20.0
+    expected[2, 2] = 3.0; expected[2, 0] = 30.0
+    np.testing.assert_array_equal(np.asarray(e.todense()), expected)
+    np.testing.assert_array_equal(np.asarray(e.to_bcoo().todense()), expected)
+
+
+def test_ellpack_slice_band_resolves():
+    # in_cols = slice(1, 5) on a length-4 row range => cols [1,2,3,4].
+    e = Ellpack(
+        start_row=0, end_row=4,
+        in_cols=(slice(1, 5),),
+        values=(jnp.ones((4,)),),
+        out_size=4, in_size=5,
+    )
+    expected = np.zeros((4, 5))
+    for r in range(4):
+        expected[r, r + 1] = 1.0
+    np.testing.assert_array_equal(np.asarray(e.todense()), expected)
+    np.testing.assert_array_equal(np.asarray(e.to_bcoo().todense()), expected)
+
+
+def test_ellpack_intra_row_duplicate_cols_sum():
+    # Two bands both hitting col 0 on row 0 — densify must sum.
+    e = Ellpack(
+        start_row=0, end_row=1,
+        in_cols=(np.array([0]), np.array([0])),
+        values=(jnp.asarray([3.0]), jnp.asarray([4.0])),
+        out_size=1, in_size=2,
+    )
+    expected = np.zeros((1, 2))
+    expected[0, 0] = 7.0
+    np.testing.assert_array_equal(np.asarray(e.todense()), expected)
+
+
+def test_ellpack_primal_aval():
+    e = _simple_ellpack()
+    aval = e.primal_aval()
+    assert isinstance(aval, core.ShapedArray)
     assert aval.shape == (4,)
-    assert aval.dtype == p.values.dtype
-
-
-def test_pivoted_nse_reports_entries():
-    p = _simple_pivoted()
-    assert p.nse == 2
+    assert aval.dtype == e.dtype
 
 
 # ---------------------------- invariants ---------------------------------
@@ -228,9 +297,9 @@ def test_pivoted_nse_reports_entries():
         lambda: Identity(5),
         lambda: ConstantDiagonal(5, 2.5),
         lambda: Diagonal(jnp.arange(5, dtype=jnp.float64)),
-        lambda: Pivoted(np.arange(3), np.arange(3), jnp.ones(3), 5, 5),
+        lambda: _simple_ellpack(),
     ],
-    ids=["Identity", "ConstantDiagonal", "Diagonal", "Pivoted"],
+    ids=["Identity", "ConstantDiagonal", "Diagonal", "Ellpack"],
 )
 def test_to_bcoo_dense_agreement(op_factory):
     op = op_factory()
@@ -244,9 +313,9 @@ def test_to_bcoo_dense_agreement(op_factory):
     [
         lambda: ConstantDiagonal(5, 2.5),
         lambda: Diagonal(jnp.arange(5, dtype=jnp.float64) + 1.0),
-        lambda: Pivoted(np.arange(3), np.arange(3), jnp.ones(3), 5, 5),
+        lambda: _simple_ellpack(),
     ],
-    ids=["ConstantDiagonal", "Diagonal", "Pivoted"],
+    ids=["ConstantDiagonal", "Diagonal", "Ellpack"],
 )
 def test_negate_then_scale_minus_one_agree(op_factory):
     op = op_factory()
