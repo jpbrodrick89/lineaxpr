@@ -63,15 +63,18 @@ METHOD_ALIASES = {
     "asdex_bcoo": "asdex_bcoo",
 }
 
-# Plot style registry — keep consistent across figures.
+# Plot style registry — keep consistent across figures. Labels use the
+# public API names (lineaxpr.hessian / lineaxpr.bcoo_hessian) even
+# though the test function names are test_materialize / test_bcoo_jacobian —
+# users recognize the API, not the internal test names.
 METHOD_STYLE = {
-    "materialize":        dict(label="lineaxpr.materialize",   color="C0", linestyle="-"),
-    "bcoo_jacobian":      dict(label="lineaxpr.bcoo_jacobian", color="C1", linestyle="-"),
-    "jax_hessian":        dict(label="jax.hessian (unfolded)", color="C2", linestyle="--"),
-    "jax_hessian_folded": dict(label="jax.hessian (folded)",   color="C2", linestyle="-."),
+    "materialize":        dict(label="lineaxpr.hessian",          color="C0", linestyle="-"),
+    "bcoo_jacobian":      dict(label="lineaxpr.bcoo_hessian",     color="C1", linestyle="-"),
+    "jax_hessian":        dict(label="jax.hessian (unfolded)",    color="C2", linestyle="--"),
+    "jax_hessian_folded": dict(label="jax.hessian (folded)",      color="C2", linestyle="-."),
     "jax_min":            dict(label="jax.hessian (best of folded/unfolded)", color="C3", linestyle="-"),
-    "asdex_dense":        dict(label="asdex.dense",            color="C4", linestyle=":"),
-    "asdex_bcoo":         dict(label="asdex.bcoo",             color="C5", linestyle="-"),
+    "asdex_dense":        dict(label="asdex.dense",               color="C4", linestyle=":"),
+    "asdex_bcoo":         dict(label="asdex.bcoo",                color="C5", linestyle="-"),
 }
 
 

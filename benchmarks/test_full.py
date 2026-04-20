@@ -146,16 +146,15 @@ def _make(extractor_kind, problem):
     raise ValueError(extractor_kind)
 
 
-# asdex: share the coloring across dense/bcoo output formats (coloring
-# is the expensive pass; it's invariant to output_format). Cached per
-# problem name so when a bench runs BOTH test_asdex_dense[P] and
-# test_asdex_bcoo[P] in the same session, coloring runs exactly once.
-_ASDEX_COLORING_CACHE: dict = {}
+def _asdex_compile(problem, output_format: str):
+    """Build and compile an asdex hessian fn.
 
-
-def _asdex_coloring(problem):
-    if problem.name in _ASDEX_COLORING_CACHE:
-        return _ASDEX_COLORING_CACHE[problem.name]
+    Uses a fresh `hessian_coloring` per call: asdex appears to mutate
+    the ColoredPattern during `hessian_from_coloring`, so reusing a
+    coloring across output_formats breaks ("Computation compiled for
+    4 inputs but called with 1"). Reproduced in /tmp/debug_asdex.py.
+    Coloring itself is fast (~15ms per probe), negligible overhead.
+    """
     args_c = problem.args
 
     def f(y):
@@ -164,23 +163,6 @@ def _asdex_coloring(problem):
     try:
         coloring = asdex.hessian_coloring(
             f, input_shape=problem.y0.shape, symmetric=True)
-    except Exception:
-        coloring = None
-    _ASDEX_COLORING_CACHE[problem.name] = coloring
-    return coloring
-
-
-def _asdex_compile(problem, output_format: str):
-    """Build and compile an asdex hessian fn sharing the cached coloring."""
-    coloring = _asdex_coloring(problem)
-    if coloring is None:
-        return None
-    args_c = problem.args
-
-    def f(y):
-        return problem.objective(y, args_c)
-
-    try:
         fn = jax.jit(asdex.hessian_from_coloring(
             f, coloring, output_format=output_format))
     except Exception:

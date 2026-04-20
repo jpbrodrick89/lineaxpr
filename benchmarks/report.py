@@ -244,6 +244,21 @@ def main():
             )
 
     _summarise(rows)
+    # Regressions summary: any lineaxpr method >2x slower than baseline.
+    # 2x is the informal threshold for "concerning" vs. "within noise".
+    n_bcoo_with_baseline = sum(1 for r in rows if r["bcoo"] and r["jax_min"])
+    bcoo_regressions = [
+        r for r in rows
+        if r["bcoo"] and r["jax_min"] and r["bcoo"] > 2 * r["jax_min"]
+    ]
+    print(f"\n=== bcoo_hessian >2x slower than jax_min: "
+          f"{len(bcoo_regressions)} / {n_bcoo_with_baseline} ===")
+    bcoo_regressions.sort(key=lambda r: r["bcoo"] / r["jax_min"], reverse=True)
+    for r in bcoo_regressions:
+        print(f"  {r['name']:18s} n={r['n']:>5d}  "
+              f"{r['bcoo']/r['jax_min']:>6.1f}x slower  "
+              f"({r['bcoo']:.0f}µs vs {r['jax_min']:.0f}µs)")
+
     # Top-N regressions: where bcoo is SLOWER than baseline.
     _show_top(rows,
               lambda r: (r["bcoo"] / r["jax_min"]) if (r["bcoo"] and r["jax_min"]) else None,
