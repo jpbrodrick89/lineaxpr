@@ -1,9 +1,12 @@
 """Transform-level tests for `lineaxpr.sparsify`.
 
-Unlike `test_materialize.py` (which tests the public `materialize` /
-`bcoo_jacobian` wrappers on concrete problems), these tests exercise the
-transform itself: explicit seeds, const-prop folding, nested jit,
-missing-primitive error format, and multi-output error handling.
+Unlike `test_materialize.py` (hand-rolled problems via the jax-like
+public API), these tests exercise the primitive transform — custom
+seeds, const-prop folding, nested jit, missing-primitive error format,
+and multi-output error handling.
+
+`sparsify` IS the thing under test here, so direct calls are correct;
+higher-level tests should prefer `lineaxpr.jacfwd` / `hessian` / etc.
 """
 
 from __future__ import annotations

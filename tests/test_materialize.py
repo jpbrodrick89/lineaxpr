@@ -1,31 +1,29 @@
-"""Correctness tests with hand-rolled linear fns + known-pattern Hessians.
+"""Correctness tests with hand-rolled problems + known-pattern Jacobians.
 
 Unlike `test_correctness.py` (which sweeps curated CUTEst problems with a
 numerical reference), these tests assert against **explicit expected
 matrices** so readers can see what the extractor should produce. They
-also cover:
+cover:
 
-- Non-square Jacobians (`jnp.diff`, `jnp.cumsum`) — which `materialize`
-  supports despite its Hessian-first framing.
-- A banded / arrowhead / tridiagonal sparsity pattern zoo.
+- Non-square Jacobians (`jnp.diff`, `jnp.cumsum`) via `lineaxpr.jacfwd`.
+- A banded / arrowhead / tridiagonal sparsity pattern zoo via
+  `lineaxpr.hessian` / `lineaxpr.bcoo_hessian`.
 - y-dependent Hessian (1D heat equation with nonlinear κ(T) = T^2.5).
-- Edge cases: n=1, n=2, pass-through linear fn.
+- Edge cases: n=1, n=2, pass-through linear fn, zero linear fn.
+
+Tests call the public API (jacfwd, hessian, bcoo_hessian). For direct
+unit tests of the `materialize` transform's format kwarg, see
+`test_public_api.py`.
 """
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax.experimental import sparse
 
-from lineaxpr import (
-    Identity,
-    bcoo_hessian,
-    materialize,
-    sparsify,
-)
+import lineaxpr
 
 
 # ----------------------- non-square Jacobians ----------------------------
@@ -34,9 +32,8 @@ from lineaxpr import (
 @pytest.mark.parametrize("n", [3, 10, 50])
 def test_jnp_diff_bidiagonal(n):
     """`jnp.diff(x)` is linear R^n → R^{n-1}; matrix is [-1, +1] bidiagonal."""
-    lin = jnp.diff
     y = jnp.zeros(n)  # shape witness only
-    M = materialize(lin, y)
+    M = lineaxpr.jacfwd(jnp.diff)(y)
     assert M.shape == (n - 1, n)
     expected = np.zeros((n - 1, n))
     for i in range(n - 1):
@@ -48,9 +45,8 @@ def test_jnp_diff_bidiagonal(n):
 @pytest.mark.parametrize("n", [3, 10, 50])
 def test_jnp_cumsum_lower_triangular_ones(n):
     """`jnp.cumsum(x)` is linear R^n → R^n; matrix is lower triangular of ones."""
-    lin = jnp.cumsum
     y = jnp.zeros(n)
-    M = materialize(lin, y)
+    M = lineaxpr.jacfwd(jnp.cumsum)(y)
     assert M.shape == (n, n)
     expected = np.tril(np.ones((n, n)))
     np.testing.assert_allclose(np.asarray(M), expected)
@@ -65,7 +61,7 @@ def test_matrix_multiply_constant_matrix():
         return jnp.asarray(A) @ x
 
     y = jnp.zeros(7)
-    M = materialize(lin, y)
+    M = lineaxpr.jacfwd(lin)(y)
     np.testing.assert_allclose(np.asarray(M), A, atol=1e-12)
 
 
@@ -82,8 +78,7 @@ def _arrowhead_f(x):
 @pytest.mark.parametrize("n", [3, 8, 20])
 def test_arrowhead_hessian_pattern(n):
     y = jnp.ones(n)  # shape witness; f is quadratic so value of y doesn't matter
-    _, hvp = jax.linearize(jax.grad(_arrowhead_f), y)
-    H = materialize(hvp, y)
+    H = lineaxpr.hessian(_arrowhead_f)(y)
     expected = np.eye(n)
     expected[0, 1:] = 1.0
     expected[1:, 0] = 1.0
@@ -91,7 +86,7 @@ def test_arrowhead_hessian_pattern(n):
 
     # Same pattern via bcoo_hessian; may return dense ndarray for dense
     # fallback or BCOO for structural case.
-    S = bcoo_hessian(_arrowhead_f)(y)
+    S = lineaxpr.bcoo_hessian(_arrowhead_f)(y)
     dense_S = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
     np.testing.assert_allclose(dense_S, expected, atol=1e-12)
 
@@ -115,8 +110,7 @@ def _heat_energy(T):
 @pytest.mark.parametrize("n", [5, 20, 100])
 def test_heat_equation_hessian_is_tridiagonal(n):
     T = 1.0 + jnp.arange(n, dtype=jnp.float64) * 0.1  # smooth positive profile
-    _, hvp = jax.linearize(jax.grad(_heat_energy), T)
-    H = materialize(hvp, T)
+    H = lineaxpr.hessian(_heat_energy)(T)
 
     # Symmetry (analytic guarantee).
     np.testing.assert_allclose(np.asarray(H), np.asarray(H).T, atol=1e-10)
@@ -130,7 +124,7 @@ def test_heat_equation_hessian_is_tridiagonal(n):
     assert float(jnp.max(jnp.abs(jnp.diag(H)))) > 0.1
 
     # BCOO path agrees.
-    S = bcoo_hessian(_heat_energy)(T)
+    S = lineaxpr.bcoo_hessian(_heat_energy)(T)
     dense_S = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
     np.testing.assert_allclose(dense_S, H_np, atol=1e-10)
     # Tridiagonal nnz upper bound = 3n - 2. Current extractor emits
@@ -147,31 +141,31 @@ def test_heat_equation_hessian_is_tridiagonal(n):
 def test_n1_identity():
     """n=1 exercises short-circuit path and should still produce [[1]]."""
     lin = lambda x: x  # noqa: E731
-    M = materialize(lin, jnp.zeros(1))
+    M = lineaxpr.jacfwd(lin)(jnp.zeros(1))
     np.testing.assert_array_equal(np.asarray(M), np.eye(1))
 
 
 def test_n2_scaled_identity():
     lin = lambda x: 3.0 * x  # noqa: E731
-    M = materialize(lin, jnp.zeros(2))
+    M = lineaxpr.jacfwd(lin)(jnp.zeros(2))
     np.testing.assert_array_equal(np.asarray(M), 3.0 * np.eye(2))
 
 
 def test_passthrough_linear_fn():
     lin = lambda x: x  # noqa: E731
     # Above short-circuit (n >= 16) exercises the walk path.
-    M = materialize(lin, jnp.zeros(32))
+    M = lineaxpr.jacfwd(lin)(jnp.zeros(32))
     np.testing.assert_array_equal(np.asarray(M), np.eye(32))
 
 
 def test_zero_linear_fn():
     """lin(x) = 0 · x → Jacobian is zero."""
     lin = lambda x: 0.0 * x  # noqa: E731
-    M = materialize(lin, jnp.zeros(32))
+    M = lineaxpr.jacfwd(lin)(jnp.zeros(32))
     np.testing.assert_array_equal(np.asarray(M), np.zeros((32, 32)))
 
 
-# ----------------------- BCOO output on sparse Jacobian ------------------
+# ----------------------- BCOO output on sparse Hessian -------------------
 
 
 def test_bcoo_returned_for_sparse_pattern():
@@ -181,8 +175,7 @@ def test_bcoo_returned_for_sparse_pattern():
         return jnp.sum(x**2) + jnp.sum(x[:-1] * x[1:])
 
     y = jnp.arange(1, 33, dtype=jnp.float64)
-    _, hvp = jax.linearize(jax.grad(f), y)
-    S = bcoo_hessian(f)(y)
+    S = lineaxpr.bcoo_hessian(f)(y)
     assert isinstance(S, sparse.BCOO)
     # Pattern: tridiagonal ⇒ ≤ 3n-2 nnz; allow 2× slack.
     assert S.nse <= 2 * (3 * 32 - 2)
@@ -198,8 +191,7 @@ def test_dense_returned_for_dense_pattern():
         return 0.5 * x @ jnp.asarray(A) @ x
 
     y = jnp.zeros(20)
-    _, hvp = jax.linearize(jax.grad(f), y)
-    out = bcoo_hessian(f)(y)
+    out = lineaxpr.bcoo_hessian(f)(y)
     # Walk may return either dense ndarray OR a dense-ish BCOO; both are
     # acceptable here. Just check correctness.
     dense = np.asarray(out.todense() if isinstance(out, sparse.BCOO) else out)

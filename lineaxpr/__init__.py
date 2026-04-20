@@ -18,7 +18,6 @@ Public API:
 from .materialize import (
     bcoo_hessian,
     bcoo_jacfwd,
-    bcoo_jacobian,
     bcoo_jacrev,
     hessian,
     jacfwd,
@@ -39,7 +38,7 @@ from ._base import (
 )
 
 __all__ = [
-    # jax-like public API (preferred)
+    # jax-like public API
     "jacfwd",
     "bcoo_jacfwd",
     "jacrev",
@@ -58,6 +57,4 @@ __all__ = [
     "Diagonal",
     "Identity",
     "Pivoted",
-    # deprecated — kept for back-compat
-    "bcoo_jacobian",
 ]

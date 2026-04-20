@@ -29,7 +29,7 @@ import jax.numpy as jnp
 import pytest
 from jax.experimental import sparse
 
-from lineaxpr import materialize
+import lineaxpr
 
 
 MAX_N = 5000
@@ -90,17 +90,15 @@ def test_sif2jax_correctness_and_nse(param):
         return p.objective(z, p.args)
 
     try:
-        _, hvp = jax.linearize(jax.grad(f), y)
-        S = materialize(hvp, y, format="bcoo")
+        S = lineaxpr.bcoo_hessian(f)(y)
     except NotImplementedError as e:
         pytest.skip(f"walk raised: {e}")
 
     # Correctness via random-vector matvec (avoids O(n²) memory).
+    # Compare S @ v against hvp(v) where hvp is jax's linearized gradient.
+    _, hvp = jax.linearize(jax.grad(f), y)
     v = jax.random.normal(jax.random.key(0), y.shape, dtype=y.dtype)
-    if isinstance(S, sparse.BCOO):
-        Sv = S @ v
-    else:
-        Sv = S @ v  # ndarray fallback; same op
+    Sv = S @ v  # works for both BCOO and ndarray
     hvp_v = hvp(v)
     denom = float(jnp.max(jnp.abs(hvp_v))) + 1e-30
     rel_err = float(jnp.max(jnp.abs(Sv - hvp_v))) / denom

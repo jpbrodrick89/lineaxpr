@@ -117,8 +117,8 @@ lineaxpr/
 │   │                      #   jacfwd / bcoo_jacfwd
 │   │                      #   jacrev / bcoo_jacrev
 │   │                      #   hessian / bcoo_hessian
-│   │                      #   materialize(..., format=...), sparsify
-│   │                      #   to_dense, to_bcoo
+│   │                      #   materialize(..., format='dense'|'bcoo')
+│   │                      #   sparsify, to_dense, to_bcoo
 │   │                      #   Identity, ConstantDiagonal, Diagonal, Pivoted
 │   │                      #   materialize_rules
 │   ├── _base.py           # LinOp classes with methods

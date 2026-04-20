@@ -148,30 +148,6 @@ def test_materialize_default_is_dense():
     assert not isinstance(out, sparse.BCOO)
 
 
-# --------------------------- deprecation ----------------------------------
-
-
-def test_bcoo_jacobian_emits_deprecation_warning():
-    def f(x): return 0.5 * jnp.sum(x**2)
-    y = jnp.arange(32, dtype=jnp.float64)
-    _, hvp = jax.linearize(jax.grad(f), y)
-    with pytest.warns(DeprecationWarning, match="deprecated"):
-        lineaxpr.bcoo_jacobian(hvp, y)
-
-
-def test_bcoo_jacobian_still_returns_correct_matrix():
-    """The deprecated passthrough must keep producing correct results."""
-    def f(x): return 0.5 * jnp.sum(x**2) + x[0] * jnp.sum(x[1:])
-    y = jnp.arange(20, dtype=jnp.float64)
-    _, hvp = jax.linearize(jax.grad(f), y)
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        out = lineaxpr.bcoo_jacobian(hvp, y)
-    ref = jax.hessian(f)(y)
-    np.testing.assert_allclose(_fetch_dense(out), np.asarray(ref), atol=1e-12)
-
-
 # --------------------------- inside jit -----------------------------------
 
 

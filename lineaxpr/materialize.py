@@ -902,25 +902,6 @@ def materialize(linear_fn, primal, format: str = "dense"):
     return to_bcoo(linop)
 
 
-def bcoo_jacobian(linear_fn, primal):
-    """DEPRECATED: use `materialize(linear_fn, primal, format='bcoo')` or
-    one of the jax-like wrappers (`bcoo_jacfwd`, `bcoo_jacrev`,
-    `bcoo_hessian`). Kept as a passthrough for backward compatibility.
-
-    Whether the fn is fwd or rev Jacobian is ambiguous from the name —
-    the jax-like variants make it explicit.
-    """
-    import warnings
-    warnings.warn(
-        "lineaxpr.bcoo_jacobian is deprecated; use "
-        "materialize(..., format='bcoo') or bcoo_jacfwd / bcoo_jacrev / "
-        "bcoo_hessian depending on which Jacobian you want.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return materialize(linear_fn, primal, format="bcoo")
-
-
 # -------------------------- jax-like public API --------------------------
 
 

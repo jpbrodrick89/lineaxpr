@@ -23,14 +23,26 @@ Lower-level building blocks:
 - `ConstantDiagonal`, `Diagonal`, `Pivoted` — LinOp classes (exposed
   for tests/debugging and custom seeds; not a pytree-registered API).
 
-Deprecated:
-- `bcoo_jacobian(linear_fn, primal)` — passthrough to
-  `materialize(..., format='bcoo')`. Removed in a future release; the
-  fwd-vs-rev distinction should be explicit.
-
 Current limitations (TODO #9c/#9d): no argnums, no has_aux, single
 input, single output, 1D primal. `jax.vmap` composition not yet
 verified.
+
+## Testing philosophy
+
+Tests should call the public jax-like API (`hessian`, `jacfwd`,
+`jacrev`, and `bcoo_*` variants) wherever possible. Reserve direct
+`materialize` / `sparsify` calls for:
+
+- `tests/test_ops.py` — LinOp class methods (unit).
+- `tests/test_sparsify.py` — transform-level behavior (custom seeds,
+  const-prop, missing-primitive errors). `sparsify` IS the thing under
+  test; public API would just be indirection.
+- `tests/test_public_api.py` — unit tests of the `format` kwarg,
+  invalid-format error, default-dense behavior.
+
+Everything else (Hessian correctness, sweep, hand-rolled problems)
+should go through the public API since that's how users exercise the
+library.
 
 ## Non-goals
 - Coloring-based extraction (that's asdex's approach; we do per-linearization
