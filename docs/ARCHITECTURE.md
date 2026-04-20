@@ -33,6 +33,7 @@ linop.to_bcoo()    # sparse.BCOO
 ```
 
 Composition layers (outer → inner):
+
 - `hessian(f)(y)` composes `jax.linearize(jax.grad(f), y)[1]` with
   `materialize(..., format="dense")`.
 - `jacfwd(f)(y)` composes `jax.linearize(f, y)[1]` with `materialize`.
@@ -40,7 +41,7 @@ Composition layers (outer → inner):
   with `materialize`, then transposes so the output shape matches
   `jax.jacrev`.
 - `materialize(linear_fn, primal, format=...)` composes `sparsify(...)
-  (Identity(primal.size, dtype=primal.dtype))` with `to_dense` / `to_bcoo`.
+(Identity(primal.size, dtype=primal.dtype))` with `to_dense` / `to_bcoo`.
 - `sparsify` is the primitive transform. Inspired by
   `jax.experimental.sparse.sparsify` but specialized for the
   linearize-of-grad jaxpr pattern with a richer format space
@@ -73,29 +74,35 @@ Env values are `(traced: bool, value)`. For traced vars, `value` is one
 of:
 
 ### `ConstantDiagonal(n, value)`
+
 Represents `value · I_n`. `Identity(n, dtype=...)` is the standard seed
 constructor for this form. Survives scalar multiplication.
 
 ### `Diagonal(values)`
+
 Represents `diag(values)`. Emerges from `mul(closure_vec, ConstantDiagonal)`.
 
 ### `Pivoted(out_rows, in_cols, values, out_size, in_size)`
+
 A sparse operator with at most one nonzero per row. Emerges from
 `slice(Identity)` and `gather(Identity)`, survives `mul`, `pad`,
 `add_any` chains.
 
 **Key invariants**:
+
 - Fresh slice/gather gives `out_rows = np.arange(k)` (identity permutation).
 - `pad_rows(before, after)` shifts: `out_rows = prev + before` (still a single range).
 - `add_any` concatenates: `out_rows = concat([a.out_rows, b.out_rows, ...])`.
 - `scatter_add` permutes: `new_rows = scatter_indices[prev.out_rows]`.
 
 ### `jax.experimental.sparse.BCOO`
+
 Standard sparse matrix. Emerges when mixing forms that can't share a
 compact representation. Used as the "lowest common denominator" for
 structural intermediates.
 
 ### `jnp.ndarray`
+
 Dense fallback when no structural form fits. Shape `(*out_shape, n)` —
 the trailing axis is the input coordinate.
 
@@ -130,6 +137,7 @@ materialize_rules[lax.mul_p] = _mul_rule
 
 No decorator — direct assignment, mirroring
 `jax.experimental.sparse.transform.sparse_rules_bcoo`. Rules receive:
+
 - `invals` — list of values (LinOp for traced, concrete array for closure)
 - `traced` — list of bool flags (True = LinOp / traced)
 - `n` — size of flattened top-level input

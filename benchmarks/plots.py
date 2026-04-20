@@ -38,7 +38,6 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np

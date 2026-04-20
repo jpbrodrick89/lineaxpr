@@ -71,7 +71,7 @@ def test_one(problem):
         ref = jaxhes(y)
         err = float(jnp.max(jnp.abs(asdex_dense - ref)))
         asdex_ok = err < 1e-8
-    except Exception as e:
+    except Exception:
         asdex_jit = None
         asdex_ok = False
         err = 0

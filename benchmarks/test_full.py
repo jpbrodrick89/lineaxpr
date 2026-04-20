@@ -9,7 +9,6 @@ Two size tiers:
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
 import os
-import sys
 
 
 import jax

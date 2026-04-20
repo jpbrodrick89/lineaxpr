@@ -1,11 +1,13 @@
 # lineaxpr — notes for Claude
 
 ## What this is
+
 A JAX transformation that extracts dense / sparse Hessian/Jacobian matrices
 from linear callables (the output of `jax.linearize`). Walks the linear
 jaxpr once with per-primitive structural rules.
 
 Public API (jax-like, preferred):
+
 - `hessian(f)(y)`, `bcoo_hessian(f)(y)` — matches `jax.hessian`.
 - `jacfwd(f)(y)`, `bcoo_jacfwd(f)(y)` — matches `jax.jacfwd`.
 - `jacrev(f)(y)`, `bcoo_jacrev(f)(y)` — matches `jax.jacrev`.
@@ -13,6 +15,7 @@ Public API (jax-like, preferred):
   `bcoo_`-prefixed variants are shorthand for `format='bcoo'`.
 
 Lower-level building blocks:
+
 - `materialize(linear_fn, primal, format='dense'|'bcoo')` — core
   entry point. Default `'dense'`.
 - `sparsify(linear_fn)(seed_linop) -> LinOp` — primitive transform.
@@ -45,6 +48,7 @@ should go through the public API since that's how users exercise the
 library.
 
 ## Non-goals
+
 - Coloring-based extraction (that's asdex's approach; we do per-linearization
   structural walk instead, yielding exact — not conservative — sparsity).
 - Second AD pass (we stay inside `jax.linearize`'s output).

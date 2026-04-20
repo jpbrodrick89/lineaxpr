@@ -68,4 +68,6 @@ __all__ = [
     "Diagonal",
     "Identity",
     "Pivoted",
+    # Internal threshold exposed for tests that want to override it
+    "_SMALL_N_VMAP_THRESHOLD",
 ]

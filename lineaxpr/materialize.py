@@ -38,8 +38,6 @@ from ._base import (
     Identity,
     Pivoted,
     _concat,
-    _diag_to_bcoo,
-    _pivoted_to_bcoo,
     _to_bcoo,
     _to_dense,
     _traced_shape,
@@ -692,7 +690,7 @@ def _scatter_add_rule(invals, traced, n, **params):
     # out_idx is 2D+ too; flatten the batch dims so we treat each element as
     # a scalar target position.
     out_idx_flat = out_idx.reshape(-1)
-    updates_nse_dims = len(updates.shape) - 1  # all axes except the input-coord
+    len(updates.shape) - 1  # all axes except the input-coord
     if isinstance(updates, Pivoted):
         # Pivoted's out_rows are 1D. If updates batches more dims, we need to
         # flatten them. For now, support the 1D case directly and 2D via

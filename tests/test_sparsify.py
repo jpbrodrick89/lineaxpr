@@ -15,13 +15,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax.experimental import sparse
 
 from lineaxpr import (
     ConstantDiagonal,
     Diagonal,
     Identity,
-    Pivoted,
     materialize_rules,
     sparsify,
     to_dense,

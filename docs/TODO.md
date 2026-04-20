@@ -51,6 +51,7 @@ materialize these as full arrays.
 
 **Proposal**: represent `out_rows` as `list[(start, stop)]` until the
 first `scatter_add` forces materialization. Benefits:
+
 - Trace-time state: O(#ranges) vs O(k) ints
 - O(1) equality for same-indices fast path
 - Natural merging of adjacent ranges
@@ -136,6 +137,7 @@ Currently `sparsify(linear_fn)(seed)` rejects multi-input and
 multi-output linear fns. And the walk hasn't been tested against
 `jax.vmap`-composed callers. For NeurIPS demos with more general
 differentiation targets, either:
+
 - extend the walk to handle multi-output linear fns (flatten outputs
   to a single 1D output, walk, reshape), OR
 - document multi-output as a hard limit and require users to flatten

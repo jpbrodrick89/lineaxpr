@@ -5,13 +5,11 @@ quadratic-constant-H, sparse-banded, sparse-COO, low-rank, large.
 """
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
-import os
 import sys
 
 
 import jax
 import pytest
-import sif2jax  # noqa: E402
 from lineaxpr import materialize  # noqa: E402
 
 try:

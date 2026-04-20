@@ -5,8 +5,6 @@ so quadratic-Hessians that are y-independent still trace real dataflow.
 """
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
-import os
-import sys
 
 
 import jax

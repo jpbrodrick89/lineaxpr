@@ -39,19 +39,20 @@ We use per-linearization exact sparsity + structural walk.
 
 Benchmark findings (EAGER_CONSTANT_FOLDING=TRUE, y as jit input):
 
-| Problem | n | jax.hess | materialize | bcoo_jac | asdex_dn | asdex_bc |
-|---|---|---|---|---|---|---|
-| HS110 | 10 | 8.9 µs | 6.9 µs | 30.7 µs | (skip) | (skip) |
-| QING | 100 | 27 µs | 8 µs | 10.2 µs | 7.6 µs | 8.2 µs |
-| LEVYMONT | 100 | 156 µs | 45 µs | 50 µs | 42 µs | 24 µs |
-| ARGTRIGLS | 200 | 322 µs | 141 µs | 141 µs | (skip) | (skip) |
-| FLETCHCR | 1000 | 1335 µs | 197 µs | 17 µs | 202 µs | 26 µs |
-| CMPC1 | 2550 | 1208 µs | 736 µs | 8.6 µs | 736 µs | 8.2 µs |
-| DIXMAANE1 | 3000 | 67 ms | 1.58 ms | 30 µs | 1.93 ms | 60 µs |
-| DIXMAANI1 | 3000 | 62 ms | 1.51 ms | 28 µs | 2.45 ms | 68 µs |
-| EDENSCH | 2000 | 34.9 ms | 609 µs | 72 µs | 794 µs | 66 µs |
+| Problem   | n    | jax.hess | materialize | bcoo_jac | asdex_dn | asdex_bc |
+| --------- | ---- | -------- | ----------- | -------- | -------- | -------- |
+| HS110     | 10   | 8.9 µs   | 6.9 µs      | 30.7 µs  | (skip)   | (skip)   |
+| QING      | 100  | 27 µs    | 8 µs        | 10.2 µs  | 7.6 µs   | 8.2 µs   |
+| LEVYMONT  | 100  | 156 µs   | 45 µs       | 50 µs    | 42 µs    | 24 µs    |
+| ARGTRIGLS | 200  | 322 µs   | 141 µs      | 141 µs   | (skip)   | (skip)   |
+| FLETCHCR  | 1000 | 1335 µs  | 197 µs      | 17 µs    | 202 µs   | 26 µs    |
+| CMPC1     | 2550 | 1208 µs  | 736 µs      | 8.6 µs   | 736 µs   | 8.2 µs   |
+| DIXMAANE1 | 3000 | 67 ms    | 1.58 ms     | 30 µs    | 1.93 ms  | 60 µs    |
+| DIXMAANI1 | 3000 | 62 ms    | 1.51 ms     | 28 µs    | 2.45 ms  | 68 µs    |
+| EDENSCH   | 2000 | 34.9 ms  | 609 µs      | 72 µs    | 794 µs   | 66 µs    |
 
 ### Where asdex wins
+
 - **LEVYMONT-bcoo (2×)**: their static symmetric star-coloring finds 3
   colors for a 298-nnz pattern. 3 HVPs via vmap + gather-to-BCOO ≈ 11 µs.
   Our structural walk + scatter ≈ 19 µs. Architectural trade-off.
@@ -59,6 +60,7 @@ Benchmark findings (EAGER_CONSTANT_FOLDING=TRUE, y as jit input):
   per-nse scatter overhead.
 
 ### Where we win
+
 - Medium-to-large n (DIXMAANE1, DIXMAANI1, EDENSCH, FLETCHCR) where
   structural walk amortizes and asdex's vmap pays per-color costs.
 - All correctness: we're bit-exact. asdex's `symmetric=True` flag is buggy
@@ -66,6 +68,7 @@ Benchmark findings (EAGER_CONSTANT_FOLDING=TRUE, y as jit input):
   `symmetric=False` fixes it but costs more colors on dense Hessians.
 
 ### Where asdex fails
+
 - Tiny problems (HS110 n=10, HART6 n=6, ARGTRIGLS n=200): their compile
   path errors or skips. We handle these fine via the `n<16` short-circuit.
 - Fully dense Hessians: no speedup (needs `n` colors) — ARGTRIGLS is the
@@ -101,6 +104,7 @@ Substantial machinery, low priority.
 
 Enumerating empirically across DIXMAANB, FLETCHCR, LEVYMONT (20
 add_any(Pivoted, Pivoted) calls):
+
 - **15/20: same out_rows, different in_cols** — e.g. diagonal + band
   contributions to same rows. Concat produces duplicates-per-row. JAX's
   `scatter-add` at densification correctly sums them, but intermediate
@@ -139,6 +143,7 @@ approach: `jax.experimental.sparse.sparsify(jax.vmap(lin))(sparse.eye(n))`
 where `lin = jax.linearize(jax.grad(f), y)[1]`.
 
 **Result**: 14/16 fail at trace time.
+
 - **compiles** (2/16): DUAL1, DUAL3 — the constant-H quadratics where the
   linearized grad is trivially a dot_general with BCOO.
 - **`sparse rule for add_any is not implemented`** (7): HS110, HART6, QING,
@@ -150,7 +155,7 @@ where `lin = jax.linearize(jax.grad(f), y)[1]`.
 
 `add_any`, `pad`, and `scatter-add` are the adjoint primitives emitted by
 AD when transposing `reduce_sum`, `slice`, and `gather`. They appear in
-*every* non-trivial linearized-grad; sparsify covers the forward side
+_every_ non-trivial linearized-grad; sparsify covers the forward side
 (`add`, `slice`, `gather`) but not their transposes. So the "just use
 sparsify" shortcut fails on exactly the problems where sparsity matters.
 
@@ -198,6 +203,7 @@ and pick the most efficient format per eqn.
    not a framework migration.
 
 **Where sparsify stays relevant**:
+
 - As a **contribution target**: our `add_any` / `pad` / `scatter-add`
   rules are upstream-able. Adding them to `sparse_rules_bcoo` would let
   `sparsify(vmap(linearize(...)[1]))` work for users who only want BCOO
@@ -226,22 +232,22 @@ from a scalar broadcast.
 
 All 14 numerically match `bcoo_jacobian`. Timing (best-of-20 µs):
 
-| Problem | n | sparsify-bcoo | lineaxpr bcoo | sparsify / lineaxpr |
-|---|---|---|---|---|
-| HS110 | 10 | 62.8 | 13.9 | 4.5× |
-| QING | 100 | 8.9 | 8.1 | 1.1× |
-| CHNROSNB | 50 | 9.6 | 8.9 | 1.1× |
-| **DUAL1** | 85 | 49.3 | 5.2 | **9.4×** |
-| **DUAL3** | 111 | 91.2 | 6.2 | **14.7×** |
-| LEVYMONT | 100 | 16.8 | 20.2 | **0.83×** (sparsify wins) |
-| GENROSE | 500 | 12.8 | 8.2 | 1.6× |
-| FLETCHCR | 1000 | 20.3 | 10.6 | 1.9× |
-| **CMPC1** | 2550 | 5937.5 | 8.3 | **712×** |
-| **CMPC2** | 1530 | 2517.8 | 8.5 | **298×** |
-| DIXMAANB | 3000 | 157.0 | 44.8 | 3.5× |
-| DIXMAANE1 | 3000 | 86.8 | 23.6 | 3.7× |
-| DIXMAANI1 | 3000 | 72.4 | 22.9 | 3.2× |
-| EDENSCH | 2000 | 99.0 | 41.0 | 2.4× |
+| Problem   | n    | sparsify-bcoo | lineaxpr bcoo | sparsify / lineaxpr       |
+| --------- | ---- | ------------- | ------------- | ------------------------- |
+| HS110     | 10   | 62.8          | 13.9          | 4.5×                      |
+| QING      | 100  | 8.9           | 8.1           | 1.1×                      |
+| CHNROSNB  | 50   | 9.6           | 8.9           | 1.1×                      |
+| **DUAL1** | 85   | 49.3          | 5.2           | **9.4×**                  |
+| **DUAL3** | 111  | 91.2          | 6.2           | **14.7×**                 |
+| LEVYMONT  | 100  | 16.8          | 20.2          | **0.83×** (sparsify wins) |
+| GENROSE   | 500  | 12.8          | 8.2           | 1.6×                      |
+| FLETCHCR  | 1000 | 20.3          | 10.6          | 1.9×                      |
+| **CMPC1** | 2550 | 5937.5        | 8.3           | **712×**                  |
+| **CMPC2** | 1530 | 2517.8        | 8.5           | **298×**                  |
+| DIXMAANB  | 3000 | 157.0         | 44.8          | 3.5×                      |
+| DIXMAANE1 | 3000 | 86.8          | 23.6          | 3.7×                      |
+| DIXMAANI1 | 3000 | 72.4          | 22.9          | 3.2×                      |
+| EDENSCH   | 2000 | 99.0          | 41.0          | 2.4×                      |
 
 **Readings**:
 
@@ -249,7 +255,7 @@ All 14 numerically match `bcoo_jacobian`. Timing (best-of-20 µs):
    (constant-H quadratics, large n) are 300–700× faster with our
    `ConstantDiagonal` → `Diagonal` → closure-BCOO path. Sparsify builds
    BCOO intermediates for every `mul`/`add`/`scatter`; we evaluate those
-   at trace time and emit a literal closure-BCOO. This is *the* use case
+   at trace time and emit a literal closure-BCOO. This is _the_ use case
    where our walk saves a full `n×n`-ish amount of work.
 
 2. **Dense-ish problems (DIXMAAN/EDENSCH) win 2–4×.** Not the 100–6000×
@@ -258,7 +264,7 @@ All 14 numerically match `bcoo_jacobian`. Timing (best-of-20 µs):
    overhead in the walk — less copying and fewer index-gather ops.
 
 3. **Small banded: LEVYMONT goes the other way.** Pure-BCOO is actually
-   17% *faster* than our walk at n=100 on a banded pattern. Our Pivoted
+   17% _faster_ than our walk at n=100 on a banded pattern. Our Pivoted
    machinery + `add_any` concat has fixed overhead that BCOO avoids.
    Consistent with §3's asdex finding for the same problem.
 
@@ -268,14 +274,14 @@ All 14 numerically match `bcoo_jacobian`. Timing (best-of-20 µs):
 **What this reframes**:
 
 - If we dropped Pivoted/Diagonal/ConstantDiagonal and relied on sparsify
-  + the 4 missing rules, we'd be within 2–4× on ~8 problems, *behind* on
-  LEVYMONT, *ahead* on the 2 upstream-sparsify-broken cases. We'd lose
-  the 100–700× CMPC/DUAL wins — but those are dominated by
-  EAGER_CONSTANT_FOLDING-friendly constant-H problems where `jax.hessian`
-  is also already fast. So the *unique* wins of lineaxpr over both
-  `jax.hessian` AND pure-BCOO sparsify are smaller than the headline
-  numbers suggest: mostly DIXMAAN/EDENSCH in the 2–4× range, plus robust
-  handling of tiny n (HS110, HART6, ARGTRIGLS) where sparsify errors.
+  - the 4 missing rules, we'd be within 2–4× on ~8 problems, _behind_ on
+    LEVYMONT, _ahead_ on the 2 upstream-sparsify-broken cases. We'd lose
+    the 100–700× CMPC/DUAL wins — but those are dominated by
+    EAGER*CONSTANT_FOLDING-friendly constant-H problems where `jax.hessian`
+    is also already fast. So the \_unique* wins of lineaxpr over both
+    `jax.hessian` AND pure-BCOO sparsify are smaller than the headline
+    numbers suggest: mostly DIXMAAN/EDENSCH in the 2–4× range, plus robust
+    handling of tiny n (HS110, HART6, ARGTRIGLS) where sparsify errors.
 
 - This motivates upstreaming the 4 rules regardless — even for users who
   don't need lineaxpr, pure-BCOO works on 14/16 CUTEst problems with
@@ -285,7 +291,7 @@ All 14 numerically match `bcoo_jacobian`. Timing (best-of-20 µs):
   DIXMAAN lead, so it remains well-motivated.
 
 **Sanity check on "tiny-n robustness" claim**: HS110 (n=10), HART6 (n=6),
-and ARGTRIGLS (n=200) all succeed *without* the n<16 short-circuit too
+and ARGTRIGLS (n=200) all succeed _without_ the n<16 short-circuit too
 — verified by setting `_SMALL_N_VMAP_THRESHOLD = 0` and re-running.
 The walk genuinely handles these shapes, so robustness is real.
 Short-circuit is a perf optimization, not a correctness crutch.
@@ -294,12 +300,12 @@ Short-circuit is a perf optimization, not a correctness crutch.
 
 On DUAL3 (n=111, constant-H):
 
-| variant | µs |
-|---|---|
-| `bcoo_jacobian(linearize(grad(f), y)[1], y)` | 5.8 |
-| `jax.hessian(f)(y)` dense | 152.5 |
-| `BCOO.fromdense(jax.hessian(f)(y))` | FAIL (ConcretizationTypeError: nse unknown at trace) |
-| `sparsify(vmap(lin))(sparse.eye(n))` | 88.7 |
+| variant                                      | µs                                                   |
+| -------------------------------------------- | ---------------------------------------------------- |
+| `bcoo_jacobian(linearize(grad(f), y)[1], y)` | 5.8                                                  |
+| `jax.hessian(f)(y)` dense                    | 152.5                                                |
+| `BCOO.fromdense(jax.hessian(f)(y))`          | FAIL (ConcretizationTypeError: nse unknown at trace) |
+| `sparsify(vmap(lin))(sparse.eye(n))`         | 88.7                                                 |
 
 (No EAGER_CONSTANT_FOLDING env var set in this run; with it, `jax.hessian`
 folds to a dense literal and hits its own ~3–5µs floor on this size.)
@@ -318,6 +324,7 @@ so even if the inputs are literals the folder won't reduce them through
 sparse ops.
 
 **Workarounds that don't work**:
+
 - `BCOO.fromdense(jax.hessian(f)(y))`: fails — nse unknown at trace.
 - Closure y + `jax.hessian`: folds dense, but `BCOO.fromdense` still
   fails on the trace-side.
@@ -340,27 +347,27 @@ AND passing `y` as a closure (not a jit input):
 
 **DUAL3 (n=111, near-dense constant H)**:
 
-| variant | µs | output | nse |
-|---|---|---|---|
-| `lineaxpr bcoo` (y input) | 6.1 | ndarray (Hessian too dense) | — |
-| `jax.hessian(f)(y)` (y input) | 6.4 | ndarray | — |
-| `jax.hessian(f)(y)` (y closure) | 5.7 | ndarray | — |
-| `BCOO.fromdense(jax.hessian(f)(y))` (y closure) | 10.2 | BCOO | 12105 |
-| `BCOO.fromdense(jax.hessian(f)(y))` (y traced input) | FAIL — ConcretizationTypeError | — | — |
+| variant                                              | µs                             | output                      | nse   |
+| ---------------------------------------------------- | ------------------------------ | --------------------------- | ----- |
+| `lineaxpr bcoo` (y input)                            | 6.1                            | ndarray (Hessian too dense) | —     |
+| `jax.hessian(f)(y)` (y input)                        | 6.4                            | ndarray                     | —     |
+| `jax.hessian(f)(y)` (y closure)                      | 5.7                            | ndarray                     | —     |
+| `BCOO.fromdense(jax.hessian(f)(y))` (y closure)      | 10.2                           | BCOO                        | 12105 |
+| `BCOO.fromdense(jax.hessian(f)(y))` (y traced input) | FAIL — ConcretizationTypeError | —                           | —     |
 
 **CMPC1 (n=2550, truly sparse constant H)**:
 
-| variant | µs | output | nse | compile |
-|---|---|---|---|---|
-| `lineaxpr bcoo` (y input) | 7.5 | BCOO | 1192 (w/ dupes) | fast |
-| `jax.hessian dense` (y input) | 1511.8 | ndarray (50MB load) | — | slow |
-| `BCOO.fromdense(jax.hessian(f)(y))` (y closure) | 7.0 | BCOO | **596 (deduped)** | **~5 s** XLA fold |
+| variant                                         | µs     | output              | nse               | compile           |
+| ----------------------------------------------- | ------ | ------------------- | ----------------- | ----------------- |
+| `lineaxpr bcoo` (y input)                       | 7.5    | BCOO                | 1192 (w/ dupes)   | fast              |
+| `jax.hessian dense` (y input)                   | 1511.8 | ndarray (50MB load) | —                 | slow              |
+| `BCOO.fromdense(jax.hessian(f)(y))` (y closure) | 7.0    | BCOO                | **596 (deduped)** | **~5 s** XLA fold |
 
 **Findings**:
 
 1. With eager folding, `jax.hessian` matches lineaxpr at the literal-load
    floor for dense output, and `BCOO.fromdense(jax.hessian(f)(y_closure))`
-   *matches or beats* lineaxpr on compile-time-known sparse H — and even
+   _matches or beats_ lineaxpr on compile-time-known sparse H — and even
    has better nse (XLA folds away structural zeros our walk preserves).
 
 2. **But only with `y` as a closure.** With `y` as a jit input,
@@ -384,7 +391,7 @@ AND passing `y` as a closure (not a jit input):
 - ✅ lineaxpr still wins on compile time for large sparse constant-H —
   no multi-second XLA fold.
 - ⚠️ Our "quadratic Hessian" benchmark wins over jax.hessian depend on
-  EAGER_CONSTANT_FOLDING being *off* (the default). With it on, the gap
+  EAGER*CONSTANT_FOLDING being \_off* (the default). With it on, the gap
   closes dramatically for closure-y. `benchmarks/run_in_container.sh`
   uses EAGER_CONSTANT_FOLDING=TRUE precisely to prevent spurious wins.
 
