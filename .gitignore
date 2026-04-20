@@ -9,3 +9,5 @@ dist/
 .venv/
 .env
 .DS_Store
+uv.lock
+.pytest_cache/
