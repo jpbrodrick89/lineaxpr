@@ -25,6 +25,7 @@ benchmark = [
     "pytest-benchmark",
     "asdex",
     "sif2jax",
+    "matplotlib",
 ]
 
 [tool.setuptools.packages.find]

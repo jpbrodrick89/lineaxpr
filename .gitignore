@@ -13,6 +13,9 @@ __pycache__/
 !.benchmarks/*/*_refs-*.json
 !.benchmarks/*/*_full-refs-*.json
 
+# Generated plots — regenerate with benchmarks/plots.py.
+benchmarks/plots/*.png
+
 *.egg-info/
 build/
 dist/

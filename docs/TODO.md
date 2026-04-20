@@ -123,6 +123,16 @@ the custom-JVP'd function and re-runs through our walk. Sparsify has
 this; we don't. (Confirmed 2026-04-20: sif2jax has 0 `custom_jvp`
 calls, so this is not blocking. Revisit if a user reports it.)
 
+### 9b. SPARSINE — static gather densifies (should stay sparse)
+
+Full sweep flagged **SPARSINE at n=5000: 183ms bcoo_jacobian**. Cause
+is that the problem uses a static gather rather than slice; our
+`_gather_rule` has narrower structural support than `_slice_rule` and
+hits the dense fallback. The output SHOULD be sparse. Related to
+BandedPivoted since the fix likely involves extending how Pivoted
+handles multi-column gather patterns. Investigate as part of
+BandedPivoted #1.
+
 ### 9a. Primitive-coverage gaps — 18 problems skipped by --full sweep
 
 Full bench at commit `4562b8f` found 18 `bcoo_jacobian` compile failures
