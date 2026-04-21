@@ -362,7 +362,7 @@ def main():
         fig, ax = plt.subplots(figsize=(10, 6))
         if kind == "abs":
             plot_inverse_cdf_abs(ax, runs)
-            ax.set_title(f"Hessian extraction — absolute runtime (sorted), commit {commit}")
+            ax.set_title(f"{counter} · Hessian extraction — absolute runtime (sorted), commit {commit}")
             path = Path(args.out_dir) / f"{stem}_abs.png"
         elif kind == "ratio":
             if not baseline_times:
@@ -370,7 +370,7 @@ def main():
                 plt.close(fig)
                 continue
             plot_inverse_cdf_ratio(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"Hessian extraction — runtime / {baseline_label} "
+            ax.set_title(f"{counter} · Hessian extraction — runtime / {baseline_label} "
                          f"(sorted), commit {commit}")
             path = Path(args.out_dir) / f"{stem}_ratio_vs_{baseline_method}.png"
         elif kind == "scatter":
@@ -379,7 +379,7 @@ def main():
                 plt.close(fig)
                 continue
             plot_scatter(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"Hessian extraction — {baseline_label} vs method, commit {commit}")
+            ax.set_title(f"{counter} · Hessian extraction — {baseline_label} vs method, commit {commit}")
             path = Path(args.out_dir) / f"{stem}_scatter_vs_{baseline_method}.png"
         fig.tight_layout()
         fig.savefig(path, dpi=150, bbox_inches="tight")
