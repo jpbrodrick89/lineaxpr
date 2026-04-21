@@ -167,10 +167,12 @@ def _asdex_compile(problem, output_format: str):
     coloring across output_formats breaks ("Computation compiled for
     4 inputs but called with 1"). Reproduced in /tmp/debug_asdex.py.
     """
-    if problem.name in ASDEX_PATHOLOGICAL_PROBLEMS:
+    if (problem.name in ASDEX_PATHOLOGICAL_PROBLEMS
+            and not os.environ.get("ASDEX_PATHOLOGICAL_OVERRIDE")):
         pytest.skip(
             f"asdex coloring >30s on {problem.name} — see "
-            f"ASDEX_PATHOLOGICAL_PROBLEMS + docs/RESEARCH_NOTES.md §10b"
+            f"ASDEX_PATHOLOGICAL_PROBLEMS + docs/RESEARCH_NOTES.md §10b. "
+            f"Override with ASDEX_PATHOLOGICAL_OVERRIDE=1 to test."
         )
     args_c = problem.args
 
