@@ -92,7 +92,14 @@ case "$MODE" in
     SELECT=(benchmarks/test_highn.py)
     ;;
   full)
-    NAME="${SHORT_SHA}_full"
+    # If EAGER_CONSTANT_FOLDING=true is set, JAX folds at staging time —
+    # read by jax._src.config via the uppercase-name env-var convention.
+    # Save to a `_folded`-suffixed JSON so the two runs don't collide.
+    if [[ "${EAGER_CONSTANT_FOLDING:-}" == "true" || "${EAGER_CONSTANT_FOLDING:-}" == "1" ]]; then
+      NAME="${SHORT_SHA}_full_folded"
+    else
+      NAME="${SHORT_SHA}_full"
+    fi
     SELECT=(benchmarks/test_full.py -k "$LINEAXPR_FILTER")
     ;;
   full-refs)
