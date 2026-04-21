@@ -109,8 +109,10 @@ class Diagonal:
         return core.ShapedArray((self.n,), self.values.dtype)
 
     def todense(self):
-        idx = jnp.arange(self.n)
-        return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
+        # `jnp.diag` lowers to a pad + broadcast + select pattern that is
+        # simpler than `.at[i,i].set(v)`'s scatter (8 ops vs 16 at n=624)
+        # and gives XLA/GPU backends more room to optimize.
+        return jnp.diag(self.values)
 
     def to_bcoo(self):
         return _diag_to_bcoo(self)
@@ -385,9 +387,7 @@ def _to_dense(op, n: int) -> jnp.ndarray:
             return jnp.eye(n)
         return op.value * jnp.eye(n)
     if isinstance(op, Diagonal):
-        m = op.values.shape[0]
-        idx = jnp.arange(m)
-        return jnp.zeros((m, m), op.values.dtype).at[idx, idx].set(op.values)
+        return jnp.diag(op.values)
     if isinstance(op, BEllpack):
         return op.todense()
     if isinstance(op, sparse.BCOO):
