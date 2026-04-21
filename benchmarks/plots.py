@@ -93,9 +93,17 @@ METHOD_STYLE = {
 # -------------------------- data loading ---------------------------------
 
 
+# Platform filter for _list_bench_jsons. Set by main() via --platform.
+# Mac and Linux numbers are not comparable (different arch + JAX backend),
+# so any plot should be single-platform.
+_PLATFORM_FILTER: str | None = None
+
+
 def _list_bench_jsons():
     for plat_dir in sorted(BENCH_DIR.iterdir()):
         if not plat_dir.is_dir():
+            continue
+        if _PLATFORM_FILTER and _PLATFORM_FILTER.lower() not in plat_dir.name.lower():
             continue
         for j in sorted(plat_dir.glob("*.json")):
             yield plat_dir, j
@@ -354,7 +362,15 @@ def main():
                     help=f"Output directory (default: {PLOT_DIR}).")
     ap.add_argument("--name", default=None,
                     help="Override output filename stem.")
+    ap.add_argument("--platform", default=None,
+                    help="Restrict to a platform dir, e.g. 'Linux' or 'Darwin'. "
+                         "Mac/Linux numbers aren't comparable; pick one. "
+                         "Defaults to the current OS.")
     args = ap.parse_args()
+
+    global _PLATFORM_FILTER
+    import platform as _platform_mod
+    _PLATFORM_FILTER = args.platform or _platform_mod.system()
 
     lx, refs_paths, idx = load_runs(args.tag, args.refs_tag)
     print(f"lineaxpr: {lx.name if lx else '(not found)'}")

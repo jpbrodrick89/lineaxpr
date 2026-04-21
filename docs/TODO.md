@@ -111,6 +111,7 @@ benchmark flags them.
 | FLETCBV3 | 5,257 µs      | 79 µs      | 67×   |
 | NONMSQRT | 15,888 µs     | 269 µs     | 59×   |
 | LIARWHD  | 8,738 µs      | 35 µs      | 250×  |
+| RAYBENDL | 4,410 µs      | 72 µs      | 61×   |
 | EG2      | 489 µs        | 46 µs      | 11×   |
 
 All are `test_bcoo_jacobian` (BCOO build path). asdex evaluates a small
