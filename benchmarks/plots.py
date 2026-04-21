@@ -52,6 +52,14 @@ METHOD_ALIASES = {
     "materialize": "materialize",
     "bcoo": "bcoo_jacobian",
     "bcoo_jacobian": "bcoo_jacobian",
+    "mat_folded": "materialize_folded",
+    "materialize_folded": "materialize_folded",
+    "bcoo_folded": "bcoo_jacobian_folded",
+    "bcoo_jacobian_folded": "bcoo_jacobian_folded",
+    "mat_min": "materialize_min",  # synthesized
+    "materialize_min": "materialize_min",
+    "bcoo_min": "bcoo_jacobian_min",  # synthesized
+    "bcoo_jacobian_min": "bcoo_jacobian_min",
     "jaxhes": "jax_hessian",
     "jax_hessian": "jax_hessian",
     "jax": "jax_hessian",
@@ -68,13 +76,17 @@ METHOD_ALIASES = {
 # though the test function names are test_materialize / test_bcoo_jacobian —
 # users recognize the API, not the internal test names.
 METHOD_STYLE = {
-    "materialize":        dict(label="lineaxpr.hessian",          color="C0", linestyle="-"),
-    "bcoo_jacobian":      dict(label="lineaxpr.bcoo_hessian",     color="C1", linestyle="-"),
-    "jax_hessian":        dict(label="jax.hessian (unfolded)",    color="C2", linestyle="--"),
-    "jax_hessian_folded": dict(label="jax.hessian (folded)",      color="C2", linestyle="-."),
-    "jax_min":            dict(label="jax.hessian (best of folded/unfolded)", color="C3", linestyle="-"),
-    "asdex_dense":        dict(label="asdex.dense",               color="C4", linestyle=":"),
-    "asdex_bcoo":         dict(label="asdex.bcoo",                color="C5", linestyle="-"),
+    "materialize":           dict(label="lineaxpr.hessian (unfolded)",              color="C0", linestyle="--"),
+    "bcoo_jacobian":         dict(label="lineaxpr.bcoo_hessian (unfolded)",         color="C1", linestyle="--"),
+    "materialize_folded":    dict(label="lineaxpr.hessian (folded)",                color="C0", linestyle="-."),
+    "bcoo_jacobian_folded":  dict(label="lineaxpr.bcoo_hessian (folded)",           color="C1", linestyle="-."),
+    "materialize_min":       dict(label="lineaxpr.hessian (best of folded/unfolded)",      color="C0", linestyle="-"),
+    "bcoo_jacobian_min":     dict(label="lineaxpr.bcoo_hessian (best of folded/unfolded)", color="C1", linestyle="-"),
+    "jax_hessian":           dict(label="jax.hessian (unfolded)",                   color="C2", linestyle="--"),
+    "jax_hessian_folded":    dict(label="jax.hessian (folded)",                     color="C2", linestyle="-."),
+    "jax_min":               dict(label="jax.hessian (best of folded/unfolded)",    color="C3", linestyle="-"),
+    "asdex_dense":           dict(label="asdex.dense",                              color="C4", linestyle=":"),
+    "asdex_bcoo":            dict(label="asdex.bcoo",                               color="C5", linestyle="-"),
 }
 
 
@@ -137,13 +149,23 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
     """Return (lineaxpr_json_path, refs_json_path_list, unified_idx).
 
     `unified_idx` is a single dict keyed by (problem, method) where
-    method may be any of the canonical names (including `jax_min` which
-    is synthesized from min(jaxhes, jaxhes_folded)).
+    method may be any of the canonical names, including synthesized
+    `jax_min`, `materialize_min`, `bcoo_jacobian_min` (best-of
+    folded/unfolded per-method).
 
-    For --full, refs may live in per-method files (full-jaxhes,
-    full-jaxhes-folded, full-asdex-dense, full-asdex-bcoo) as well as
-    in the combined full-refs. All are loaded and merged."""
+    For `--full`, this auto-loads both the unfolded lineaxpr run
+    (`<sha>_full.json`) and the folded companion
+    (`<sha>_full_folded.json`) if present. Entries from the folded
+    JSON are re-keyed with `_folded` suffix so they coexist with the
+    unfolded entries in the index.
+
+    Refs may live in per-method files (full-jaxhes, full-jaxhes-folded,
+    full-asdex-dense, full-asdex-bcoo) as well as in the combined
+    full-refs. All are loaded and merged."""
     lx_path = _latest_matching(rf"_{re.escape(lineaxpr_tag)}\.json$")
+    lx_folded_path = None
+    if lineaxpr_tag == "full":
+        lx_folded_path = _latest_matching(r"_full_folded\.json$")
 
     refs_paths = []
     if refs_tag is not None:
@@ -166,20 +188,31 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
     idx: dict[tuple[str, str], tuple[float, int]] = {}
     if lx_path:
         idx.update(_index(lx_path))
+    if lx_folded_path:
+        # Re-key folded entries: method → method_folded so they coexist
+        # with the unfolded ones under distinct method names.
+        folded_idx = _index(lx_folded_path)
+        for (prob, method), val in folded_idx.items():
+            if method in ("materialize", "bcoo_jacobian"):
+                idx[(prob, f"{method}_folded")] = val
+            else:
+                idx[(prob, method)] = val
     for p in refs_paths:
         idx.update(_index(p))
 
-    # Synthesize jax_min = min(jax_hessian, jax_hessian_folded).
+    # Synthesize min-of-{folded, unfolded} methods (per-method "best" metric).
     problems = {p for (p, _) in idx}
     for p in problems:
-        u = idx.get((p, "jax_hessian"))
-        f = idx.get((p, "jax_hessian_folded"))
-        if u and f:
-            idx[(p, "jax_min")] = (min(u[0], f[0]), u[1])
-        elif u:
-            idx[(p, "jax_min")] = u
-        elif f:
-            idx[(p, "jax_min")] = f
+        for base in ("jax_hessian", "materialize", "bcoo_jacobian"):
+            u = idx.get((p, base))
+            f = idx.get((p, f"{base}_folded"))
+            min_key = "jax_min" if base == "jax_hessian" else f"{base}_min"
+            if u and f:
+                idx[(p, min_key)] = (min(u[0], f[0]), u[1])
+            elif u:
+                idx[(p, min_key)] = u
+            elif f:
+                idx[(p, min_key)] = f
 
     return lx_path, refs_paths, idx
 
@@ -335,7 +368,7 @@ def main():
 
     methods = _canonicalise_methods(
         args.methods,
-        default=["bcoo_jacobian", "mat", "asdex_bcoo", "jax_min"],
+        default=["bcoo_jacobian_min", "materialize_min", "asdex_bcoo", "jax_min"],
     )
     runs = {m: times_for(idx, m) for m in methods}
 
