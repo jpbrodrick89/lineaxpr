@@ -126,6 +126,23 @@ is pure-diagonal — asdex ships a 35 µs answer where we ship 8.7 ms.
 (simplest case) — is it the walk, the `_to_bcoo` flush, or the
 `concatenate` at the output? Compare HLO against what asdex emits.
 
+**Compile-time note (2026-04-22)**: the runtime gap comes with a
+compile-time trade-off. asdex runs its `hessian_sparsity` (a per-primitive
+jaxpr index-set walk, conceptually similar to lineaxpr's walk) followed
+by graph coloring. That costs ~50-250ms on most problems, but blows up
+when the pattern has many dependencies: DMN15102LS 5.0s, DRCAV1LQ 1.4s,
+SBRYBND 890ms, PENALTY3 692ms. Lineaxpr compile is steady (median 81ms,
+p90 173ms) except **NONDQUAR which hits 1290ms** — 5× asdex on the same
+problem. NONDQUAR is a lineaxpr compile outlier to profile alongside
+the runtime gap. Asdex has no fast path for low-sparsity cases (e.g.
+pure-diagonal LIARWHD still triggers full detection+coloring, 156ms).
+
+Break-even calculation: on §3b-gap problems asdex pays ~100-400ms more
+compile for a 100-400× runtime win. For BDQRTIC (380ms compile, 137µs
+runtime vs lineaxpr 209ms compile, 50ms runtime): asdex breaks even
+after ~4 hessian evaluations. For single-shot hessian use cases,
+lineaxpr may still be faster total.
+
 ### 4. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
 
 **Motivation**: `experiments/sparsify_monkeypatch.py` provides working
