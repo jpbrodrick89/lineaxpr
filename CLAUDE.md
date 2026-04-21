@@ -91,6 +91,25 @@ never a closure. Otherwise `jax.hessian`'s output gets constant-folded and
 spurious speedups appear. See `docs/RESEARCH_NOTES.md` §10 for the
 full picture on how EAGER_CONSTANT_FOLDING + closure-y interact.
 
+**Also critical**: macOS-native unfolded full-sweep runs have ~3×
+cross-problem contamination on dense-pattern problems (TABLE8, EXPLIN,
+EG2). Don't cite regression numbers from
+`.benchmarks/Darwin-*/*_full.json` smaller than ~3×. For clean unfolded
+numbers use `USE_CONTAINER=1 NO_EAGER=1 bash benchmarks/run_bench.sh
+--full` (saves under `.benchmarks/Linux-*/`). Folded container runs are
+clean by default. Details + diagnostic scripts in
+`docs/BENCH_HARNESS_NOTES.md`.
+
+**Which benchmark stats to cite**: benchmark timings are geometrically
+distributed with long tails. **Always ignore `mean` and `max`** — they
+are dominated by a handful of outlier iterations (GC, scheduler jitter,
+XLA background work) and will mislead you. Also ignore any quantile
+above the median (p75, p90, p99): the long tail makes upper quantiles
+dominated by the same transient noise as `mean`/`max`. Use `min`,
+`median`, and lower quantiles (p10–p50). `min` captures the warm floor
+(what a tight-loop user sees); `median` captures typical runtime. If a
+delta shows up in `mean` but not `min`/`median`, it's noise.
+
 ## Useful quick commands
 
 ```bash

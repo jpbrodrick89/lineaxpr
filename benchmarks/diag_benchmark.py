@@ -7,9 +7,15 @@ generalises to a pattern that would justify a JAX PR.
 Runs each impl across a size sweep in four scenarios:
 
   (A) `build`          : just construct the diagonal matrix.
-  (B) `build+reduce`   : `reduce_sum(diag_impl(v), axis=0)` — the
-                         cross-talk pattern where the difference
-                         showed up in ARGTRIGLS.
+  (B) `argtrigls_mwe`  : `diag_impl(sin(y)) * cos(y)[:, None]` —
+                         the minimal trigger isolated from ARGTRIGLS
+                         where jnp.diag / where(eye,v,0) run ~8–13×
+                         slower than v*eye / scatter on CPU. The
+                         transcendental-on-primal upstream and the
+                         column-broadcast multiply downstream are
+                         both necessary. A plain
+                         `reduce_sum(diag_impl(v), axis=0)` does NOT
+                         reproduce this — see `diag_mwe.py`.
   (C) `build+matvec`   : `diag_impl(v) @ x` — common downstream use.
   (D) `jvp`, `vjp`     : forward- and reverse-mode AD of (B).
 
@@ -73,9 +79,27 @@ def v_times_eye_impl(v):
 
 
 def where_eye_impl(v):
-    """`where(eye, v, 0)` — mask-and-select pattern (inline jnp._diag body)."""
+    """`where(eye, v, 0)` — mask-and-select pattern (inline jnp._diag body).
+
+    With 1-D `v`, NumPy broadcasting aligns trailing axes so `v` is
+    treated as `(1, n)` → XLA emits `broadcast(v, dim=1)` inside the
+    select. Under ARGTRIGLS-class fusions (trig on primal + column-
+    broadcast multiply downstream) this triggers an 8–13× CPU codegen
+    slowdown vs `dim=0`. See `where_eye_col_impl` for the fix.
+    """
     n = v.shape[0]
     return jnp.where(jnp.eye(n, dtype=jnp.bool_), v, jnp.zeros((), v.dtype))
+
+
+def where_eye_col_impl(v):
+    """Like `where_eye_impl` but with `v[:, None]` so the select's
+    broadcast is `dim=0`. Bit-exact output, matches `v*eye` timing.
+    Demonstrates that the slowdown is axis-driven, not primitive-
+    driven: the only change is reshaping `v` to `(n, 1)` before the
+    where.
+    """
+    n = v.shape[0]
+    return jnp.where(jnp.eye(n, dtype=jnp.bool_), v[:, None], jnp.zeros((), v.dtype))
 
 
 IMPLS = {
@@ -83,6 +107,7 @@ IMPLS = {
     "jnp.diag": jnp_diag_impl,
     "v*eye": v_times_eye_impl,
     "where(eye,v,0)": where_eye_impl,
+    "where(eye,v[:,None],0)": where_eye_col_impl,
 }
 
 
@@ -98,16 +123,19 @@ def make_scenarios(diag_impl):
         return diag_impl(v)
 
     @jax.jit
-    def build_reduce(v, x):
+    def argtrigls_mwe(v, x):
+        # `v` here plays the role of the primal `y`. Pattern lifted
+        # from the ARGTRIGLS Hessian fusion body.
         del x
-        return diag_impl(v).sum(axis=0)
+        return diag_impl(jnp.sin(v)) * jnp.cos(v)[:, None]
 
     @jax.jit
     def build_matvec(v, x):
         return diag_impl(v) @ x
 
     def fn_for_ad(v):
-        return diag_impl(v).sum(axis=0)
+        # Preserve (n,) output so `vjp`'s cotangent stays (n,).
+        return (diag_impl(jnp.sin(v)) * jnp.cos(v)[:, None]).sum(axis=0)
 
     @jax.jit
     def jvp_fn(v, dv):
@@ -119,11 +147,11 @@ def make_scenarios(diag_impl):
         return vjp(cotangent)[0]
 
     return {
-        "build":        lambda v, x: build(v, x),
-        "build+reduce": lambda v, x: build_reduce(v, x),
-        "build+matvec": lambda v, x: build_matvec(v, x),
-        "jvp":          lambda v, x: jvp_fn(v, x),     # x here is dv
-        "vjp":          lambda v, x: vjp_fn(v, x),     # x here is cotangent
+        "build":         lambda v, x: build(v, x),
+        "argtrigls_mwe": lambda v, x: argtrigls_mwe(v, x),
+        "build+matvec":  lambda v, x: build_matvec(v, x),
+        "jvp":           lambda v, x: jvp_fn(v, x),     # x here is dv
+        "vjp":           lambda v, x: vjp_fn(v, x),     # x here is cotangent
     }
 
 
@@ -135,10 +163,21 @@ def _block(x):
     return x
 
 
-def measure(fn, v, x, warmup=100, trials=5, rounds=500):
+def measure(fn, v, x, warmup=100, trials=5, rounds=500, max_trial_s=0.5):
     # Compile + warm up.
     for _ in range(warmup):
         _block(fn(v, x))
+    # Adaptive round cap: if one round is already slow enough that
+    # `rounds * one_round_s > max_trial_s`, shrink rounds so each trial
+    # takes at most `max_trial_s`. With `--max-trial-s 0.5` the default,
+    # each bench fits in (trials * max_trial_s) ≈ 2.5s + compile.
+    t0 = time.perf_counter()
+    _block(fn(v, x))
+    t0 = time.perf_counter()
+    _block(fn(v, x))
+    probe_s = time.perf_counter() - t0
+    if probe_s > 0:
+        rounds = max(5, min(rounds, int(max_trial_s / probe_s)))
     mins = []
     for _ in range(trials):
         times = []
@@ -152,13 +191,14 @@ def measure(fn, v, x, warmup=100, trials=5, rounds=500):
         "median_of_mins_us": statistics.median(mins),
         "mean_of_mins_us": statistics.mean(mins),
         "trial_mins_us": mins,
+        "rounds": rounds,
     }
 
 
 # ------------------------------- driver -------------------------------
 
 
-def run_sweep(sizes, scenarios, trials, rounds):
+def run_sweep(sizes, scenarios, trials, rounds, max_trial_s=0.5):
     rng = np.random.default_rng(0)
     results = {impl: {} for impl in IMPLS}
 
@@ -167,7 +207,7 @@ def run_sweep(sizes, scenarios, trials, rounds):
         for n in sizes:
             v = jnp.asarray(rng.standard_normal(n))
             # Matvec needs a vector; AD needs tangent / cotangent.
-            # build+matvec / build / build+reduce use `x` as rhs or unused.
+            # build / argtrigls_mwe use `x` as unused; build+matvec uses it as rhs.
             x_matvec = jnp.asarray(rng.standard_normal(n))
             x_cotangent = jnp.asarray(rng.standard_normal(n))
             results[impl_name][n] = {}
@@ -182,7 +222,8 @@ def run_sweep(sizes, scenarios, trials, rounds):
                 else:
                     x = x_matvec
                 try:
-                    r = measure(fn, v, x, trials=trials, rounds=rounds)
+                    r = measure(fn, v, x, trials=trials, rounds=rounds,
+                                max_trial_s=max_trial_s)
                 except Exception as e:
                     r = {"error": f"{type(e).__name__}: {e}"}
                 results[impl_name][n][scenario_name] = r
@@ -213,8 +254,9 @@ def print_table(results, sizes, scenarios):
 
 
 def plot_results(results, sizes, scenarios, out_dir, title_suffix):
-    colors = {"scatter": "C0", "jnp.diag": "C1", "v*eye": "C2", "where(eye,v,0)": "C3"}
-    markers = {"scatter": "o", "jnp.diag": "s", "v*eye": "^", "where(eye,v,0)": "x"}
+    marker_cycle = ["o", "s", "^", "x", "D", "v", "P", "*"]
+    colors = {impl: f"C{i}" for i, impl in enumerate(IMPLS)}
+    markers = {impl: marker_cycle[i % len(marker_cycle)] for i, impl in enumerate(IMPLS)}
 
     for scenario in scenarios:
         fig, (ax_abs, ax_ratio) = plt.subplots(1, 2, figsize=(14, 5))
@@ -277,15 +319,22 @@ def env_info():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--sizes", default="50,100,500,1000,5000,10000",
+    ap.add_argument("--sizes", default="20,50,100,200,350,500,1000,5000,10000",
                     help="Comma-separated list of n values.")
     ap.add_argument("--scenarios",
-                    default="build,build+reduce,build+matvec,jvp,vjp",
+                    default="build,argtrigls_mwe,build+matvec,jvp,vjp",
                     help="Scenarios to run. See module docstring.")
     ap.add_argument("--out", default="results/diag_bench",
                     help="Output directory (JSON + plots).")
     ap.add_argument("--trials", type=int, default=5)
-    ap.add_argument("--rounds", type=int, default=500)
+    ap.add_argument("--rounds", type=int, default=500,
+                    help="Rounds per trial ceiling. Each (impl, scenario) "
+                         "also auto-caps at --max-trial-s so large-n runs "
+                         "don't take forever.")
+    ap.add_argument("--max-trial-s", type=float, default=0.5,
+                    help="Per-trial wall-budget for timed rounds (default 0.5s). "
+                         "At large n where one round exceeds this, fewer "
+                         "rounds run.")
     ap.add_argument("--folded", action="store_true",
                     help="Run with EAGER_CONSTANT_FOLDING=true (set before import).")
     args = ap.parse_args()
@@ -306,7 +355,8 @@ def main():
     print(f"  trials: {args.trials}, rounds: {args.rounds}")
 
     print("\n=== running sweep ===")
-    results = run_sweep(sizes, scenarios, args.trials, args.rounds)
+    results = run_sweep(sizes, scenarios, args.trials, args.rounds,
+                         max_trial_s=args.max_trial_s)
 
     print_table(results, sizes, scenarios)
 

@@ -96,6 +96,35 @@ alternatives:
 Low priority — these rarely fire on the curated set. Revisit if a
 benchmark flags them.
 
+### 3b. Close the asdex-bcoo gap on large sparse-Hessian problems
+
+**Motivation**: clean Linux sweep (2026-04-21) — 3 reps, min-of-mins:
+
+| problem  | lineaxpr bcoo | asdex bcoo | ratio |
+| -------- | ------------- | ---------- | ----- |
+| BDQRTIC  | 50,009 µs     | 137 µs     | 364×  |
+| NONDQUAR | 17,149 µs     | 60 µs      | 284×  |
+| BROYDN7D | 26,970 µs     | 183 µs     | 147×  |
+| DRCAV1LQ | 194,119 µs    | 1,369 µs   | 142×  |
+| DRCAV2LQ | 193,718 µs    | 1,380 µs   | 140×  |
+| FLETBV3M | 5,135 µs      | 73 µs      | 70×   |
+| FLETCBV3 | 5,257 µs      | 79 µs      | 67×   |
+| NONMSQRT | 15,888 µs     | 269 µs     | 59×   |
+| LIARWHD  | 8,738 µs      | 35 µs      | 250×  |
+| EG2      | 489 µs        | 46 µs      | 11×   |
+
+All are `test_bcoo_jacobian` (BCOO build path). asdex evaluates a small
+number of JVPs from its coloring and fills the BCOO directly; lineaxpr's
+walk emits one linop per primitive and flushes to BCOO at densification.
+The gap suggests: (a) the walk is doing more work than necessary when
+the whole tree is already structurally sparse, and/or (b) the final
+BCOO assembly has overhead that dominates for simple patterns. LIARWHD
+is pure-diagonal — asdex ships a 35 µs answer where we ship 8.7 ms.
+
+**Next step**: profile the BCOO emission path for LIARWHD specifically
+(simplest case) — is it the walk, the `_to_bcoo` flush, or the
+`concatenate` at the output? Compare HLO against what asdex emits.
+
 ### 4. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
 
 **Motivation**: `experiments/sparsify_monkeypatch.py` provides working

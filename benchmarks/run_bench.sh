@@ -32,6 +32,15 @@
 #   BCOO_MAX=5000     largest n for bcoo_jacobian benches in test_full.py
 #   USE_CONTAINER=1   run under benchmarks/run_in_container.sh
 #                     (EAGER_CONSTANT_FOLDING=TRUE env var for release parity)
+#   NO_EAGER=1        when USE_CONTAINER=1, skip EAGER_CONSTANT_FOLDING.
+#                     Produces clean Linux unfolded numbers (macOS-native
+#                     unfolded runs have ~3× cross-problem contamination
+#                     — see docs/BENCH_HARNESS_NOTES.md). Saves with
+#                     `_linux` suffix to distinguish from macOS-native.
+#   INSTALL_JAX=0.10.0   (container only) upgrade jax/jaxlib to this
+#                     version before running. The pycutest image ships
+#                     with jax 0.9.2; set this to match the host jax for
+#                     like-for-like comparison.
 #
 # Pass extra pytest args:
 #   bash benchmarks/run_bench.sh -- -k "MYPROB"
@@ -92,11 +101,18 @@ case "$MODE" in
     SELECT=(benchmarks/test_highn.py)
     ;;
   full)
-    # If EAGER_CONSTANT_FOLDING=true is set, JAX folds at staging time —
-    # read by jax._src.config via the uppercase-name env-var convention.
-    # Save to a `_folded`-suffixed JSON so the two runs don't collide.
+    # Naming cases:
+    #   EAGER_CONSTANT_FOLDING=true  → `_full_folded` (release config,
+    #                                   always implies container).
+    #   USE_CONTAINER=1 + NO_EAGER=1 → `_full_linux` (clean unfolded;
+    #                                   avoids the macOS-native ~3×
+    #                                   dense-pattern contamination).
+    #   default                      → `_full`       (macOS-native
+    #                                   unfolded; diagnostic only).
     if [[ "${EAGER_CONSTANT_FOLDING:-}" == "true" || "${EAGER_CONSTANT_FOLDING:-}" == "1" ]]; then
       NAME="${SHORT_SHA}_full_folded"
+    elif [[ "${USE_CONTAINER:-0}" == "1" && "${NO_EAGER:-0}" == "1" ]]; then
+      NAME="${SHORT_SHA}_full_linux"
     else
       NAME="${SHORT_SHA}_full"
     fi
@@ -112,8 +128,14 @@ case "$MODE" in
     # jax.hessian WITHOUT folding. Compile ~60-110ms across all n (fast);
     # runtime grows with n² on dense-ish problems (BDQRTIC@5000 = 84ms).
     # Empirical ceiling: 5000 (probe_caps.py run 2026-04-20).
+    # Platform suffix: `_linux` when running in container (clean numbers);
+    # no suffix = macOS-native (diagnostic only — ~3× dense-pattern noise).
     export DENSE_MAX="${DENSE_MAX:-5000}"
-    NAME="full-jaxhes-jax${JAX_VERSION}"
+    if [[ "${USE_CONTAINER:-0}" == "1" && "${NO_EAGER:-0}" == "1" ]]; then
+      NAME="full-jaxhes-jax${JAX_VERSION}_linux"
+    else
+      NAME="full-jaxhes-jax${JAX_VERSION}"
+    fi
     SELECT=(benchmarks/test_full.py -k "test_jax_hessian and not test_jax_hessian_folded")
     ;;
   full-jaxhes-folded)
@@ -138,12 +160,20 @@ case "$MODE" in
     ;;
   full-asdex-dense)
     export DENSE_MAX="${DENSE_MAX:-2000}"
-    NAME="full-asdex-dense-jax${JAX_VERSION}"
+    if [[ "${USE_CONTAINER:-0}" == "1" && "${NO_EAGER:-0}" == "1" ]]; then
+      NAME="full-asdex-dense-jax${JAX_VERSION}_linux"
+    else
+      NAME="full-asdex-dense-jax${JAX_VERSION}"
+    fi
     SELECT=(benchmarks/test_full.py -k "test_asdex_dense")
     ;;
   full-asdex-bcoo)
     export BCOO_MAX="${BCOO_MAX:-3000}"
-    NAME="full-asdex-bcoo-jax${JAX_VERSION}"
+    if [[ "${USE_CONTAINER:-0}" == "1" && "${NO_EAGER:-0}" == "1" ]]; then
+      NAME="full-asdex-bcoo-jax${JAX_VERSION}_linux"
+    else
+      NAME="full-asdex-bcoo-jax${JAX_VERSION}"
+    fi
     SELECT=(benchmarks/test_full.py -k "test_asdex_bcoo")
     ;;
 esac
@@ -158,15 +188,21 @@ echo ""
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}"
 
 if [ "${USE_CONTAINER:-0}" = "1" ]; then
-  echo "Running under container (EAGER_CONSTANT_FOLDING=TRUE)..."
-  bash "$SCRIPT_DIR/run_in_container.sh" "${SELECT[@]}" \
+  EXTRA_CONTAINER_ARGS=()
+  if [ "${NO_EAGER:-0}" = "1" ]; then
+    echo "Running under container (EAGER_CONSTANT_FOLDING=OFF, clean Linux)..."
+    EXTRA_CONTAINER_ARGS+=(--no-flags)
+  else
+    echo "Running under container (EAGER_CONSTANT_FOLDING=TRUE)..."
+  fi
+  bash "$SCRIPT_DIR/run_in_container.sh" "${EXTRA_CONTAINER_ARGS[@]:+${EXTRA_CONTAINER_ARGS[@]}}" "${SELECT[@]}" \
     --benchmark-only --benchmark-save="$NAME" \
-    --timeout="$TEST_TIMEOUT" --timeout-method=signal \
+    --timeout="$TEST_TIMEOUT" --timeout-method="${TIMEOUT_METHOD:-signal}" \
     "${EXTRA_ARGS[@]:+${EXTRA_ARGS[@]}}"
 else
   uv run pytest "${SELECT[@]}" \
     --benchmark-only --benchmark-save="$NAME" \
     --benchmark-columns=min,median,mean,stddev,rounds \
-    --timeout="$TEST_TIMEOUT" --timeout-method=signal \
+    --timeout="$TEST_TIMEOUT" --timeout-method="${TIMEOUT_METHOD:-signal}" \
     "${EXTRA_ARGS[@]:+${EXTRA_ARGS[@]}}"
 fi
