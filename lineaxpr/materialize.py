@@ -636,8 +636,38 @@ def _concatenate_rule(invals, traced, n, **params):
     if not any(traced):
         return None
     dimension = params["dimension"]
-    # Densify any traced operands; treat closure operands as their concrete
-    # values (they have shape NOT carrying an input axis, so we need to add it).
+    traced_idxs = [i for i, t in enumerate(traced) if t]
+    # Structural fast path: `concatenate([C, ..., traced_op, ..., C], axis=0)`
+    # — exactly one traced operand sandwiched by closures. Closures have no
+    # dependency on the traced input, so their Jacobian rows are zero and the
+    # result is structurally `op.pad_rows(left_total, right_total)`. Promote
+    # (Constant)Diagonal to BEllpack first so pad_rows is available.
+    if dimension == 0 and len(traced_idxs) == 1:
+        idx = traced_idxs[0]
+        op = invals[idx]
+        left_total = sum(int(invals[i].shape[0]) for i in range(idx))
+        right_total = sum(int(invals[i].shape[0])
+                          for i in range(idx + 1, len(invals)))
+        if isinstance(op, ConstantDiagonal):
+            op = BEllpack(
+                0, op.n, (np.arange(op.n),),
+                jnp.broadcast_to(jnp.asarray(op.value), (op.n,)),
+                op.n, op.n,
+            )
+        elif isinstance(op, Diagonal):
+            op = BEllpack(
+                0, op.n, (np.arange(op.n),), op.values, op.n, op.n,
+            )
+        if isinstance(op, BEllpack) and op.n_batch == 0:
+            return op.pad_rows(left_total, right_total)
+        if isinstance(op, sparse.BCOO):
+            out_size = op.shape[0] + left_total + right_total
+            new_rows = op.indices[:, 0] + left_total
+            new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
+            return sparse.BCOO(
+                (op.data, new_indices), shape=(out_size, op.shape[1])
+            )
+    # Fallback: densify everything.
     parts = []
     for v, t in zip(invals, traced):
         if t:
@@ -707,6 +737,88 @@ def _select_n_rule(invals, traced, n, **params):
         raise NotImplementedError("select_n with traced predicate")
     if not any(case_traced):
         return None  # caller's constant-prop path handles concrete eval
+
+    # Structural fast path (single traced op, rest closures): output row i
+    # is zero wherever pred picks a closure case, else matches the traced
+    # op's row i. Promote (Constant)Diagonal → BEllpack first, then mask.
+    if sum(case_traced) == 1:
+        t_idx = case_traced.index(True)
+        t_case = cases[t_idx]
+        if isinstance(t_case, ConstantDiagonal):
+            t_case = BEllpack(
+                0, t_case.n, (np.arange(t_case.n),),
+                jnp.broadcast_to(jnp.asarray(t_case.value), (t_case.n,)),
+                t_case.n, t_case.n,
+            )
+        elif isinstance(t_case, Diagonal):
+            t_case = BEllpack(
+                0, t_case.n, (np.arange(t_case.n),), t_case.values,
+                t_case.n, t_case.n,
+            )
+        # BCOO: mask data entries by row-predicate.
+        if isinstance(t_case, sparse.BCOO):
+            pred_arr = jnp.asarray(pred)
+            entry_rows = t_case.indices[:, 0]
+            entry_mask = (pred_arr[entry_rows] == t_idx)
+            new_data = jnp.where(entry_mask, t_case.data,
+                                 jnp.zeros((), t_case.data.dtype))
+            return sparse.BCOO(
+                (new_data, t_case.indices), shape=t_case.shape
+            )
+    if (sum(case_traced) == 1
+            and isinstance(t_case, BEllpack)
+            and t_case.n_batch == 0):
+        pred_arr = jnp.asarray(pred)
+        pred_slice = pred_arr[t_case.start_row:t_case.end_row]
+        mask = (pred_slice == t_idx)
+        if t_case.values.ndim > 1:
+            mask_b = mask[:, None]
+        else:
+            mask_b = mask
+        new_values = jnp.where(mask_b, t_case.values,
+                               jnp.zeros((), t_case.dtype))
+        return BEllpack(
+            t_case.start_row, t_case.end_row, t_case.in_cols,
+            new_values, t_case.out_size, t_case.in_size,
+        )
+
+    # Structural fast path: all cases are BEllpack with matching
+    # (start_row, end_row, out_size, in_size) and identical in_cols tuples.
+    # Then select_n is a per-row choice among their values — emit one
+    # BEllpack with `values = where(pred_slice, case_0.values, case_1.values, ...)`.
+    if all(t and isinstance(c, BEllpack) and c.n_batch == 0
+           for c, t in zip(cases, case_traced)):
+        first = cases[0]
+        same_shape = all(
+            c.start_row == first.start_row and c.end_row == first.end_row
+            and c.out_size == first.out_size and c.in_size == first.in_size
+            for c in cases[1:]
+        )
+        same_cols = same_shape and all(
+            len(c.in_cols) == len(first.in_cols)
+            and all(_cols_equal(a, b)
+                    for a, b in zip(c.in_cols, first.in_cols))
+            for c in cases[1:]
+        )
+        if same_cols:
+            pred_arr = jnp.asarray(pred)
+            pred_slice = pred_arr[first.start_row:first.end_row]
+            if first.values.ndim > 1:
+                pred_b = pred_slice[:, None]
+            else:
+                pred_b = pred_slice
+            # select_n with bool pred: cases[0] when pred is False, cases[1] when True
+            # (matching lax.select_n semantics for 2-case).
+            if len(cases) == 2:
+                new_values = jnp.where(pred_b, cases[1].values, cases[0].values)
+            else:
+                # N-way: use lax.select_n on stacked values.
+                stacked = jnp.stack([c.values for c in cases], axis=0)
+                new_values = lax.select_n(pred_b, *[stacked[i] for i in range(len(cases))])
+            return BEllpack(
+                first.start_row, first.end_row, first.in_cols,
+                new_values, first.out_size, first.in_size,
+            )
 
     # Densify each case to shape (*var_shape, n). Non-traced cases contribute
     # zero to the linear-in-input part (their dependence on the traced input
