@@ -109,14 +109,19 @@ class Diagonal:
         return core.ShapedArray((self.n,), self.values.dtype)
 
     def todense(self):
-        # Kept as explicit `.at[i,i].set(v)` scatter rather than the
-        # arguably-cleaner `jnp.diag(v)` or `where(eye, v, 0)` patterns.
-        # Reason (measured 2026-04-21 on ARGTRIGLS n=200): although both
-        # alternatives produce simpler HLO in isolation, `jnp.diag` adds
-        # a `call @_diag` boundary that XLA can't fuse through in
-        # complex walks (82µs → 300µs on ARGTRIGLS), and the inlined
-        # `where(eye, v, 0)` also regresses (different XLA fusion path).
-        # The scatter pattern is context-robust across all measured walks.
+        # Kept as scatter despite cleaner-looking alternatives. Measured
+        # on ARGTRIGLS n=200 in pytest-benchmark (curated 2026-04-21):
+        #   scatter                             : 84µs  (this)
+        #   jnp.diag(v)                         : 302µs
+        #   v[:, None] * jnp.eye(n)             : 302µs
+        #   triu(M) - triu(M, k=1)              : 305µs
+        #   lax.select(iota == iota, v, 0)      : 303µs
+        # All four alternatives share a "mask-and-select on a dense
+        # (n,n) tensor" HLO shape that ARGTRIGLS's downstream fusion
+        # pessimizes 3.7× compared to scatter's "sparse O(n) write
+        # into zeros" shape. (LEVYMONT inverts this: the dense
+        # alternatives run at 9.4µs vs scatter 12.7µs, but the
+        # ARGTRIGLS regression is larger in magnitude.)
         idx = jnp.arange(self.n)
         return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
 
@@ -393,9 +398,7 @@ def _to_dense(op, n: int) -> jnp.ndarray:
             return jnp.eye(n)
         return op.value * jnp.eye(n)
     if isinstance(op, Diagonal):
-        m = op.values.shape[0]
-        idx = jnp.arange(m)
-        return jnp.zeros((m, m), op.values.dtype).at[idx, idx].set(op.values)
+        return jnp.diag(op.values)
     if isinstance(op, BEllpack):
         return op.todense()
     if isinstance(op, sparse.BCOO):
