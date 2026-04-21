@@ -10,6 +10,7 @@ __pycache__/
 .benchmarks/*/*_curated.json
 .benchmarks/*/*_highn.json
 .benchmarks/*/*_full.json
+.benchmarks/*/*_full_folded.json
 !.benchmarks/*/*_refs-*.json
 !.benchmarks/*/*_full-refs-*.json
 !.benchmarks/*/*_full-jaxhes-*.json
