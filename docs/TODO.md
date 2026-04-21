@@ -4,23 +4,7 @@ Empirically-grounded; see `RESEARCH_NOTES.md` for the reasoning.
 
 ## Priority 0 — next up
 
-### 1. SPARSINE — static gather densifies (should stay sparse)
-
-Full sweep flagged **SPARSINE at n=5000: 183ms bcoo_jacobian**. The
-problem uses a static gather rather than slice; `_gather_rule` has
-narrower structural support than `_slice_rule` and hits the dense
-fallback. The output SHOULD be sparse.
-
-**Scope**: broaden `_gather_rule`'s `dnums` guard at
-`lineaxpr/materialize.py:_gather_rule` to emit `Ellpack` for the gather
-patterns SPARSINE actually uses (likely non-scalar `slice_sizes` or
-different `offset_dims`/`collapsed_slice_dims`). The `ConstantDiagonal`
-→ `Ellpack` path already handles the 1D indexed case; extend to the
-patterns that currently raise `NotImplementedError`.
-
-**Win**: closes SPARSINE regression; small code change; high leverage.
-
-### 2. Deferred `Sum` LinOp for order-independent add-chain bucketing
+### 1. Deferred `Sum` LinOp for order-independent add-chain bucketing
 
 **Motivation**: the heat-equation test in `tests/test_materialize.py`
 bloats a 3n-2 tridiagonal to 2.66× that. Walk instrumentation (2026-04-20)
@@ -59,11 +43,11 @@ DIXMAAN-class problems.
 touches. Carefully: any path reading operand attributes directly (e.g.
 `_linop_matrix_shape`) must handle Sum or be flushed first.
 
-**Ordering vs #3**: CSR (#3) partially subsumes Sum — disjoint-range
-union is natural in CSR. Defer Sum until after SPARSINE (#1) and
-possibly CSR (#3). If CSR closes the gap, Sum may not be needed.
+**Ordering vs #2 (CSR)**: CSR partially subsumes Sum — disjoint-range
+union is natural in CSR. Start with CSR; land Sum only if CSR leaves
+add-order sensitivities on the table.
 
-### 3. Internal CSR representation for arrowhead / disjoint-row adds
+### 2. Internal CSR representation for arrowhead / disjoint-row adds
 
 **Motivation**: `Ellpack`'s `(start_row, end_row)` + uniform `k` forces
 padding or BCOO promotion when rows have very different entry counts
@@ -298,6 +282,29 @@ closure-vs-input placement of y." Not the "100-6000×" story the
 benchmarks-vs-jax.hessian alone would suggest.
 
 ## Recently landed
+
+### BEllpack + SPARSINE dense-fallback closed (2026-04-21)
+
+`Ellpack` → `BEllpack` mirroring JAX's `BCOO`/`BCSR` batching
+convention (`shape = (*batch_shape, out_size, in_size)`, `n_batch`
+attribute). Unbatched case unchanged. `_gather_rule` on diagonal
+operands with multi-dim indices emits a batched BEllpack;
+`_reduce_sum_rule` collapses batch dims by summing slices;
+`_broadcast_in_dim_rule` adds leading axes to batch_shape;
+`_scatter_add_rule` handles batched updates via per-slice BCOO
+remap + concat. SPARSINE at n=5000 went from 183ms (dense fallback)
+to 360µs (~500× speedup). Also: `_mul_rule` now guards
+`scale_per_out_row` with a shape-compat check so multi-dim scale
+patterns (outer-product in jaxpr) fall back to dense rather than
+raise — fixed a PENALTY3 regression uncovered by the full sweep.
+
+### `_add_rule` Diagonal/ConstantDiagonal absorption into Ellpack bands (2026-04-21)
+
+Mix of `{ConstantDiagonal, Diagonal, Ellpack}` at matching square
+shape now promotes diagonals to Ellpack bands and merges via the
+standard same-range path, avoiding BCOO promote. Prerequisite for
+BEllpack work — keeps the walk in Ellpack through `Diagonal + Ellpack`
+adds that are common in HVP patterns.
 
 ### Ellpack replaces Pivoted (2026-04-20)
 
