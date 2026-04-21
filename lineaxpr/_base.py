@@ -398,7 +398,9 @@ def _to_dense(op, n: int) -> jnp.ndarray:
             return jnp.eye(n)
         return op.value * jnp.eye(n)
     if isinstance(op, Diagonal):
-        return jnp.diag(op.values)
+        # Consistent with Diagonal.todense — scatter is context-robust
+        # where the alternatives regress ARGTRIGLS.
+        return op.todense()
     if isinstance(op, BEllpack):
         return op.todense()
     if isinstance(op, sparse.BCOO):
