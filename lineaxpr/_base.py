@@ -109,21 +109,21 @@ class Diagonal:
         return core.ShapedArray((self.n,), self.values.dtype)
 
     def todense(self):
-        # Kept as scatter despite cleaner-looking alternatives. Measured
-        # on ARGTRIGLS n=200 in pytest-benchmark (curated 2026-04-21):
-        #   scatter                             : 84µs  (this)
-        #   jnp.diag(v)                         : 302µs
-        #   v[:, None] * jnp.eye(n)             : 302µs
-        #   triu(M) - triu(M, k=1)              : 305µs
-        #   lax.select(iota == iota, v, 0)      : 303µs
-        # All four alternatives share a "mask-and-select on a dense
-        # (n,n) tensor" HLO shape that ARGTRIGLS's downstream fusion
-        # pessimizes 3.7× compared to scatter's "sparse O(n) write
-        # into zeros" shape. (LEVYMONT inverts this: the dense
-        # alternatives run at 9.4µs vs scatter 12.7µs, but the
-        # ARGTRIGLS regression is larger in magnitude.)
-        idx = jnp.arange(self.n)
-        return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
+        # `v[:, None] * eye(n)` — pure dense multiply pattern. XLA fuses
+        # the broadcast + multiply cleanly, and downstream ops (especially
+        # `reduce_sum` in ARGTRIGLS-class cross-talk Hessians) benefit.
+        # Measured on ARGTRIGLS n=200 (cold fresh-process, 5 trials):
+        #   scatter                  : 82µs / 78µs (unfold/fold)
+        #   v[:, None] * eye         : 61µs / 52µs  ← this
+        #   jnp.diag(v)              : 301µs / 347µs (call @_diag boundary)
+        #   lax.select(iota==iota)   : 304µs / 351µs (same dense mask+select)
+        #   triu(M) - triu(M, k=1)   : 316µs / 368µs
+        # Earlier in-process benchmarks saw v*eye regressing — turned out
+        # to be caching artifact from Diagonal.todense monkey-patching.
+        # Fresh processes show v*eye ties or beats scatter on every
+        # tested problem (ARGTRIGLS -21%, LEVYMONT -27%, DIXMAANB
+        # folded -17%, EDENSCH -8%, rest tie).
+        return self.values[:, None] * jnp.eye(self.n, dtype=self.values.dtype)
 
     def to_bcoo(self):
         return _diag_to_bcoo(self)
