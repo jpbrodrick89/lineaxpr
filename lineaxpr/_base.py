@@ -109,6 +109,14 @@ class Diagonal:
         return core.ShapedArray((self.n,), self.values.dtype)
 
     def todense(self):
+        # Kept as explicit `.at[i,i].set(v)` scatter rather than the
+        # arguably-cleaner `jnp.diag(v)` or `where(eye, v, 0)` patterns.
+        # Reason (measured 2026-04-21 on ARGTRIGLS n=200): although both
+        # alternatives produce simpler HLO in isolation, `jnp.diag` adds
+        # a `call @_diag` boundary that XLA can't fuse through in
+        # complex walks (82µs → 300µs on ARGTRIGLS), and the inlined
+        # `where(eye, v, 0)` also regresses (different XLA fusion path).
+        # The scatter pattern is context-robust across all measured walks.
         idx = jnp.arange(self.n)
         return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
 
