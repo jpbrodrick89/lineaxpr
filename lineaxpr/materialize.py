@@ -686,6 +686,31 @@ def _split_rule(invals, traced, n, **params):
         return None
     sizes = params["sizes"]
     axis = params["axis"]
+    # Structural path: split along output axis 0 (the "out_size" dim).
+    # Promote (Constant)Diagonal/BEllpack → BCOO and split each chunk by
+    # masking entries whose row falls outside its range.
+    if axis == 0 and isinstance(operand, (ConstantDiagonal, Diagonal,
+                                          BEllpack, sparse.BCOO)):
+        bcoo = _to_bcoo(operand, n)
+        rows = bcoo.indices[:, 0]
+        out = []
+        start = 0
+        for sz in sizes:
+            end = start + int(sz)
+            in_range = (rows >= start) & (rows < end)
+            # Shift rows into [0, sz) range for entries in this chunk;
+            # entries outside get row=0 but data=0 so they're harmless.
+            new_rows = jnp.where(in_range, rows - start, 0)
+            new_data = jnp.where(in_range, bcoo.data,
+                                 jnp.zeros((), bcoo.data.dtype))
+            new_indices = jnp.stack(
+                [new_rows, bcoo.indices[:, 1]], axis=1
+            )
+            out.append(sparse.BCOO(
+                (new_data, new_indices), shape=(int(sz), bcoo.shape[1])
+            ))
+            start = end
+        return out
     dense = _to_dense(operand, n)
     out = []
     start = 0
