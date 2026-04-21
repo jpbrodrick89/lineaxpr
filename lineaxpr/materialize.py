@@ -224,6 +224,41 @@ def _add_rule(invals, traced, n, **params):
                            new_in_cols, new_values,
                            first.out_size, first.in_size)
 
+    # Mix of {ConstantDiagonal, Diagonal, Ellpack} at matching (n, n) shape:
+    # promote diagonals to Ellpack bands over the full row range and
+    # widen, avoiding BCOO promote. Ellpack's `(start_row, end_row)`
+    # range must be `(0, n)` for this to work — a diagonal always spans
+    # the full range.
+    if (kinds <= {ConstantDiagonal, Diagonal, Ellpack}
+            and all(_linop_matrix_shape(v) == _linop_matrix_shape(vals[0])
+                    for v in vals)):
+        shape = _linop_matrix_shape(vals[0])
+        if shape[0] == shape[1]:  # square — diagonals fit
+            full_rows_ok = all(
+                not isinstance(v, Ellpack)
+                or (v.start_row == 0 and v.end_row == shape[0])
+                for v in vals
+            )
+            if full_rows_ok:
+                # Convert each operand to an Ellpack over [0, n), then add.
+                n_sq = shape[0]
+                arange_n = np.arange(n_sq)
+                ep_vals = []
+                for v in vals:
+                    if isinstance(v, ConstantDiagonal):
+                        ep_vals.append(Ellpack(
+                            0, n_sq, (arange_n,),
+                            jnp.broadcast_to(jnp.asarray(v.value), (n_sq,)),
+                            n_sq, n_sq,
+                        ))
+                    elif isinstance(v, Diagonal):
+                        ep_vals.append(Ellpack(
+                            0, n_sq, (arange_n,), v.values, n_sq, n_sq,
+                        ))
+                    else:
+                        ep_vals.append(v)
+                return _add_rule(ep_vals, [True] * len(ep_vals), n)
+
     # Any combination of {ConstantDiagonal, Diagonal, Ellpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
     if kinds <= {ConstantDiagonal, Diagonal, Ellpack, sparse.BCOO}:

@@ -178,6 +178,38 @@ def test_non_1d_input_rejected():
 # ----------------------- shape-witness correctness -----------------------
 
 
+def test_add_rule_absorbs_diagonal_into_ellpack():
+    """Diagonal + Ellpack at matching square shape should stay Ellpack
+    (promoted diagonals become an extra band), not fall through to BCOO."""
+    from lineaxpr import Ellpack
+    from lineaxpr.materialize import _add_rule
+
+    D = Diagonal(jnp.asarray([1.0, 2.0, 3.0]))
+    E = Ellpack(0, 3, (np.array([1, 0, 2]),), jnp.asarray([5.0, 6.0, 7.0]), 3, 3)
+    result = _add_rule([D, E], [True, True], n=3)
+    assert isinstance(result, Ellpack), f"expected Ellpack, got {type(result)}"
+    assert result.k == 2, f"expected k=2 (Diagonal + 1-band Ellpack), got k={result.k}"
+    # Dense-equivalence check.
+    expected = np.diag([1.0, 2.0, 3.0]) + np.asarray(E.todense())
+    np.testing.assert_allclose(np.asarray(result.todense()), expected)
+
+
+def test_add_rule_absorbs_constant_diagonal_into_ellpack():
+    """ConstantDiagonal + Diagonal + Ellpack → Ellpack with all bands widened."""
+    from lineaxpr import Ellpack
+    from lineaxpr.materialize import _add_rule
+
+    CD = ConstantDiagonal(3, 0.5)
+    D = Diagonal(jnp.asarray([1.0, 2.0, 3.0]))
+    E = Ellpack(0, 3, (np.array([1, 0, 2]), np.array([2, 2, 0])),
+                jnp.asarray([[5.0, 50.0], [6.0, 60.0], [7.0, 70.0]]), 3, 3)
+    result = _add_rule([CD, D, E], [True, True, True], n=3)
+    assert isinstance(result, Ellpack)
+    assert result.k == 4  # 1 (CD band) + 1 (D band) + 2 (E bands)
+    expected = 0.5 * np.eye(3) + np.diag([1.0, 2.0, 3.0]) + np.asarray(E.todense())
+    np.testing.assert_allclose(np.asarray(result.todense()), expected)
+
+
 def test_seed_dtype_flows_to_trace():
     """The trace placeholder should use the seed's aval dtype."""
     captured = {}
