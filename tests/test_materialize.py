@@ -140,7 +140,7 @@ def test_heat_equation_hessian_is_tridiagonal(n):
     np.testing.assert_allclose(dense_S, H_np, atol=1e-10)
     # Tridiagonal nnz lower bound = 3n-2. The nonlinear κ(T)=T^2.5 produces
     # multiple bands per row (derivatives hit both endpoints of each diff),
-    # so the Ellpack has k≈3 and the BCOO lands at roughly 2.66x the
+    # so the BEllpack has k≈3 and the BCOO lands at roughly 2.66x the
     # minimum. Loose 3x bound catches structural regressions.
     if isinstance(S, sparse.BCOO):
         assert S.nse <= 3 * (3 * n - 2)

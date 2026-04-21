@@ -44,7 +44,7 @@ from .materialize import (
 from ._base import (
     ConstantDiagonal,
     Diagonal,
-    Ellpack,
+    BEllpack,
     Identity,
 )
 
@@ -66,7 +66,7 @@ __all__ = [
     # LinOp classes (exposed for custom seeds / debugging)
     "ConstantDiagonal",
     "Diagonal",
-    "Ellpack",
+    "BEllpack",
     "Identity",
     # Internal threshold exposed for tests that want to override it
     "_SMALL_N_VMAP_THRESHOLD",

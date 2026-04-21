@@ -12,7 +12,7 @@ import pytest
 from jax import core
 from jax.experimental import sparse
 
-from lineaxpr import ConstantDiagonal, Diagonal, Ellpack, Identity
+from lineaxpr import ConstantDiagonal, Diagonal, BEllpack, Identity
 
 
 # ---------------------------- Identity / ConstantDiagonal -----------------
@@ -119,15 +119,15 @@ def test_diagonal_primal_aval():
     assert aval.dtype == jnp.float32
 
 
-# ---------------------------- Ellpack ------------------------------------
+# ---------------------------- BEllpack ------------------------------------
 
 
 def _simple_ellpack():
-    """3×4 Ellpack, two bands, rows [0, 3).
+    """3×4 BEllpack, two bands, rows [0, 3).
 
     M[0,1]=5, M[0,2]=50; M[1,0]=6, M[1,3]=60; M[2,3]=7, M[2,2]=70.
     """
-    return Ellpack(
+    return BEllpack(
         start_row=0,
         end_row=3,
         in_cols=(np.array([1, 0, 3]), np.array([2, 3, 2])),
@@ -190,8 +190,8 @@ def test_ellpack_scale_per_out_row_nrows_length():
 
 
 def test_ellpack_scale_per_out_row_out_size_length():
-    # Ellpack with start_row > 0 so out_size > nrows.
-    e = Ellpack(
+    # BEllpack with start_row > 0 so out_size > nrows.
+    e = BEllpack(
         start_row=1, end_row=3,
         in_cols=(np.array([0, 2]),),
         values=(jnp.asarray([5.0, 7.0]),),
@@ -237,7 +237,7 @@ def test_ellpack_pad_rows_negative_truncates_bottom():
 
 
 def test_ellpack_minus_one_sentinel_masks_slot():
-    e = Ellpack(
+    e = BEllpack(
         start_row=0, end_row=3,
         in_cols=(np.array([0, 1, 2]), np.array([2, -1, 0])),
         values=(jnp.asarray([1.0, 2.0, 3.0]),
@@ -254,7 +254,7 @@ def test_ellpack_minus_one_sentinel_masks_slot():
 
 def test_ellpack_slice_band_resolves():
     # in_cols = slice(1, 5) on a length-4 row range => cols [1,2,3,4].
-    e = Ellpack(
+    e = BEllpack(
         start_row=0, end_row=4,
         in_cols=(slice(1, 5),),
         values=(jnp.ones((4,)),),
@@ -269,7 +269,7 @@ def test_ellpack_slice_band_resolves():
 
 def test_ellpack_intra_row_duplicate_cols_sum():
     # Two bands both hitting col 0 on row 0 — densify must sum.
-    e = Ellpack(
+    e = BEllpack(
         start_row=0, end_row=1,
         in_cols=(np.array([0]), np.array([0])),
         values=(jnp.asarray([3.0]), jnp.asarray([4.0])),
@@ -299,7 +299,7 @@ def test_ellpack_primal_aval():
         lambda: Diagonal(jnp.arange(5, dtype=jnp.float64)),
         lambda: _simple_ellpack(),
     ],
-    ids=["Identity", "ConstantDiagonal", "Diagonal", "Ellpack"],
+    ids=["Identity", "ConstantDiagonal", "Diagonal", "BEllpack"],
 )
 def test_to_bcoo_dense_agreement(op_factory):
     op = op_factory()
@@ -315,7 +315,7 @@ def test_to_bcoo_dense_agreement(op_factory):
         lambda: Diagonal(jnp.arange(5, dtype=jnp.float64) + 1.0),
         lambda: _simple_ellpack(),
     ],
-    ids=["ConstantDiagonal", "Diagonal", "Ellpack"],
+    ids=["ConstantDiagonal", "Diagonal", "BEllpack"],
 )
 def test_negate_then_scale_minus_one_agree(op_factory):
     op = op_factory()

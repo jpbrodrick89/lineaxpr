@@ -12,7 +12,7 @@ Public API (see `lineaxpr/__init__.py`):
 
 All of the above trace `linear_fn` to a jaxpr and walk its equations
 with per-primitive rules that propagate structural per-var operators.
-The LinOp classes (`ConstantDiagonal`, `Diagonal`, `Ellpack`; see
+The LinOp classes (`ConstantDiagonal`, `Diagonal`, `BEllpack`; see
 `_base.py`) let common patterns (scalar · I, vector-scaled I, sparse
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
@@ -35,7 +35,7 @@ from jax.extend import core
 from ._base import (
     ConstantDiagonal,
     Diagonal,
-    Ellpack,
+    BEllpack,
     Identity,
     _to_bcoo,
     _to_dense,
@@ -61,7 +61,7 @@ def _input_size(invals, traced):
             continue
         if isinstance(v, (ConstantDiagonal, Diagonal)):
             return v.n
-        if isinstance(v, Ellpack):
+        if isinstance(v, BEllpack):
             return v.in_size
         if isinstance(v, sparse.BCOO):
             return v.shape[-1]
@@ -103,14 +103,26 @@ def _mul_rule(invals, traced, n, **params):
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
         s = jnp.asarray(scale).reshape(())
-        if isinstance(traced_op, (ConstantDiagonal, Diagonal, Ellpack)):
+        if isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack)):
             return traced_op.scale_scalar(s)
         if isinstance(traced_op, sparse.BCOO):
             return _bcoo_scale_scalar(traced_op, s)
         return s * traced_op
-    if isinstance(traced_op, (ConstantDiagonal, Diagonal, Ellpack)):
+    # scale_per_out_row assumes scale has shape that broadcasts cleanly
+    # against the op's var_shape (batch_shape + (out_size,)). If scale has
+    # extra dims (jaxpr outer-product-like broadcasts), fall back to dense.
+    traced_var_shape = _traced_shape(traced_op)
+    scale_ok = (
+        hasattr(scale, "shape")
+        and len(scale.shape) <= len(traced_var_shape)
+        and all(
+            s in (1, t)
+            for s, t in zip(scale.shape[::-1], traced_var_shape[::-1])
+        )
+    )
+    if scale_ok and isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack)):
         return traced_op.scale_per_out_row(scale)
-    if isinstance(traced_op, sparse.BCOO):
+    if scale_ok and isinstance(traced_op, sparse.BCOO):
         return _bcoo_scale_per_out_row(traced_op, scale)
     dense = _to_dense(traced_op, n)
     return scale[..., None] * dense
@@ -121,7 +133,7 @@ def _linop_matrix_shape(v):
     """Return the (out_size, in_size) of any LinOp/BCOO, or None for ndarray."""
     if isinstance(v, (ConstantDiagonal, Diagonal)):
         return (v.n, v.n)
-    if isinstance(v, Ellpack):
+    if isinstance(v, BEllpack):
         return (v.out_size, v.in_size)
     if isinstance(v, sparse.BCOO):
         return v.shape
@@ -129,7 +141,7 @@ def _linop_matrix_shape(v):
 
 
 def _cols_equal(a, b) -> bool:
-    """Structural equality test for Ellpack ColArr (slice / np.ndarray).
+    """Structural equality test for BEllpack ColArr (slice / np.ndarray).
 
     Conservative: returns False for traced jnp arrays (can't compare at
     trace time) and for heterogeneous pairs (slice vs array). That's
@@ -141,6 +153,46 @@ def _cols_equal(a, b) -> bool:
     if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
         return a.shape == b.shape and np.array_equal(a, b)
     return False
+
+
+def _col_batch_slice(col, batch_idx):
+    """Select one element from a batched ColArr along its leading axis.
+
+    - `slice` (shared across batches): pass through unchanged.
+    - `np.ndarray` / `jnp.ndarray`: if ndim > 1, index the leading axis;
+      else treat as shared (1D cols broadcast across batches).
+    """
+    if isinstance(col, slice):
+        return col
+    if col.ndim >= 2:
+        return col[batch_idx]
+    return col
+
+
+def _bellpack_unbatch(bep):
+    """Split a BEllpack with n_batch == 1 into a tuple of unbatched Ellpacks.
+
+    Each slice shares `(start_row, end_row, out_size, in_size)` and differs
+    in per-batch `in_cols` and `values` rows.
+    """
+    assert bep.n_batch >= 1, "use only when n_batch > 0"
+    # Flatten batch_shape to a single leading axis of size B.
+    B = bep.batch_shape[0]
+    # For n_batch > 1 we'd need to iterate over the product; leave as TODO.
+    assert bep.n_batch == 1, (
+        f"_bellpack_unbatch only supports n_batch=1 currently, got {bep.n_batch}"
+    )
+    result = []
+    for b in range(B):
+        in_cols_b = tuple(_col_batch_slice(c, b) for c in bep.in_cols)
+        values_b = bep.values[b]
+        result.append(BEllpack(
+            start_row=bep.start_row, end_row=bep.end_row,
+            in_cols=in_cols_b, values=values_b,
+            out_size=bep.out_size, in_size=bep.in_size,
+            batch_shape=(),
+        ))
+    return tuple(result)
 
 
 def _bcoo_concat(bcoo_vals, shape):
@@ -185,10 +237,10 @@ def _add_rule(invals, traced, n, **params):
             )
         return Diagonal(total)
 
-    # All-Ellpack with matching (start_row, end_row, out_size, in_size):
+    # All-BEllpack with matching (start_row, end_row, out_size, in_size):
     # extend bands (tuple concat + values stack on axis 1). O(1) bookkeeping,
     # no per-row value copy. Mismatched ranges promote to BCOO below.
-    if kinds == {Ellpack}:
+    if kinds == {BEllpack}:
         first = vals[0]
         same_range = all(
             v.start_row == first.start_row
@@ -198,7 +250,7 @@ def _add_rule(invals, traced, n, **params):
             for v in vals[1:]
         )
         if same_range:
-            # Same-cols fast path: if every Ellpack has identical in_cols
+            # Same-cols fast path: if every BEllpack has identical in_cols
             # tuples (band for band), sum the values tensors directly
             # (works uniformly for 1D k=1 and 2D k>=2 layouts).
             same_cols = all(
@@ -211,7 +263,7 @@ def _add_rule(invals, traced, n, **params):
                 summed_values = vals[0].values
                 for v in vals[1:]:
                     summed_values = summed_values + v.values
-                return Ellpack(first.start_row, first.end_row,
+                return BEllpack(first.start_row, first.end_row,
                                first.in_cols, summed_values,
                                first.out_size, first.in_size)
             # Different cols: widen bands. Materialize each operand's
@@ -220,48 +272,48 @@ def _add_rule(invals, traced, n, **params):
             parts = [v.values if v.values.ndim == 2 else v.values[:, None]
                      for v in vals]
             new_values = jnp.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
-            return Ellpack(first.start_row, first.end_row,
+            return BEllpack(first.start_row, first.end_row,
                            new_in_cols, new_values,
                            first.out_size, first.in_size)
 
-    # Mix of {ConstantDiagonal, Diagonal, Ellpack} at matching (n, n) shape:
-    # promote diagonals to Ellpack bands over the full row range and
-    # widen, avoiding BCOO promote. Ellpack's `(start_row, end_row)`
+    # Mix of {ConstantDiagonal, Diagonal, BEllpack} at matching (n, n) shape:
+    # promote diagonals to BEllpack bands over the full row range and
+    # widen, avoiding BCOO promote. BEllpack's `(start_row, end_row)`
     # range must be `(0, n)` for this to work — a diagonal always spans
     # the full range.
-    if (kinds <= {ConstantDiagonal, Diagonal, Ellpack}
+    if (kinds <= {ConstantDiagonal, Diagonal, BEllpack}
             and all(_linop_matrix_shape(v) == _linop_matrix_shape(vals[0])
                     for v in vals)):
         shape = _linop_matrix_shape(vals[0])
         if shape[0] == shape[1]:  # square — diagonals fit
             full_rows_ok = all(
-                not isinstance(v, Ellpack)
+                not isinstance(v, BEllpack)
                 or (v.start_row == 0 and v.end_row == shape[0])
                 for v in vals
             )
             if full_rows_ok:
-                # Convert each operand to an Ellpack over [0, n), then add.
+                # Convert each operand to an BEllpack over [0, n), then add.
                 n_sq = shape[0]
                 arange_n = np.arange(n_sq)
                 ep_vals = []
                 for v in vals:
                     if isinstance(v, ConstantDiagonal):
-                        ep_vals.append(Ellpack(
+                        ep_vals.append(BEllpack(
                             0, n_sq, (arange_n,),
                             jnp.broadcast_to(jnp.asarray(v.value), (n_sq,)),
                             n_sq, n_sq,
                         ))
                     elif isinstance(v, Diagonal):
-                        ep_vals.append(Ellpack(
+                        ep_vals.append(BEllpack(
                             0, n_sq, (arange_n,), v.values, n_sq, n_sq,
                         ))
                     else:
                         ep_vals.append(v)
                 return _add_rule(ep_vals, [True] * len(ep_vals), n)
 
-    # Any combination of {ConstantDiagonal, Diagonal, Ellpack, BCOO} at
+    # Any combination of {ConstantDiagonal, Diagonal, BEllpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
-    if kinds <= {ConstantDiagonal, Diagonal, Ellpack, sparse.BCOO}:
+    if kinds <= {ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO}:
         shapes = [_linop_matrix_shape(v) for v in vals]
         if all(s == shapes[0] for s in shapes):
             bcoo_vals = [_to_bcoo(v, n) for v in vals]
@@ -299,7 +351,7 @@ def _neg_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
         return op.negate()
     if isinstance(op, sparse.BCOO):
         return _bcoo_negate(op)
@@ -400,27 +452,27 @@ def _slice_rule(invals, traced, n, **params):
 
     # Structural fast path: 1D operand with unit stride and structural form.
     if (len(starts) == 1 and strides == (1,)
-            and isinstance(operand, (ConstantDiagonal, Diagonal, Ellpack, sparse.BCOO))):
+            and isinstance(operand, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO))):
         s, e = starts[0], limits[0]
         k = e - s
         if isinstance(operand, ConstantDiagonal):
             # Single band with col indices [s..e); same-static arange in cols
             # lets downstream add_any dedup-by-equality.
             values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k,))
-            return Ellpack(
+            return BEllpack(
                 start_row=0, end_row=k,
                 in_cols=(np.arange(s, e),),
                 values=values_b,
                 out_size=k, in_size=operand.n,
             )
         if isinstance(operand, Diagonal):
-            return Ellpack(
+            return BEllpack(
                 start_row=0, end_row=k,
                 in_cols=(np.arange(s, e),),
                 values=operand.values[s:e],
                 out_size=k, in_size=operand.n,
             )
-        if isinstance(operand, Ellpack):
+        if isinstance(operand, BEllpack):
             # slice(op, s, e) == op.pad_rows(-s, -(out_size - e)). pad_rows
             # handles truncation + shift in one place.
             return operand.pad_rows(-s, -(operand.out_size - e))
@@ -453,7 +505,7 @@ def _pad_rule(invals, traced, n, **params):
     config = params["padding_config"]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
     before, after = int(before), int(after)
-    if (isinstance(operand, Ellpack) and len(config) == 1
+    if (isinstance(operand, BEllpack) and len(config) == 1
             and int(interior) == 0):
         return operand.pad_rows(before, after)
     if (isinstance(operand, sparse.BCOO) and len(config) == 1
@@ -483,7 +535,7 @@ def _squeeze_rule(invals, traced, n, **params):
         if not dimensions:
             return op
         raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
-    if isinstance(op, (Ellpack, sparse.BCOO)):
+    if isinstance(op, (BEllpack, sparse.BCOO)):
         # Densify (sparse → (out_size, in_size)) then squeeze leading axes.
         return lax.squeeze(_to_dense(op, n), dimensions)
     # Dense: squeeze the specified axes (always output axes, never the last
@@ -534,6 +586,23 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
         return None
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
+    # Structural fast path: adding new leading axes to an unbatched BEllpack
+    # (the pattern emitted by e.g. `jnp.sum(a[perm_indices], axis=0)`'s
+    # backwards-linearize). Produces a BEllpack with the new dims in
+    # batch_shape — values broadcast-tiled, in_cols shared across batches.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and len(broadcast_dimensions) == 1
+            and broadcast_dimensions[0] == len(shape) - 1
+            and shape[-1] == op.out_size):
+        new_batch = tuple(shape[:-1])
+        new_values_shape = new_batch + op.values.shape
+        new_values = jnp.broadcast_to(op.values, new_values_shape)
+        return BEllpack(
+            start_row=op.start_row, end_row=op.end_row,
+            in_cols=op.in_cols, values=new_values,
+            out_size=op.out_size, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
     dense = _to_dense(op, n)
     # Map each output axis to the corresponding input axis (or broadcast it).
     out_dims = tuple(broadcast_dimensions) + (len(shape),)  # add input axis
@@ -547,6 +616,16 @@ def _reduce_sum_rule(invals, traced, n, **params):
     if not t:
         return None
     axes = params["axes"]
+    # BEllpack with leading batch dims: if `axes` cover the entire
+    # batch_shape, split into per-batch Ellpack slices and sum them via
+    # `_add_rule` (which handles same-cols dedup / band widening).
+    if isinstance(op, BEllpack) and op.n_batch > 0:
+        axes_t = tuple(sorted(axes))
+        if axes_t == tuple(range(op.n_batch)):
+            slices = _bellpack_unbatch(op)
+            if len(slices) == 1:
+                return slices[0]
+            return _add_rule(list(slices), [True] * len(slices), n)
     dense = _to_dense(op, n)
     # Sum applies to output axes only — never to the last (input-coordinate) axis.
     return jnp.sum(dense, axis=tuple(axes))
@@ -703,14 +782,26 @@ def _gather_rule(invals, traced, n, **params):
     ):
         raise NotImplementedError(f"gather with unhandled dnums: {dnums}")
     row_idx = start_indices[..., 0]
-    if isinstance(operand, ConstantDiagonal):
-        k = row_idx.shape[0]
-        values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k,))
-        return Ellpack(
-            start_row=0, end_row=k,
+    # Build a BEllpack for (Constant)Diagonal operand. row_idx has shape
+    # (*batch_shape, N) — 1D for the standard gather case, multi-dim for
+    # batched gathers like SPARSINE's `sine_values[perm_indices]` with
+    # perm_indices shape (B, N).
+    if isinstance(operand, (ConstantDiagonal, Diagonal)):
+        batch_shape = tuple(row_idx.shape[:-1])
+        N = row_idx.shape[-1]
+        if isinstance(operand, ConstantDiagonal):
+            vals = jnp.broadcast_to(
+                jnp.asarray(operand.value), batch_shape + (N,)
+            )
+        else:
+            # Diagonal(v) — value at col c is v[c]. Gather v[row_idx].
+            vals = jnp.take(operand.values, row_idx)
+        return BEllpack(
+            start_row=0, end_row=N,
             in_cols=(row_idx,),
-            values=values_b,
-            out_size=k, in_size=operand.n,
+            values=vals,
+            out_size=N, in_size=operand.n,
+            batch_shape=batch_shape,
         )
     if isinstance(operand, sparse.BCOO):
         raise NotImplementedError("gather on BCOO operand")
@@ -738,15 +829,31 @@ def _scatter_add_rule(invals, traced, n, **params):
         raise NotImplementedError(f"scatter-add with unhandled dnums: {dnums}")
     out_idx = scatter_indices[..., 0]
     out_size = operand.shape[0]
-    # Out_idx comes from scatter_indices[..., 0]. If scatter_indices is 2D+,
-    # out_idx is 2D+ too; flatten the batch dims so we treat each element as
-    # a scalar target position.
+    # BEllpack updates: batched case handled per-slice (each batch's
+    # Ellpack rows get remapped via scatter_indices[b]), then concat as
+    # BCOO. Unbatched case falls through to the 1D-BCOO path below.
+    if isinstance(updates, BEllpack):
+        if updates.n_batch == 0:
+            updates = _to_bcoo(updates, n)
+        else:
+            # Batched: unbatch, remap each slice's rows, concat.
+            slices = _bellpack_unbatch(updates)
+            bcoo_pieces = []
+            for b_idx, ep in enumerate(slices):
+                bc = _to_bcoo(ep, n)
+                old_rows = bc.indices[:, 0]
+                new_rows = out_idx[b_idx][old_rows]
+                new_indices = jnp.stack(
+                    [new_rows, bc.indices[:, 1]], axis=1
+                )
+                bcoo_pieces.append(sparse.BCOO(
+                    (bc.data, new_indices),
+                    shape=(out_size, updates.in_size),
+                ))
+            return _bcoo_concat(
+                bcoo_pieces, shape=(out_size, updates.in_size)
+            )
     out_idx_flat = out_idx.reshape(-1)
-    if isinstance(updates, Ellpack):
-        # Output rows are non-contiguous in general (out_idx_flat is an
-        # arbitrary permutation), so fall back to BCOO — structural win
-        # of staying Ellpack is not available here.
-        updates = _to_bcoo(updates, n)
     if isinstance(updates, sparse.BCOO):
         new_rows = out_idx_flat[updates.indices[:, 0]]
         new_indices = jnp.stack([new_rows, updates.indices[:, 1]], axis=1)
@@ -872,11 +979,11 @@ def to_dense(op):
     """Densify a LinOp returned by `sparsify` to a jnp.ndarray.
 
     Uniform across all possible return types:
-    - Our LinOp classes (ConstantDiagonal, Diagonal, Ellpack) → `.todense()`.
+    - Our LinOp classes (ConstantDiagonal, Diagonal, BEllpack) → `.todense()`.
     - `jax.experimental.sparse.BCOO` → `.todense()`.
     - Plain ndarray → passthrough.
     """
-    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
         return op.todense()
     if isinstance(op, sparse.BCOO):
         return op.todense()
@@ -893,7 +1000,7 @@ def to_bcoo(op):
     """
     if isinstance(op, sparse.BCOO):
         return op
-    if isinstance(op, (ConstantDiagonal, Diagonal, Ellpack)):
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
         return op.to_bcoo()
     return op
 

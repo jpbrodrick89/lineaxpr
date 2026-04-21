@@ -14,18 +14,18 @@ To extend the format space:
 1. Define the class in this file. Give it the standard method set:
    `.shape`, `.n`, `.primal_aval()`, `.todense()`, `.to_bcoo()`,
    `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`, and any
-   form-specific ops (e.g. `Ellpack.pad_rows`).
+   form-specific ops (e.g. `BEllpack.pad_rows`).
 2. Update `_to_dense(op, n)` and `_to_bcoo(op, n)` to handle it.
 3. Export it from `lineaxpr/__init__.py`.
 4. In `materialize.py`, touch:
    - `_linop_matrix_shape(v)` — add an `isinstance` branch for shape.
    - `_add_rule`'s kind-dispatch — decide which combos with the new
      form stay structural vs promote to BCOO. Shared path is "any mix
-     of {CD, D, Ellpack, <new>, BCOO} at matching shape → BCOO via
+     of {CD, D, BEllpack, <new>, BCOO} at matching shape → BCOO via
      `_to_bcoo` and concat", so no per-combo isinstance soup needed.
    - `_mul_rule` / `_neg_rule` just dispatch to the LinOp methods — no
      new branches unless the new form needs special-case BCOO fallbacks.
-   - Rules that currently return Ellpack (e.g. `_slice_rule`,
+   - Rules that currently return BEllpack (e.g. `_slice_rule`,
      `_gather_rule`) may opportunistically return the new form when
      the pattern warrants it.
 """
@@ -125,30 +125,33 @@ class Diagonal:
         return Diagonal(self.values * jnp.asarray(v))
 
 
-class Ellpack:
-    """Multi-band sparse operator with a contiguous row range.
+class BEllpack:
+    """Batched multi-band sparse operator with a contiguous row range.
 
-    Represents the (out_size, in_size) matrix where rows in
-    [start_row, end_row) each hold up to k entries (one per band) and
-    all other rows are zero:
+    Represents the `(*batch_shape, out_size, in_size)` tensor where
+    each batch slice is an Ellpack matrix. Rows in `[start_row, end_row)`
+    each hold up to k entries (one per band); rows outside are zero.
+    When `batch_shape == ()`, this is a plain Ellpack matrix.
 
-        M[start_row + r, in_cols[b][r]] += values[...][b][r]   for b in range(k)
+    Shape convention mirrors `jax.experimental.sparse.BCOO`:
+    `shape = (*batch_shape, *sparse_shape)` with `n_sparse = 2`, and
+    `n_batch = len(batch_shape)`.
 
     Storage:
       - `in_cols`: tuple of length k. Each entry is a ColArr —
         `slice` (step=1), static `np.ndarray`, or traced
-        `jnp.ndarray` of length `nrows = end_row - start_row`. `-1`
-        entries are sentinels: that slot contributes 0 and is
-        filtered at CSR/BCOO conversion.
-      - `values`: a single `jnp.ndarray`. Shape `(nrows,)` when k==1,
-        `(nrows, k)` when k>=2.
+        `jnp.ndarray`. For unbatched (`batch_shape == ()`) the cols
+        are 1D `(nrows,)`. For batched, cols may be `(*batch_shape,
+        nrows)` (per-batch varying cols) or still 1D (shared cols
+        across batches). `-1` entries are sentinels: that slot
+        contributes 0 and is filtered at CSR/BCOO conversion.
+      - `values`: a single `jnp.ndarray`. Shape `(*batch_shape, nrows)`
+        when k==1, `(*batch_shape, nrows, k)` when k>=2.
 
-    The **hybrid 1D-for-k=1 / 2D-for-k>=2** layout was tuned from
-    hand-roll benchmarks (2026-04-20):
+    The **hybrid 1D-for-k=1 / 2D-for-k>=2** layout (tuned 2026-04-20):
       * k=1 with 1D values avoids the `v[:, None]` axis-insertion
         `broadcast_in_dim` that XLA would emit for `(n, 1)` values.
-        This is the common case for slice/gather/scaled-Identity
-        walks.
+        This is the common case for slice/gather/scaled-Identity walks.
       * k>=2 with 2D values lets a single `(n, k)` multiply fuse in
         one XLA kernel instead of k separate per-band kernels. For
         k=10 this was ~5× faster than tuple-per-band in isolation.
@@ -161,14 +164,18 @@ class Ellpack:
     """
 
     __slots__ = ("start_row", "end_row", "in_cols", "values",
-                 "out_size", "in_size")
+                 "out_size", "in_size", "batch_shape")
 
     def __init__(self, start_row, end_row, in_cols, values,
-                 out_size, in_size):
+                 out_size, in_size, batch_shape=()):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
-        self.values = _normalize_values(values, len(self.in_cols))
+        self.batch_shape = tuple(int(d) for d in batch_shape)
+        self.values = _normalize_values(
+            values, len(self.in_cols), self.batch_shape,
+            self.end_row - self.start_row,
+        )
         self.out_size = int(out_size)
         self.in_size = int(in_size)
 
@@ -181,8 +188,16 @@ class Ellpack:
         return len(self.in_cols)
 
     @property
+    def n_batch(self):
+        return len(self.batch_shape)
+
+    @property
+    def n_sparse(self):
+        return 2  # out_size + in_size are both sparse dims
+
+    @property
     def shape(self):
-        return (self.out_size, self.in_size)
+        return (*self.batch_shape, self.out_size, self.in_size)
 
     @property
     def n(self):
@@ -190,6 +205,7 @@ class Ellpack:
 
     @property
     def nse(self):
+        """Number of structural entries per batch element (= nrows * k)."""
         return self.nrows * self.k
 
     @property
@@ -200,12 +216,41 @@ class Ellpack:
         return core.ShapedArray((self.in_size,), self.dtype)
 
     def todense(self):
+        # For batched BEllpack, materialize each batch slice via the
+        # unbatched todense and stack on the leading axes. Keeps the
+        # densification logic simple and shares it with the n_batch==0
+        # case (loop body below).
+        if self.n_batch > 0:
+            # Flatten batch dims, densify per slice, reshape.
+            B_total = 1
+            for d in self.batch_shape:
+                B_total *= d
+            slices = []
+            for flat_idx in range(B_total):
+                # Unravel to per-axis index.
+                idx = []
+                rem = flat_idx
+                for d in self.batch_shape[::-1]:
+                    idx.insert(0, rem % d); rem //= d
+                idx = tuple(idx)
+                # Build an unbatched BEllpack for this slice.
+                in_cols_s = tuple(
+                    _col_batch_index(c, idx) for c in self.in_cols
+                )
+                vals_s = self.values[idx]
+                one = BEllpack(
+                    self.start_row, self.end_row, in_cols_s, vals_s,
+                    self.out_size, self.in_size, batch_shape=(),
+                )
+                slices.append(one.todense())
+            stacked = jnp.stack(slices, axis=0)
+            return stacked.reshape(self.batch_shape + (self.out_size, self.in_size))
         rows_1d = np.arange(self.start_row, self.end_row)
         dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
         for b in range(k):
             cols_b = _resolve_col(self.in_cols[b], self.nrows)
-            vals_b = self.values if k == 1 else self.values[:, b]
+            vals_b = self.values if k == 1 else self.values[..., b]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
                 dense = dense.at[rows_1d, cols_b].add(vals_b)
             else:
@@ -219,11 +264,11 @@ class Ellpack:
         return _ellpack_to_bcoo(self)
 
     def negate(self):
-        return Ellpack(self.start_row, self.end_row, self.in_cols,
+        return BEllpack(self.start_row, self.end_row, self.in_cols,
                        -self.values, self.out_size, self.in_size)
 
     def scale_scalar(self, s):
-        return Ellpack(self.start_row, self.end_row, self.in_cols,
+        return BEllpack(self.start_row, self.end_row, self.in_cols,
                        s * self.values, self.out_size, self.in_size)
 
     def scale_per_out_row(self, v):
@@ -238,7 +283,7 @@ class Ellpack:
             scaled = v_slice * self.values
         else:
             scaled = v_slice[:, None] * self.values
-        return Ellpack(self.start_row, self.end_row, self.in_cols,
+        return BEllpack(self.start_row, self.end_row, self.in_cols,
                        scaled, self.out_size, self.in_size)
 
     def pad_rows(self, before: int, after: int):
@@ -250,7 +295,7 @@ class Ellpack:
         trim_top = max(0, -new_start)
         trim_bottom = max(0, new_end - new_out_size)
         if trim_top == 0 and trim_bottom == 0:
-            return Ellpack(new_start, new_end, self.in_cols, self.values,
+            return BEllpack(new_start, new_end, self.in_cols, self.values,
                            new_out_size, self.in_size)
         nrows_old = self.nrows
         lo = trim_top
@@ -259,37 +304,59 @@ class Ellpack:
             empty_cols = tuple(np.empty(0, dtype=np.int64) for _ in self.in_cols)
             empty_shape = (0,) if self.k == 1 else (0, self.k)
             empty_vals = jnp.empty(empty_shape, self.dtype)
-            return Ellpack(0, 0, empty_cols, empty_vals,
+            return BEllpack(0, 0, empty_cols, empty_vals,
                            new_out_size, self.in_size)
         new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
         new_values = self.values[lo:hi]
-        return Ellpack(new_start + lo, new_end - trim_bottom,
+        return BEllpack(new_start + lo, new_end - trim_bottom,
                        new_in_cols, new_values,
                        new_out_size, self.in_size)
 
 
-def _normalize_values(values, k: int):
+def _normalize_values(values, k: int, batch_shape=(), nrows=None):
     """Coerce a user-supplied `values` into the canonical hybrid layout.
 
     Accepts:
-      - 1D `jnp.ndarray` (only when k==1).
-      - 2D `jnp.ndarray` of shape `(nrows, k)` (only when k>=2).
+      - 1D `jnp.ndarray` (only when k==1 and batch_shape==()).
+      - 2D `jnp.ndarray` of shape `(nrows, k)` (only when k>=2 and
+        batch_shape==()).
       - Tuple of k 1D arrays (stacks axis=1 if k>=2, unwraps if k==1).
+      - For `batch_shape=(*B,)`: `(*B, nrows)` array when k==1,
+        `(*B, nrows, k)` when k>=2, or a tuple of k `(*B, nrows)` arrays.
     """
+    n_batch = len(batch_shape)
     if isinstance(values, tuple):
         if k == 1:
             assert len(values) == 1, f"k=1 but got {len(values)} bands"
             return jnp.asarray(values[0])
         assert len(values) == k, f"k={k} but got {len(values)} bands"
-        return jnp.stack(list(values), axis=1)
+        # Each band has shape (*batch_shape, nrows) → stack on last axis.
+        return jnp.stack(list(values), axis=-1)
     arr = jnp.asarray(values)
     if k == 1:
-        assert arr.ndim == 1, f"k=1 needs 1D values, got shape {arr.shape}"
+        assert arr.ndim == n_batch + 1, (
+            f"k=1 with batch_shape={batch_shape} needs ndim={n_batch+1} values, "
+            f"got shape {arr.shape}"
+        )
     else:
-        assert arr.ndim == 2 and arr.shape[1] == k, (
-            f"k={k} needs (n, k) 2D values, got shape {arr.shape}"
+        assert arr.ndim == n_batch + 2 and arr.shape[-1] == k, (
+            f"k={k} with batch_shape={batch_shape} needs "
+            f"(*batch, nrows, k) values, got shape {arr.shape}"
         )
     return arr
+
+
+def _col_batch_index(col, batch_idx):
+    """Index a ColArr at a batch position tuple.
+
+    - `slice` (shared across batches): pass through.
+    - `ndarray`: if col.ndim > 1, index the leading batch dims; else shared.
+    """
+    if isinstance(col, slice):
+        return col
+    if col.ndim > 1:
+        return col[batch_idx]
+    return col
 
 
 def _resolve_col(col, nrows):
@@ -321,15 +388,15 @@ def _to_dense(op, n: int) -> jnp.ndarray:
         m = op.values.shape[0]
         idx = jnp.arange(m)
         return jnp.zeros((m, m), op.values.dtype).at[idx, idx].set(op.values)
-    if isinstance(op, Ellpack):
+    if isinstance(op, BEllpack):
         return op.todense()
     if isinstance(op, sparse.BCOO):
         return op.todense()
     return op
 
 
-def _ellpack_to_bcoo(e: "Ellpack") -> sparse.BCOO:
-    """Flatten Ellpack to BCOO, filtering -1-sentinel cols.
+def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
+    """Flatten BEllpack to BCOO, filtering -1-sentinel cols.
 
     k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
     total for the happy path.
@@ -420,7 +487,7 @@ def _to_bcoo(op, n: int):
         return op
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return _diag_to_bcoo(op)
-    if isinstance(op, Ellpack):
+    if isinstance(op, BEllpack):
         return _ellpack_to_bcoo(op)
     return op  # plain ndarray — caller will keep dense
 
@@ -428,6 +495,6 @@ def _to_bcoo(op, n: int):
 def _traced_shape(op) -> tuple:
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return (op.n,)
-    if isinstance(op, Ellpack):
+    if isinstance(op, BEllpack):
         return (op.out_size,)
     return tuple(op.shape[:-1])
