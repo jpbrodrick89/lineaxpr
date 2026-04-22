@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import functools
 import operator
+import os
 from typing import Callable
 
 import jax
@@ -51,12 +52,19 @@ from ._base import (
 materialize_rules: dict[core.Primitive, Callable] = {}
 
 
-# Bound for `_add_rule`'s partial-match band-dedup scan. Skipping when
-# `sum(v.k for v in operands) > limit` keeps the O(K_total²) cols-equality
-# scan at trace time cheap. Empirically wins for K_total in the 4–50 range
-# across FREUROTH, CRAGGLVY, WOODS; beyond that the scan cost can rival
-# the savings and the widen path is safer.
-_DEDUP_K_TOTAL_LIMIT = 100
+# Cap on `K_total = sum(v.k for v in operands)` for `_add_rule`'s
+# partial-match band-dedup scan. Above the cap the O(K²) cols-equality
+# scan is skipped and the rule falls through to naive band-widening.
+#
+# Configurable via the `LINEAXPR_BELLPACK_DEDUP_LIMIT` env var, or by
+# assigning to `lineaxpr.materialize.BELLPACK_DEDUP_LIMIT` at runtime.
+# Default 25 is empirically optimal across FREUROTH / CRAGGLVY / WOODS
+# / CHAINWOO / SROSENBR — widening chains there stay under K_total ≤ 10
+# when dedup fires, so 25 provides headroom. Higher values add compile
+# overhead on wide-K problems (e.g. NONMSQRT's K~5000 intermediate)
+# without runtime benefit when those operators downstream-densify
+# anyway.
+BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "25"))
 
 
 def _input_size(invals, traced):
@@ -433,7 +441,7 @@ def _add_rule(invals, traced, n, **params):
             # sum their values and emit ONE band instead of len(group).
             # Strict superset of the same_cols fast path (when every
             # band matches band-for-band, identical behavior). Caps K
-            # at `K_total ≤ _DEDUP_K_TOTAL_LIMIT` to bound the O(K²)
+            # at `K_total ≤ BELLPACK_DEDUP_LIMIT` to bound the O(K²)
             # cols-equality scan at trace time — beyond that, fall
             # through to the naive widen below. Targets FREUROTH /
             # CRAGGLVY / WOODS / CHAINWOO / SROSENBR where the
@@ -442,7 +450,7 @@ def _add_rule(invals, traced, n, **params):
             K_total = sum(v.k for v in vals)
             n_batch = first.n_batch
             band_axis = n_batch + 1
-            if K_total <= _DEDUP_K_TOTAL_LIMIT:
+            if K_total <= BELLPACK_DEDUP_LIMIT:
                 # Enumerate (cols, values_slice) per band. Values slice:
                 # `v.values` for k=1, `v.values[..., b]` for k>=2 — same
                 # convention as the widen path. Only tuple iteration over
