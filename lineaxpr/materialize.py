@@ -305,9 +305,10 @@ def _add_rule(invals, traced, n, **params):
             )
         return Diagonal(total)
 
-    # All-BEllpack with matching (start_row, end_row, out_size, in_size):
-    # extend bands (tuple concat + values stack on axis 1). O(1) bookkeeping,
-    # no per-row value copy. Mismatched ranges promote to BCOO below.
+    # All-BEllpack with matching (start_row, end_row, out_size, in_size,
+    # batch_shape): extend bands (tuple concat + values stack on the band
+    # axis). O(1) bookkeeping, no per-row value copy. Mismatched ranges
+    # or batch_shapes promote to BCOO below.
     if kinds == {BEllpack}:
         first = vals[0]
         same_range = all(
@@ -315,6 +316,7 @@ def _add_rule(invals, traced, n, **params):
             and v.end_row == first.end_row
             and v.out_size == first.out_size
             and v.in_size == first.in_size
+            and v.batch_shape == first.batch_shape
             for v in vals[1:]
         )
         if same_range:
@@ -333,16 +335,23 @@ def _add_rule(invals, traced, n, **params):
                     summed_values = summed_values + v.values
                 return BEllpack(first.start_row, first.end_row,
                                first.in_cols, summed_values,
-                               first.out_size, first.in_size)
-            # Different cols: widen bands. Materialize each operand's
-            # values as (nrows, k_v) and concat on axis=1.
+                               first.out_size, first.in_size,
+                               batch_shape=first.batch_shape)
+            # Different cols: widen bands. Values shape is (*batch, nrows)
+            # for k=1 or (*batch, nrows, k) for k>=2; stack each operand's
+            # values along the "band" axis (which is after batch + nrows
+            # axes).
+            n_batch = first.n_batch
+            band_axis = n_batch + 1
             new_in_cols = tuple(c for v in vals for c in v.in_cols)
-            parts = [v.values if v.values.ndim == 2 else v.values[:, None]
+            parts = [v.values if v.values.ndim >= band_axis + 1
+                     else jnp.expand_dims(v.values, band_axis)
                      for v in vals]
-            new_values = jnp.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
+            new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
             return BEllpack(first.start_row, first.end_row,
                            new_in_cols, new_values,
-                           first.out_size, first.in_size)
+                           first.out_size, first.in_size,
+                           batch_shape=first.batch_shape)
 
     # Mix of {ConstantDiagonal, Diagonal, BEllpack} at matching (n, n) shape:
     # promote diagonals to BEllpack bands over the full row range and
@@ -541,38 +550,42 @@ def _slice_rule(invals, traced, n, **params):
     strides_p = params.get("strides")
     strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
 
-    # Structural fast path: 1D operand with unit stride and structural form.
-    if (len(starts) == 1 and strides == (1,)
+    # Structural fast path: 1D operand with any stride and structural form.
+    # `in_cols = np.arange(start, limit, stride)` encodes both the unit-stride
+    # and strided cases. For BEllpack we can only stay structural when the
+    # stride is 1 (pad_rows assumes contiguous rows); strided-BEllpack falls
+    # back to dense.
+    if (len(starts) == 1
             and isinstance(operand, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO))):
         s, e = starts[0], limits[0]
-        k = e - s
+        stride = strides[0]
+        cols = np.arange(s, e, stride)
+        k_out = len(cols)
         if isinstance(operand, ConstantDiagonal):
-            # Single band with col indices [s..e); same-static arange in cols
-            # lets downstream add_any dedup-by-equality.
-            values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k,))
+            values_b = jnp.broadcast_to(jnp.asarray(operand.value), (k_out,))
             return BEllpack(
-                start_row=0, end_row=k,
-                in_cols=(np.arange(s, e),),
+                start_row=0, end_row=k_out,
+                in_cols=(cols,),
                 values=values_b,
-                out_size=k, in_size=operand.n,
+                out_size=k_out, in_size=operand.n,
             )
         if isinstance(operand, Diagonal):
             return BEllpack(
-                start_row=0, end_row=k,
-                in_cols=(np.arange(s, e),),
-                values=operand.values[s:e],
-                out_size=k, in_size=operand.n,
+                start_row=0, end_row=k_out,
+                in_cols=(cols,),
+                values=operand.values[s:e:stride],
+                out_size=k_out, in_size=operand.n,
             )
-        if isinstance(operand, BEllpack):
-            # slice(op, s, e) == op.pad_rows(-s, -(out_size - e)). pad_rows
-            # handles truncation + shift in one place.
+        if isinstance(operand, BEllpack) and stride == 1:
             return operand.pad_rows(-s, -(operand.out_size - e))
-        rows = operand.indices[:, 0]
-        mask = (rows >= s) & (rows < e)
-        new_data = operand.data * mask
-        new_rows = rows - s
-        new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
-        return sparse.BCOO((new_data, new_indices), shape=(k, operand.shape[1]))
+        if isinstance(operand, sparse.BCOO) and stride == 1:
+            rows = operand.indices[:, 0]
+            mask = (rows >= s) & (rows < e)
+            new_data = operand.data * mask
+            new_rows = rows - s
+            new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
+            return sparse.BCOO((new_data, new_indices), shape=(k_out, operand.shape[1]))
+        # Strided BEllpack / BCOO falls through to dense below.
 
     # Fallback: densify and slice along output (non-input) axes; preserve the
     # trailing input-coordinate axis with start=0, limit=n, stride=1.
@@ -596,16 +609,33 @@ def _pad_rule(invals, traced, n, **params):
     config = params["padding_config"]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
     before, after = int(before), int(after)
-    if (isinstance(operand, BEllpack) and len(config) == 1
-            and int(interior) == 0):
+    interior = int(interior)
+    if isinstance(operand, BEllpack) and len(config) == 1 and interior == 0:
         return operand.pad_rows(before, after)
-    if (isinstance(operand, sparse.BCOO) and len(config) == 1
-            and int(interior) == 0):
-        out_size = operand.shape[0] + before + after
-        new_rows = operand.indices[:, 0] + before
+    if isinstance(operand, sparse.BCOO) and len(config) == 1:
+        # Interior padding inserts `interior` zeros between each original
+        # entry. Adjoint of strided slice: `pad(x, (before, after,
+        # stride-1))` == `slice(..., stride=stride)`.T. Structural form:
+        # new_row = old_row * (interior + 1) + before.
+        old_size = operand.shape[0]
+        step = interior + 1
+        out_size = old_size + before + after + interior * max(old_size - 1, 0)
+        new_rows = operand.indices[:, 0] * step + before
         new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
         return sparse.BCOO(
             (operand.data, new_indices), shape=(out_size, operand.shape[1])
+        )
+    if isinstance(operand, BEllpack) and len(config) == 1 and interior > 0:
+        # Strided pad on BEllpack: promote to BCOO then apply above.
+        # Happens when the adjoint of a strided slice lands on a BEllpack.
+        from ._base import _to_bcoo
+        bcoo = _to_bcoo(operand, n)
+        step = interior + 1
+        out_size = bcoo.shape[0] + before + after + interior * max(bcoo.shape[0] - 1, 0)
+        new_rows = bcoo.indices[:, 0] * step + before
+        new_indices = jnp.stack([new_rows, bcoo.indices[:, 1]], axis=1)
+        return sparse.BCOO(
+            (bcoo.data, new_indices), shape=(out_size, bcoo.shape[1])
         )
     # Dense fallback: pad along output axes (input axis untouched).
     dense = _to_dense(operand, n)
