@@ -37,6 +37,7 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
+    _resolve_col,
     _to_bcoo,
     _to_dense,
     _traced_shape,
@@ -209,6 +210,43 @@ def _bcoo_concat(bcoo_vals, shape):
     )
 
 
+def _tile_1row_bellpack(ep, target_rows):
+    """Broadcast a 1-row BEllpack (shape (1, n), holding a sparse
+    linear form `c`) to (target_rows, n) by tiling its single row.
+    Each band's in_cols / values broadcast from length-1 to
+    length-target_rows. Storage stays O(target_rows · k) where k is
+    the original BEllpack's band count — so as long as the linear
+    form has few nonzeros (k small), we avoid n² blow-up. Dense rows
+    (k ≈ n) should go through BCOO instead; 1-row BEllpack at large k
+    wastes per-band np.ndarray overhead.
+
+    Used by `_add_rule` to fold a linear form (1-row BEllpack from
+    `_squeeze_rule`) into a broadcast-add with a (target_rows, n)
+    matrix LinOp — the structural analogue of `numpy` broadcasting
+    `(n,) + (m, n)`."""
+    assert ep.n_batch == 0 and ep.out_size == 1
+    assert ep.start_row == 0 and ep.end_row == 1
+    k = ep.k
+    new_in_cols = []
+    for col in ep.in_cols:
+        if isinstance(col, slice):
+            new_in_cols.append(col)
+        elif isinstance(col, np.ndarray):
+            # col has shape (1,); broadcast to (target_rows,).
+            new_in_cols.append(np.broadcast_to(col, (target_rows,)))
+        else:
+            new_in_cols.append(jnp.broadcast_to(col, (target_rows,)))
+    if k == 1:
+        new_values = jnp.broadcast_to(ep.values, (target_rows,))
+    else:
+        new_values = jnp.broadcast_to(ep.values, (target_rows, k))
+    return BEllpack(
+        start_row=0, end_row=target_rows,
+        in_cols=tuple(new_in_cols), values=new_values,
+        out_size=target_rows, in_size=ep.in_size,
+    )
+
+
 def _add_rule(invals, traced, n, **params):
     """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
     the least-specific form needed. Dispatch is on the set of input kinds."""
@@ -218,6 +256,36 @@ def _add_rule(invals, traced, n, **params):
         return None
     if len(vals) == 1:
         return vals[0]
+
+    # Broadcast-add (linear-form + matrix): one operand is a 1-row
+    # BEllpack carrying a sparse linear form (aval () → matrix shape
+    # (1, n)), produced by `_squeeze_rule` on a 1-row slice/gather. Tile
+    # its single sparse row `c` to the other operands' `m` rows —
+    # yielding a k=len(c.in_cols) column-constant BEllpack of shape
+    # (m, n) whose column pattern is c's nonzero columns, row-broadcast.
+    # Then recurse through the same-shape structural paths to widen
+    # bands with the matrix operand. Avoids the O(m·n) dense fallback
+    # on `linear_form + vector` broadcasts that used to bottleneck
+    # LIARWHD-class problems.
+    if len(vals) >= 2:
+        shapes = [_linop_matrix_shape(v) for v in vals]
+        non_scalar_out = [s[0] for s in shapes
+                          if s is not None and s[0] != 1]
+        if non_scalar_out and all(s == non_scalar_out[0] for s in non_scalar_out):
+            target = non_scalar_out[0]
+            tiled_any = False
+            new_vals = []
+            for v, s in zip(vals, shapes):
+                if (s is not None and s[0] == 1
+                        and isinstance(v, BEllpack)
+                        and v.n_batch == 0 and v.start_row == 0
+                        and v.end_row == 1):
+                    new_vals.append(_tile_1row_bellpack(v, target))
+                    tiled_any = True
+                else:
+                    new_vals.append(v)
+            if tiled_any:
+                return _add_rule(new_vals, [True] * len(new_vals), n)
 
     kinds = {type(v) for v in vals}
 
@@ -318,6 +386,29 @@ def _add_rule(invals, traced, n, **params):
         if all(s == shapes[0] for s in shapes):
             bcoo_vals = [_to_bcoo(v, n) for v in vals]
             return _bcoo_concat(bcoo_vals, shape=shapes[0])
+
+    # Linear-form adds: a vector-aval-(k,) LinOp is normally stored as a
+    # (k, n) matrix, but an aval-() linear form emerges either as a (n,)
+    # ndarray (canonical after `_reduce_sum_rule`) or a 1-row
+    # BEllpack/BCOO (after `_squeeze_rule`). When the fallback would mix
+    # these forms it'd broadcast-sum to a (1, n) 2D ndarray that
+    # downstream rules mis-handle. Normalise all linear-form operands to
+    # (n,) ndarrays and sum. Loses row-sparsity info; that's fine —
+    # this branch only fires for the rare mixed-forms case after the
+    # structural matrix paths above already got a chance.
+    def _as_linear_form_row(v):
+        if isinstance(v, jax.Array) and v.ndim == 1 and v.shape[0] == n:
+            return v
+        if (isinstance(v, BEllpack) and v.n_batch == 0
+                and v.out_size == 1 and v.start_row == 0
+                and v.end_row == 1):
+            return _to_dense(v, n)[0]
+        if isinstance(v, sparse.BCOO) and v.shape == (1, n):
+            return v.todense()[0]
+        return None
+    linear_form_rows = [_as_linear_form_row(v) for v in vals]
+    if all(r is not None for r in linear_form_rows):
+        return functools.reduce(operator.add, linear_form_rows)
 
     # Dense fallback: densify everything and sum.
     dense_vals = [_to_dense(v, n) for v in vals]
@@ -535,6 +626,18 @@ def _squeeze_rule(invals, traced, n, **params):
         if not dimensions:
             return op
         raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
+    if isinstance(op, BEllpack) and op.n_batch == 0 and dimensions == (0,) \
+            and op.out_size == 1 and op.start_row == 0 and op.end_row == 1:
+        # 1-row BEllpack squeezed along its row axis: the result has
+        # aval () — a *linear form* (1×n row vector, the Jacobian of a
+        # scalar-aval variable w.r.t. the n-dim input). Keep it as a
+        # 1-row BEllpack (shape (1, in_size)) so downstream broadcast-
+        # add in `_add_rule` can tile the sparse row cheaply — instead
+        # of the old densify-to-(n,)-ndarray path which forced
+        # subsequent linear_form + vector adds to materialise (n, n)
+        # dense. Only valid when the row is sparse (few bands); dense
+        # rows should go via BCOO, not a k-many-bands BEllpack.
+        return op
     if isinstance(op, (BEllpack, sparse.BCOO)):
         # Densify (sparse → (out_size, in_size)) then squeeze leading axes.
         return lax.squeeze(_to_dense(op, n), dimensions)
@@ -590,6 +693,31 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
     # (the pattern emitted by e.g. `jnp.sum(a[perm_indices], axis=0)`'s
     # backwards-linearize). Produces a BEllpack with the new dims in
     # batch_shape — values broadcast-tiled, in_cols shared across batches.
+    # Linear form (aval ()) broadcast to shape (1,): target matrix shape
+    # is (1, n) — already what a 1-row BEllpack carries, so pass through.
+    # For a (n,)-ndarray linear form, promote to BCOO(1, n) so the
+    # subsequent `pad` stays structural (its BCOO path just shifts row
+    # indices; the dense fallback would zero-fill an (out, n) block).
+    # Triggered by the `reduce_sum → neg → broadcast_in_dim → pad`
+    # chain in LIARWHD-class problems.
+    if broadcast_dimensions == () and tuple(shape) == (1,):
+        if (isinstance(op, BEllpack) and op.n_batch == 0
+                and op.out_size == 1 and op.start_row == 0
+                and op.end_row == 1):
+            return op
+        if isinstance(op, jax.Array) and op.ndim == 1 and op.shape[0] == n:
+            zeros_row = jnp.zeros((n,), dtype=jnp.int32)
+            cols = jnp.arange(n, dtype=jnp.int32)
+            indices = jnp.stack([zeros_row, cols], axis=1)
+            return sparse.BCOO((op, indices), shape=(1, n))
+    # Fallback normalisation: a 1-row BEllpack represents an aval-()
+    # linear form. For other broadcast patterns the dense fallback
+    # below expects the canonical (n,)-ndarray linear-form shape, so
+    # squeeze the BEllpack row first.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and op.out_size == 1 and op.start_row == 0 and op.end_row == 1
+            and broadcast_dimensions == ()):
+        op = _to_dense(op, n)[0]
     if (isinstance(op, BEllpack) and op.n_batch == 0
             and len(broadcast_dimensions) == 1
             and broadcast_dimensions[0] == len(shape) - 1
@@ -610,6 +738,29 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
 
 materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
 
+def _bellpack_row_sum(ep):
+    """Sum the rows of an unbatched BEllpack, returning a 1D (in_size,)
+    array of per-column totals. O(nrows · k) scatter-adds — no dense
+    (out_size, in_size) materialisation.
+
+    Used as `_reduce_sum_rule(ep, axes=(0,))`'s structural path: the
+    row-sum is the row-vector coefficients of the resulting scalar-LinOp.
+    """
+    assert ep.n_batch == 0
+    nrows = ep.nrows
+    k = ep.k
+    result = jnp.zeros((ep.in_size,), ep.dtype)
+    for b in range(k):
+        cols_b = _resolve_col(ep.in_cols[b], nrows)
+        vals_b = ep.values if k == 1 else ep.values[..., b]
+        cols_j = jnp.asarray(cols_b)
+        mask = cols_j >= 0
+        safe_cols = jnp.where(mask, cols_j, 0)
+        safe_vals = jnp.where(mask, vals_b, jnp.zeros((), ep.dtype))
+        result = result.at[safe_cols].add(safe_vals)
+    return result
+
+
 def _reduce_sum_rule(invals, traced, n, **params):
     (op,) = invals
     (t,) = traced
@@ -626,6 +777,19 @@ def _reduce_sum_rule(invals, traced, n, **params):
             if len(slices) == 1:
                 return slices[0]
             return _add_rule(list(slices), [True] * len(slices), n)
+    # Reducing the single output axis of a 2D structural LinOp yields
+    # an aval-() output — a linear form (1×n row) whose coefficients
+    # equal the column-sum of the operand. Return as a 1D (in_size,)
+    # ndarray (the walk's canonical linear-form storage). Avoids the
+    # (out_size, in_size) dense materialisation that dominated
+    # pure-diagonal CUTEst problems (LIARWHD etc.).
+    if tuple(axes) == (0,):
+        if isinstance(op, Diagonal):
+            return op.values
+        if isinstance(op, ConstantDiagonal):
+            return jnp.broadcast_to(jnp.asarray(op.value), (op.n,))
+        if isinstance(op, BEllpack) and op.n_batch == 0:
+            return _bellpack_row_sum(op)
     dense = _to_dense(op, n)
     # Sum applies to output axes only — never to the last (input-coordinate) axis.
     return jnp.sum(dense, axis=tuple(axes))
