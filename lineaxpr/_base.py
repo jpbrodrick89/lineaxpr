@@ -521,60 +521,114 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
 
 
 def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
-    """Convert a batched BEllpack to a batched `sparse.BCOO` whose
-    `n_batch` leading dims match `e.batch_shape`. Per-batch `nse` is
-    uniform (= nrows * k); batches that have `-1` sentinels in some
-    slot keep that slot in `indices` with col set to 0 and value 0.
+    """Convert a batched BEllpack to an UNBATCHED flat `sparse.BCOO` of
+    shape `(prod(batch_shape) * out_size, in_size)`.
 
-    `BCOO.fromdense` would work as a fallback but builds a `(*batch,
-    out_size, in_size)` dense tensor first — this path avoids the
-    dense intermediate entirely."""
-    rows_1d = np.arange(e.start_row, e.end_row)
+    When all per-band `in_cols` are static `np.ndarray`s (the common
+    case after `_reshape_rule` / `_slice_rule` / `_pad_rule`), `-1`
+    sentinel positions are pruned at trace time, giving the output an
+    exact `nse = count_of_non_sentinel_positions`. This is what makes
+    the 2D pad on DRCAV usable — without pruning, sentinel positions
+    inflate the BCOO with junk `(row, 0, value=0)` entries that neither
+    batched BCOO nor `sum_duplicates(nse=...)` can remove at fixed cost.
+
+    When any band has a traced (`jnp.ndarray`) cols array, we fall
+    back to emitting the full `(prod(batch) * out_size * k, ...)`
+    flat BCOO with mask-to-zero (no trace-time prune possible).
+
+    Flat row index: `flat_row = batch_flat * out_size + row_within_batch`,
+    where `batch_flat = ravel_multi_index(batch_idx, batch_shape, 'C')`."""
     nrows = e.nrows
     k = e.k
     B = e.batch_shape
+    prod_B = int(np.prod(B)) if B else 1
+    out_size = e.out_size
+    in_size = e.in_size
+    flat_shape = (prod_B * out_size, in_size)
 
-    def _expand_cols_to_batch(col):
-        """Return a jnp.ndarray of shape (*B, nrows) for index building."""
+    def _col_as_np_broadcast_to_batch(col):
+        """Return an np.ndarray of shape (*B, nrows) if col is static;
+        else return None to indicate we need the dynamic path."""
+        if isinstance(col, slice):
+            col = _resolve_col(col, nrows)
+        if isinstance(col, np.ndarray):
+            if col.ndim == 1:
+                return np.broadcast_to(col, B + (nrows,))
+            return col
+        return None  # jnp.ndarray — dynamic
+
+    # Per-batch flat row offsets: shape (*B, 1) broadcasting to (*B, nrows).
+    batch_offsets_flat = (np.arange(prod_B).reshape(B) * out_size
+                          if B else np.zeros((), dtype=np.int64))
+    rows_1d = np.arange(e.start_row, e.end_row)
+    global_rows_np = batch_offsets_flat[..., None] + rows_1d  # (*B, nrows)
+
+    static_cols_per_band = [_col_as_np_broadcast_to_batch(c) for c in e.in_cols]
+    all_static = all(c is not None for c in static_cols_per_band)
+
+    if all_static:
+        # Static prune: collect valid entries across all bands, build
+        # a flat unbatched BCOO with exactly the non-sentinel count.
+        kept_rows, kept_cols, kept_vals = [], [], []
+        for b in range(k):
+            cols_b = static_cols_per_band[b]  # np.ndarray shape (*B, nrows)
+            keep = cols_b >= 0  # np bool mask
+            if keep.all():
+                kept_rows.append(global_rows_np.reshape(-1))
+                kept_cols.append(cols_b.reshape(-1))
+                if k == 1:
+                    kept_vals.append(e.values.reshape(-1))
+                else:
+                    kept_vals.append(e.values[..., b].reshape(-1))
+            else:
+                idx = np.nonzero(keep.reshape(-1))[0]
+                kept_rows.append(global_rows_np.reshape(-1)[idx])
+                kept_cols.append(cols_b.reshape(-1)[idx])
+                if k == 1:
+                    v_flat = e.values.reshape(-1)
+                else:
+                    v_flat = e.values[..., b].reshape(-1)
+                kept_vals.append(jnp.take(v_flat, jnp.asarray(idx)))
+        rows_final = np.concatenate(kept_rows) if kept_rows else np.zeros((0,), dtype=np.int64)
+        cols_final = np.concatenate(kept_cols) if kept_cols else np.zeros((0,), dtype=np.int64)
+        indices = jnp.asarray(np.stack([rows_final, cols_final], axis=1))
+        vals_final = jnp.concatenate(kept_vals) if kept_vals else jnp.zeros((0,), e.dtype)
+        return sparse.BCOO((vals_final, indices), shape=flat_shape,
+                           indices_sorted=False, unique_indices=False)
+
+    # Traced cols — no static prune; emit a flat unbatched BCOO with
+    # `-1` positions masked to (col=0, value=0). Size = prod_B * nrows * k.
+    def _expand_cols_to_batch_jnp(col):
         if isinstance(col, slice):
             col = _resolve_col(col, nrows)
         if isinstance(col, np.ndarray):
             if col.ndim == 1:
                 return jnp.asarray(np.broadcast_to(col, B + (nrows,)))
             return jnp.asarray(col)
-        # jnp.ndarray
         if col.ndim == 1:
             return jnp.broadcast_to(col, B + (nrows,))
         return col
-
-    rows_full = jnp.asarray(np.broadcast_to(rows_1d, B + (nrows,)))
-
+    rows_full = jnp.asarray(global_rows_np)  # (*B, nrows)
     if k == 1:
-        cols_full = _expand_cols_to_batch(e.in_cols[0])
+        cols_full = _expand_cols_to_batch_jnp(e.in_cols[0])
         mask = cols_full >= 0
         safe_cols = jnp.where(mask, cols_full, 0)
         data = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
-        indices = jnp.stack([rows_full, safe_cols], axis=-1)
-        return sparse.BCOO((data, indices), shape=e.shape,
+        indices = jnp.stack(
+            [rows_full.reshape(-1), safe_cols.reshape(-1)], axis=1
+        )
+        return sparse.BCOO((data.reshape(-1), indices), shape=flat_shape,
                            indices_sorted=False, unique_indices=False)
-
-    # k >= 2: vectorised over the band axis. Stack per-band cols into
-    # (*B, nrows, k), broadcast rows to the same shape, mask sentinels,
-    # and reshape the last two dims into a single nse=nrows*k axis.
-    # One kernel regardless of k (previous implementation launched k
-    # separate jnp.where / concatenate ops). Entries are ordered
-    # row-major over (nrows, k) — BCOO doesn't require index order.
-    per_band_cols = [_expand_cols_to_batch(c) for c in e.in_cols]
+    per_band_cols = [_expand_cols_to_batch_jnp(c) for c in e.in_cols]
     cols_stacked = jnp.stack(per_band_cols, axis=-1)   # (*B, nrows, k)
     rows_stacked = jnp.broadcast_to(rows_full[..., None], cols_stacked.shape)
     mask = cols_stacked >= 0
     safe_cols = jnp.where(mask, cols_stacked, 0)
     safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
-    flat = B + (nrows * k,)
     indices = jnp.stack(
-        [rows_stacked.reshape(flat), safe_cols.reshape(flat)], axis=-1
+        [rows_stacked.reshape(-1), safe_cols.reshape(-1)], axis=1
     )
-    return sparse.BCOO((safe_vals.reshape(flat), indices), shape=e.shape,
+    return sparse.BCOO((safe_vals.reshape(-1), indices), shape=flat_shape,
                        indices_sorted=False, unique_indices=False)
 
 

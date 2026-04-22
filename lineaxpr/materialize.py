@@ -131,12 +131,20 @@ def _mul_rule(invals, traced, n, **params):
 materialize_rules[lax.mul_p] = _mul_rule
 
 def _linop_matrix_shape(v):
-    """Return the full tensor shape of any LinOp / BCOO (including any
-    batch leading dims for BEllpack / BCOO), or None for ndarray."""
+    """Return the shape used to check operand compatibility in
+    `_add_rule`'s mix-path. For unbatched LinOps this is the natural
+    2D `(out_size, in_size)`. For batched BEllpack this is the
+    flattened shape `(prod(batch_shape) * out_size, in_size)` —
+    matching what `_ellpack_to_bcoo_batched` emits (an unbatched
+    flat BCOO). This lets batched BEllpacks flow through the BCOO-
+    concat path consistently with unbatched operands."""
     if isinstance(v, (ConstantDiagonal, Diagonal)):
         return (v.n, v.n)
     if isinstance(v, BEllpack):
-        return v.shape  # (*batch_shape, out_size, in_size)
+        prod_batch = 1
+        for d in v.batch_shape:
+            prod_batch *= d
+        return (prod_batch * v.out_size, v.in_size)
     if isinstance(v, sparse.BCOO):
         return v.shape
     return None
@@ -833,6 +841,16 @@ def _reshape_rule(invals, traced, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
+    # Pass-through: BCOO whose flat shape already equals the target
+    # LinOp shape `(*new_sizes, n)`. Happens when batched BEllpacks
+    # were converted to unbatched-flat BCOO by `_ellpack_to_bcoo_batched`
+    # (static-prune path) and the subsequent reshape is the walk's
+    # final aval-flatten — structurally a no-op.
+    if (isinstance(op, sparse.BCOO) and op.n_batch == 0
+            and len(new_sizes) == 1
+            and op.shape == (int(new_sizes[0]), op.shape[-1])):
+        return op
+
     # Structural path: flatten a batched BCOO's leading (batch + out)
     # axes into a single flat out axis. Handles the final reshape in
     # DRCAV1LQ/2LQ (`(67, 67) → (4489,)` as aval, LinOp `(67, 67, n) →
