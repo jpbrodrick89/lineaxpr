@@ -211,16 +211,16 @@ def _bcoo_concat(bcoo_vals, shape):
 
 
 def _tile_1row_bellpack(ep, target_rows):
-    """Broadcast a 1-row BEllpack (shape (1, n), holding a sparse
+    """Broadcast a BEllpack row-vector (shape (1, n), holding a sparse
     linear form `c`) to (target_rows, n) by tiling its single row.
     Each band's in_cols / values broadcast from length-1 to
     length-target_rows. Storage stays O(target_rows · k) where k is
     the original BEllpack's band count — so as long as the linear
     form has few nonzeros (k small), we avoid n² blow-up. Dense rows
-    (k ≈ n) should go through BCOO instead; 1-row BEllpack at large k
+    (k ≈ n) should go through BCOO instead; BEllpack row-vector at large k
     wastes per-band np.ndarray overhead.
 
-    Used by `_add_rule` to fold a linear form (1-row BEllpack from
+    Used by `_add_rule` to fold a linear form (BEllpack row-vector from
     `_squeeze_rule`) into a broadcast-add with a (target_rows, n)
     matrix LinOp — the structural analogue of `numpy` broadcasting
     `(n,) + (m, n)`."""
@@ -257,8 +257,8 @@ def _add_rule(invals, traced, n, **params):
     if len(vals) == 1:
         return vals[0]
 
-    # Broadcast-add (linear-form + matrix): one operand is a 1-row
-    # BEllpack carrying a sparse linear form (aval () → matrix shape
+    # Broadcast-add (linear-form + matrix): one operand is a BEllpack
+    # row-vector carrying a sparse linear form (aval () → matrix shape
     # (1, n)), produced by `_squeeze_rule` on a 1-row slice/gather. Tile
     # its single sparse row `c` to the other operands' `m` rows —
     # yielding a k=len(c.in_cols) column-constant BEllpack of shape
@@ -389,8 +389,8 @@ def _add_rule(invals, traced, n, **params):
 
     # Linear-form adds: a vector-aval-(k,) LinOp is normally stored as a
     # (k, n) matrix, but an aval-() linear form emerges either as a (n,)
-    # ndarray (canonical after `_reduce_sum_rule`) or a 1-row
-    # BEllpack/BCOO (after `_squeeze_rule`). When the fallback would mix
+    # ndarray (canonical after `_reduce_sum_rule`) or a BEllpack
+    # row-vector/BCOO (after `_squeeze_rule`). When the fallback would mix
     # these forms it'd broadcast-sum to a (1, n) 2D ndarray that
     # downstream rules mis-handle. Normalise all linear-form operands to
     # (n,) ndarrays and sum. Loses row-sparsity info; that's fine —
@@ -628,10 +628,10 @@ def _squeeze_rule(invals, traced, n, **params):
         raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
     if isinstance(op, BEllpack) and op.n_batch == 0 and dimensions == (0,) \
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1:
-        # 1-row BEllpack squeezed along its row axis: the result has
+        # BEllpack row-vector squeezed along its row axis: the result has
         # aval () — a *linear form* (1×n row vector, the Jacobian of a
         # scalar-aval variable w.r.t. the n-dim input). Keep it as a
-        # 1-row BEllpack (shape (1, in_size)) so downstream broadcast-
+        # BEllpack row-vector (shape (1, in_size)) so downstream broadcast-
         # add in `_add_rule` can tile the sparse row cheaply — instead
         # of the old densify-to-(n,)-ndarray path which forced
         # subsequent linear_form + vector adds to materialise (n, n)
@@ -694,7 +694,7 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
     # backwards-linearize). Produces a BEllpack with the new dims in
     # batch_shape — values broadcast-tiled, in_cols shared across batches.
     # Linear form (aval ()) broadcast to shape (1,): target matrix shape
-    # is (1, n) — already what a 1-row BEllpack carries, so pass through.
+    # is (1, n) — already what a BEllpack row-vector carries, so pass through.
     # For a (n,)-ndarray linear form, promote to BCOO(1, n) so the
     # subsequent `pad` stays structural (its BCOO path just shifts row
     # indices; the dense fallback would zero-fill an (out, n) block).
@@ -710,7 +710,7 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             cols = jnp.arange(n, dtype=jnp.int32)
             indices = jnp.stack([zeros_row, cols], axis=1)
             return sparse.BCOO((op, indices), shape=(1, n))
-    # Fallback normalisation: a 1-row BEllpack represents an aval-()
+    # Fallback normalisation: a BEllpack row-vector represents an aval-()
     # linear form. For other broadcast patterns the dense fallback
     # below expects the canonical (n,)-ndarray linear-form shape, so
     # squeeze the BEllpack row first.
