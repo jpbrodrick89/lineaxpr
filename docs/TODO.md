@@ -85,26 +85,21 @@ alternatives:
 - `transpose`: swap `out_rows ↔ in_cols` on Ellpack / swap BCOO index
   columns (note: only fires on 2D+ output, which doesn't happen in
   R^n → R^n linearize-of-grad).
-- `reshape`: map linear → multi-dim indices on BCOO when shape is
-  preserved structurally. **Confirmed 2026-04-22** as the first
-  densifier on DRCAV1LQ/DRCAV2LQ (2D cavity stencil, n=4489=67²):
-  the walk starts with `reshape(ConstantDiagonal(n), (67, 67))`,
-  densifies immediately to `(67, 67, n)` = ~160MB, and every
-  subsequent stencil op works on the dense tensor. Narrow fix
-  prototyped (verified bit-exact): emit a batched `BEllpack` with
-  `batch_shape=new_sizes[:-1]`, `out_size=new_sizes[-1]`,
-  `in_cols[*batch_idx, r] = flat_index(*batch_idx, r)`. ~30 LoC in
-  `_reshape_rule`. **Alone it does not close DRCAV1LQ** — the next
-  op is 2D `slice` on the batched BEllpack, which only has a 1D
-  structural path in `_slice_rule` and falls to dense. Closing
-  DRCAV1LQ end-to-end requires batched BEllpack support across
-  `_slice_rule` (2D slice), `_pad_rule` (2D pad), `_mul_rule`,
-  `_neg_rule`, `_add_rule` (13 differently-shifted batched BEllpacks
-  from the 13-point biharmonic stencil), and the BEllpack methods
-  `negate` / `scale_scalar` / `scale_per_out_row` / `pad_rows` which
-  currently drop `batch_shape`. Likely subsumed by TODO #2 (CSR),
-  which handles arbitrary row-column mappings natively and is
-  cleaner for 2D-stencil patterns.
+- ~~`reshape`~~: **partial (2026-04-22, commit `ccdcb38`+`d1c004e`)**
+  — ConstantDiagonal/Diagonal reshape to `(*batch, n)` now emits a
+  batched BEllpack encoding the reshape permutation
+  (`in_cols[*batch_idx, r] = flat_index(*batch_idx, r)`). DRCAV1LQ
+  runtime: 210 ms → 144 ms (30% on mac). **Not full closure** — the
+  next op is 2D `slice` whose structural path in `_slice_rule` is
+  1D-only, so the batched BEllpack densifies at slice (via the
+  newly-vectorised `BEllpack.todense` batched path in `d1c004e`; the
+  old Python-loop batched densify inflated NONMSQRT 2× before the fix
+  and was a latent pre-existing bug). Full DRCAV closure needs
+  batched support across `_slice_rule` (2D), `_pad_rule` (2D),
+  `_add_rule` (13 differently-shifted batched BEllpacks from the
+  biharmonic stencil). Likely subsumed by TODO #2 (CSR), which
+  handles arbitrary row-column mappings natively and is dramatically
+  cleaner for 2D-stencil patterns — see §3b DRCAV analysis.
 - ~~`reduce_sum`~~: **done (2026-04-22, commit `e3fa885`)** —
   Diagonal/ConstantDiagonal/BEllpack row-sum emit the column-sum as
   a canonical (n,) ndarray linear form rather than materialising the
