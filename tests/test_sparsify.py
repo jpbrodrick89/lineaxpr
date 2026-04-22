@@ -166,7 +166,7 @@ def test_non_1d_input_rejected():
 
     with pytest.raises(NotImplementedError, match="non-1D"):
         # Seed with a LinOp whose primal_aval is 2D — synthesize via a
-        # Pivoted of the right shape? Easiest: use a 1D seed but pass a
+        # BEllpack of the right shape? Easiest: use a 1D seed but pass a
         # linear_fn that trace-expects 2D. Do that via a wrapper.
         class Fake:
             def primal_aval(self):

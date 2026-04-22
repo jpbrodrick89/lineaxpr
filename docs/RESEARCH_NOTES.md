@@ -3,6 +3,13 @@
 These are the non-obvious insights from building lineaxpr. Preserve them;
 they inform design decisions.
 
+> **Terminology note**: "Pivoted" below refers to the precursor LinOp
+> class that was replaced by `Ellpack` (2026-04-20) and then
+> `BEllpack` (2026-04-21) — see `TODO.md` "Recently landed" for the
+> migration notes. Findings about add-chain patterns and `out_rows`
+> structure still apply (BEllpack is a multi-band generalisation of
+> Pivoted that retains the same row-range invariants).
+
 ## 1. EAGER_CONSTANT_FOLDING matters enormously
 
 For problems with **y-independent Hessians** (pure quadratics: DUAL, CMPC),

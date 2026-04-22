@@ -87,61 +87,84 @@ alternatives:
   R^n → R^n linearize-of-grad).
 - `reshape`: map linear → multi-dim indices on BCOO when shape is
   preserved structurally.
-- `reduce_sum`: sum along axis of BCOO → smaller BCOO; Ellpack row-sum
-  → Diagonal.
+- ~~`reduce_sum`~~: **done (2026-04-22, commit `e3fa885`)** —
+  Diagonal/ConstantDiagonal/BEllpack row-sum emit the column-sum as
+  a canonical (n,) ndarray linear form rather than materialising the
+  (out_size, in_size) dense. Required for the LIARWHD-class fix.
 - `broadcast_in_dim`: BCOO can broadcast length-1 sparse dims (sparsify
-  already supports this; length-≠1 fails upstream).
+  already supports this; length-≠1 fails upstream). **Partial (2026-
+  04-22)**: scalar → (1,) now promotes to BCOO(1, n) or passes a
+  BEllpack row-vector through. Length-≠1 broadcast of sparse LinOps
+  still densifies.
 - `split`: partition entries by index along split axis.
 
-Low priority — these rarely fire on the curated set. Revisit if a
-benchmark flags them.
+Low priority — the remaining gaps rarely fire on the curated set.
+Revisit if a benchmark flags them.
 
 ### 3b. Close the asdex-bcoo gap on large sparse-Hessian problems
 
-**Motivation**: clean Linux sweep (2026-04-21) — 3 reps, min-of-mins:
+**Progress (2026-04-22)**: 5/11 problems closed by the linear-form
+structural walk (commit `e3fa885`). Mac-native post-change runtimes
+compared to Linux asdex-bcoo (mac ~1.3–2× penalty vs Linux, so these
+understate the Linux-on-Linux advantage):
 
-| problem  | lineaxpr bcoo | asdex bcoo | ratio |
-| -------- | ------------- | ---------- | ----- |
-| BDQRTIC  | 50,009 µs     | 137 µs     | 364×  |
-| NONDQUAR | 17,149 µs     | 60 µs      | 284×  |
-| BROYDN7D | 26,970 µs     | 183 µs     | 147×  |
-| DRCAV1LQ | 194,119 µs    | 1,369 µs   | 142×  |
-| DRCAV2LQ | 193,718 µs    | 1,380 µs   | 140×  |
-| FLETBV3M | 5,135 µs      | 73 µs      | 70×   |
-| FLETCBV3 | 5,257 µs      | 79 µs      | 67×   |
-| NONMSQRT | 15,888 µs     | 269 µs     | 59×   |
-| LIARWHD  | 8,738 µs      | 35 µs      | 250×  |
-| RAYBENDL | 4,410 µs      | 72 µs      | 61×   |
-| EG2      | 489 µs        | 46 µs      | 11×   |
+| problem  | before (Linux) | after (mac) | asdex bcoo (Linux) | status                 |
+| -------- | -------------- | ----------- | ------------------ | ---------------------- |
+| LIARWHD  | 8,738 µs       | 43 µs       | 35 µs              | **closed** (~matching) |
+| EG2      | 489 µs         | 41 µs       | 46 µs              | **closed** (ahead)     |
+| NONDQUAR | 17,149 µs      | 61 µs       | 73 µs              | **closed** (ahead)     |
+| FLETBV3M | 5,135 µs       | 66 µs       | 73 µs              | **closed** (ahead)     |
+| FLETCBV3 | 5,257 µs       | 53 µs       | 79 µs              | **closed** (ahead)     |
+| BDQRTIC  | 50,009 µs      | 124,045 µs  | 157 µs             | open — needs Sum/Csr   |
+| BROYDN7D | 26,970 µs      | 55,790 µs   | 210 µs             | open — needs Sum       |
+| DRCAV1LQ | 194,119 µs     | 210,765 µs  | 1,473 µs           | open — needs Csr       |
+| DRCAV2LQ | 193,718 µs     | 213,063 µs  | 1,432 µs           | open — needs Csr       |
+| NONMSQRT | 15,888 µs      | 24,918 µs   | 308 µs             | open — densifies still |
+| RAYBENDL | 4,410 µs       | 5,703 µs    | 91 µs              | open — complex tree    |
 
-All are `test_bcoo_jacobian` (BCOO build path). asdex evaluates a small
-number of JVPs from its coloring and fills the BCOO directly; lineaxpr's
-walk emits one linop per primitive and flushes to BCOO at densification.
-The gap suggests: (a) the walk is doing more work than necessary when
-the whole tree is already structurally sparse, and/or (b) the final
-BCOO assembly has overhead that dominates for simple patterns. LIARWHD
-is pure-diagonal — asdex ships a 35 µs answer where we ship 8.7 ms.
+Root cause of the closed 5 was **linear-form densification** at the
+`add(scalar-aval-LinOp, vector-LinOp)` broadcast inside linearized
+grad: `slice(Identity, [0:1])` emits a 1-row BEllpack (sparse linear
+form) which `_squeeze_rule` used to densify to `(n,)` ndarray,
+forcing the subsequent `add` onto the dense fallback and bloating
+intermediates to `(n, n)` dense. Fixed by keeping the BEllpack
+row-vector through squeeze, adding a broadcast-add branch in
+`_add_rule` that tiles the sparse row to a column-constant BEllpack
+of shape (m, n), and adding structural paths in `_reduce_sum_rule`
+(Diagonal / ConstantDiagonal / BEllpack) and `_broadcast_in_dim_rule`
+(scalar → (1,) → BCOO).
 
-**Next step**: profile the BCOO emission path for LIARWHD specifically
-(simplest case) — is it the walk, the `_to_bcoo` flush, or the
-`concatenate` at the output? Compare HLO against what asdex emits.
+**Remaining 6**: not blocked by linear-form; bottlenecks are
+elsewhere:
 
-**Compile-time note (2026-04-22)**: the runtime gap comes with a
-compile-time trade-off. asdex runs its `hessian_sparsity` (a per-primitive
-jaxpr index-set walk, conceptually similar to lineaxpr's walk) followed
-by graph coloring. That costs ~50-250ms on most problems, but blows up
-when the pattern has many dependencies: DMN15102LS 5.0s, DRCAV1LQ 1.4s,
-SBRYBND 890ms, PENALTY3 692ms. Lineaxpr compile is steady (median 81ms,
-p90 173ms) except **NONDQUAR which hits 1290ms** — 5× asdex on the same
-problem. NONDQUAR is a lineaxpr compile outlier to profile alongside
-the runtime gap. Asdex has no fast path for low-sparsity cases (e.g.
-pure-diagonal LIARWHD still triggers full detection+coloring, 156ms).
+- **DRCAV1LQ / DRCAV2LQ** — 2D cavity stencil with disjoint-row adds.
+  Wants internal `Csr` (TODO #2) for the arrowhead / mixed-range
+  BEllpack merge.
+- **BROYDN7D / RAYBENDL** — complex mul/add trees with range
+  sensitivity. Wants deferred `Sum` (TODO #1) for order-independent
+  add-chain bucketing.
+- **BDQRTIC** — still densifies somewhere further into the walk.
+  Next: single-rule trace to find the first dense fallback.
+- **NONMSQRT** — `mul(BEllpack, ArrayImpl(4996, 5000))` somewhere
+  densifies. Next: same kind of single-rule trace.
 
-Break-even calculation: on §3b-gap problems asdex pays ~100-400ms more
-compile for a 100-400× runtime win. For BDQRTIC (380ms compile, 137µs
-runtime vs lineaxpr 209ms compile, 50ms runtime): asdex breaks even
-after ~4 hessian evaluations. For single-shot hessian use cases,
-lineaxpr may still be faster total.
+**Compile-time note (2026-04-22)**: the old runtime gap came with a
+compile-time trade-off. asdex runs `hessian_sparsity` (a per-primitive
+jaxpr index-set walk, conceptually similar to lineaxpr's walk)
+followed by graph coloring. That costs ~50–250 ms on most problems,
+but blows up when the pattern has many dependencies: DMN15102LS 5.0s,
+DRCAV1LQ 1.4s, SBRYBND 890ms, PENALTY3 692ms. Lineaxpr compile is
+steady (median 81ms, p90 173ms) except **NONDQUAR which hits
+1290ms** — 5× asdex on the same problem. NONDQUAR is a lineaxpr
+compile outlier to profile alongside the runtime gap (runtime is now
+good; compile still slow). Asdex has no fast path for low-sparsity
+cases (e.g. pure-diagonal LIARWHD still triggers full
+detection+coloring, 156ms).
+
+Post-closure break-even: on the 5 closed problems, lineaxpr now beats
+asdex on _both_ compile (~100ms) and runtime (~50µs), no break-even
+calculation needed. For the open 6, asdex still breaks even after
+~4 hessian evaluations until Sum/Csr land.
 
 ### 4. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
 
@@ -329,6 +352,41 @@ closure-vs-input placement of y." Not the "100-6000×" story the
 benchmarks-vs-jax.hessian alone would suggest.
 
 ## Recently landed
+
+### Linear-form preservation through squeeze + broadcast-add (2026-04-22)
+
+Closed 5/11 §3b problems (LIARWHD, EG2, NONDQUAR, FLETBV3M, FLETCBV3)
+— now matching or slightly ahead of asdex-bcoo. Previous behaviour:
+`squeeze(BEllpack(1, n))` densified the row to a `(n,)` ndarray; the
+subsequent `add(linear_form, Diagonal)` broadcast fell to the dense
+fallback and allocated an `(n, n)` intermediate, cascading the walk
+onto the dense path. Fix:
+
+- `_squeeze_rule`: keep the BEllpack row-vector (shape (1, n)) for
+  sparse linear forms (from 1-row slice/gather).
+- `_add_rule`: new `_tile_1row_bellpack` helper + broadcast-add
+  branch — tiles the BEllpack row-vector to a column-constant
+  BEllpack of shape (m, n) where each band's in_cols is
+  `np.full(m, col_j)`, values broadcasted. Merges with the matrix
+  operand via the existing same-range band-widening path.
+- `_add_rule` final normalisation: before the dense fallback, coerces
+  mixed linear-form operand representations (`(n,)` ndarray vs
+  BEllpack row-vector vs BCOO row-vector) to canonical `(n,)` ndarray
+  so numpy-broadcast doesn't leak an ill-shaped `(1, n)`.
+- `_reduce_sum_rule`: structural paths for `Diagonal` /
+  `ConstantDiagonal` (diag values as the linear-form's row
+  coefficients) and unbatched `BEllpack` via new `_bellpack_row_sum`
+  scatter-add. Avoids the `(out_size, in_size)` dense materialisation.
+- `_broadcast_in_dim_rule`: scalar-aval → (1,) passes a BEllpack
+  row-vector through unchanged (shape already (1, n)) or promotes a
+  canonical `(n,)` ndarray linear form to `BCOO(1, n)` so the
+  subsequent `pad` stays structural.
+
+Headline: LIARWHD 8,738µs Linux → 43µs mac (BCOO). Also follow-up
+commit `af5d7ba` renames "1-row BEllpack" to "BEllpack row-vector"
+in comments for clarity — what's stored is semantically a sparse
+row vector (Jacobian of a scalar-aval variable), not a matrix with
+one populated row.
 
 ### BEllpack + SPARSINE dense-fallback closed (2026-04-21)
 

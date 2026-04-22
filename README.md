@@ -2,9 +2,10 @@
 
 Structural Jacobian/Hessian extraction for JAX. Walks the linearized
 jaxpr of a callable with per-primitive rules over mixed sparse forms
-(Identity / Diagonal / Pivoted / BCOO / ndarray) and emits either a
-dense `jnp.ndarray` or a `jax.experimental.sparse.BCOO` matrix. No
-up-front coloring, no second AD pass, per-linearization-point sparsity.
+(ConstantDiagonal / Diagonal / BEllpack / BCOO / ndarray) and emits
+either a dense `jnp.ndarray` or a `jax.experimental.sparse.BCOO`
+matrix. No up-front coloring, no second AD pass,
+per-linearization-point sparsity.
 
 Inspired by — and interoperable with — `jax.experimental.sparse.sparsify`;
 see `docs/RESEARCH_NOTES.md` §10 for the design comparison.
@@ -78,9 +79,9 @@ The seed's `.primal_aval()` method provides the shape/dtype that
 - **One pass over the linear jaxpr**, not two (coloring + AD).
 - **Fully jittable**: construction happens at trace time, runtime is the
   fused emitted HLO.
-- **Mixed-format walk**: Identity / Diagonal / Pivoted / BCOO coexist in
-  the same env with promotion at incompatibility; no unnecessary
-  densification.
+- **Mixed-format walk**: ConstantDiagonal / Diagonal / BEllpack / BCOO
+  coexist in the same env with promotion at incompatibility; no
+  unnecessary densification.
 - **2–4× over pure-BCOO** `jax.experimental.sparse.sparsify` on
   y-dependent sparse problems (DIXMAAN / EDENSCH / FLETCHCR), plus
   robust handling of primitive-coverage gaps where upstream sparsify
@@ -119,7 +120,7 @@ lineaxpr/
 │   │                      #   hessian / bcoo_hessian
 │   │                      #   materialize(..., format='dense'|'bcoo')
 │   │                      #   sparsify, to_dense, to_bcoo
-│   │                      #   Identity, ConstantDiagonal, Diagonal, Pivoted
+│   │                      #   Identity, ConstantDiagonal, Diagonal, BEllpack
 │   │                      #   materialize_rules
 │   ├── _base.py           # LinOp classes with methods
 │   └── materialize.py     # sparsify transform + rule registry + rules

@@ -45,7 +45,7 @@ Composition layers (outer → inner):
 - `sparsify` is the primitive transform. Inspired by
   `jax.experimental.sparse.sparsify` but specialized for the
   linearize-of-grad jaxpr pattern with a richer format space
-  (Identity / Diagonal / Pivoted / BCOO / ndarray).
+  (ConstantDiagonal / Diagonal / BEllpack / BCOO / ndarray).
 
 ## The walk
 
@@ -82,18 +82,32 @@ constructor for this form. Survives scalar multiplication.
 
 Represents `diag(values)`. Emerges from `mul(closure_vec, ConstantDiagonal)`.
 
-### `Pivoted(out_rows, in_cols, values, out_size, in_size)`
+### `BEllpack(start_row, end_row, in_cols, values, out_size, in_size, batch_shape=())`
 
-A sparse operator with at most one nonzero per row. Emerges from
-`slice(Identity)` and `gather(Identity)`, survives `mul`, `pad`,
-`add_any` chains.
+A banded sparse operator covering a contiguous row range
+`[start_row, end_row)` with `k` bands. Each band has its own
+`in_cols` (slice / np.ndarray / jnp.ndarray) and contributes one
+nonzero per row. `values` is `(nrows,)` for k=1 or `(nrows, k)` for
+k>=2; `batch_shape` lifts the operator to
+`(*batch_shape, out_size, in_size)` matching
+`sparse.BCOO`/`BCSR`. `-1` in `in_cols` is a padding sentinel.
+
+Emerges from `slice(Identity)`, `gather(Identity)`, and as the
+survivor form through `mul`, `pad`, `add_any` (including
+broadcast-add of a BEllpack row-vector linear form), and batched
+`reduce_sum`.
 
 **Key invariants**:
 
-- Fresh slice/gather gives `out_rows = np.arange(k)` (identity permutation).
-- `pad_rows(before, after)` shifts: `out_rows = prev + before` (still a single range).
-- `add_any` concatenates: `out_rows = concat([a.out_rows, b.out_rows, ...])`.
-- `scatter_add` permutes: `new_rows = scatter_indices[prev.out_rows]`.
+- Fresh slice/gather gives `start_row = 0, end_row = k, k=1, in_cols = (np.arange(k),)`.
+- `pad_rows(before, after)` shifts `(start_row, end_row) → (start_row + before, end_row + before)` with clip.
+- Same-range `add_any` widens bands (extend `in_cols` tuple + concat `values`
+  on axis=1); same-cols fast path sums values directly.
+- Mismatched ranges fall to BCOO concat.
+- 1-row BEllpack (`end_row - start_row == 1`) carries a sparse linear
+  form — the Jacobian of a scalar-aval variable, preserved through
+  `_squeeze_rule` so that downstream broadcast-add can tile it to a
+  column-constant BEllpack without densifying to `(n, n)`.
 
 ### `jax.experimental.sparse.BCOO`
 
@@ -118,7 +132,7 @@ Each LinOp class defines:
 - `.scale_scalar(s)` — scale all entries by scalar `s`.
 - `.scale_per_out_row(v)` — scale row `i` by `v[i]`.
 
-`Pivoted` additionally has `.pad_rows(before, after)` for row-axis
+`BEllpack` additionally has `.pad_rows(before, after)` for row-axis
 padding/truncation.
 
 `sparse.BCOO` is external, so the equivalents live as helper functions
