@@ -444,13 +444,22 @@ def _to_dense(op, n: int) -> jnp.ndarray:
 def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     """Flatten BEllpack to BCOO, filtering -1-sentinel cols.
 
-    k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
-    total for the happy path.
+    Unbatched (n_batch == 0):
+      k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
+      total for the happy path.
+      k>=2: values is (nrows, k); flatten band-by-band (all of band 0,
+      then band 1, ...).
 
-    k>=2: values is (nrows, k); flatten band-by-band (all of band 0,
-    then band 1, ...) so `jnp.concatenate(values_band_slices, axis=0)`
-    emits a single 1D concat with no shape-manipulation overhead.
+    Batched (n_batch > 0):
+      Produces a batched `sparse.BCOO` with `n_batch = len(batch_shape)`
+      (so `data.shape == (*batch, nse)`, `indices.shape == (*batch, nse,
+      2)`). Per-batch cols are used directly; 1D shared cols are
+      broadcast to `(*batch, nrows)`. `-1` sentinels keep their
+      position in `indices` with col set to 0 and value set to 0,
+      since batched BCOO can't have variable `nse` across batches.
     """
+    if e.n_batch > 0:
+        return _ellpack_to_bcoo_batched(e)
     rows_1d = np.arange(e.start_row, e.end_row)
     nrows = e.nrows
     k = e.k
@@ -509,6 +518,64 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     vals_flat = jnp.concatenate(vals_parts)
     indices = jnp.stack([rows_flat, cols_flat], axis=1)
     return sparse.BCOO((vals_flat, indices), shape=e.shape)
+
+
+def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
+    """Convert a batched BEllpack to a batched `sparse.BCOO` whose
+    `n_batch` leading dims match `e.batch_shape`. Per-batch `nse` is
+    uniform (= nrows * k); batches that have `-1` sentinels in some
+    slot keep that slot in `indices` with col set to 0 and value 0.
+
+    `BCOO.fromdense` would work as a fallback but builds a `(*batch,
+    out_size, in_size)` dense tensor first — this path avoids the
+    dense intermediate entirely."""
+    rows_1d = np.arange(e.start_row, e.end_row)
+    nrows = e.nrows
+    k = e.k
+    B = e.batch_shape
+
+    def _expand_cols_to_batch(col):
+        """Return a jnp.ndarray of shape (*B, nrows) for index building."""
+        if isinstance(col, slice):
+            col = _resolve_col(col, nrows)
+        if isinstance(col, np.ndarray):
+            if col.ndim == 1:
+                return jnp.asarray(np.broadcast_to(col, B + (nrows,)))
+            return jnp.asarray(col)
+        # jnp.ndarray
+        if col.ndim == 1:
+            return jnp.broadcast_to(col, B + (nrows,))
+        return col
+
+    rows_full = jnp.asarray(np.broadcast_to(rows_1d, B + (nrows,)))
+
+    if k == 1:
+        cols_full = _expand_cols_to_batch(e.in_cols[0])
+        mask = cols_full >= 0
+        safe_cols = jnp.where(mask, cols_full, 0)
+        data = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        indices = jnp.stack([rows_full, safe_cols], axis=-1)
+        return sparse.BCOO((data, indices), shape=e.shape,
+                           indices_sorted=False, unique_indices=False)
+
+    # k >= 2: vectorised over the band axis. Stack per-band cols into
+    # (*B, nrows, k), broadcast rows to the same shape, mask sentinels,
+    # and reshape the last two dims into a single nse=nrows*k axis.
+    # One kernel regardless of k (previous implementation launched k
+    # separate jnp.where / concatenate ops). Entries are ordered
+    # row-major over (nrows, k) — BCOO doesn't require index order.
+    per_band_cols = [_expand_cols_to_batch(c) for c in e.in_cols]
+    cols_stacked = jnp.stack(per_band_cols, axis=-1)   # (*B, nrows, k)
+    rows_stacked = jnp.broadcast_to(rows_full[..., None], cols_stacked.shape)
+    mask = cols_stacked >= 0
+    safe_cols = jnp.where(mask, cols_stacked, 0)
+    safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+    flat = B + (nrows * k,)
+    indices = jnp.stack(
+        [rows_stacked.reshape(flat), safe_cols.reshape(flat)], axis=-1
+    )
+    return sparse.BCOO((safe_vals.reshape(flat), indices), shape=e.shape,
+                       indices_sorted=False, unique_indices=False)
 
 
 def _diag_to_bcoo(d, n=None) -> sparse.BCOO:

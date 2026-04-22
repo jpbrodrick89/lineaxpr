@@ -322,3 +322,79 @@ def test_negate_then_scale_minus_one_agree(op_factory):
     neg_direct = op.negate().todense()
     neg_via_scale = op.scale_scalar(jnp.asarray(-1.0)).todense()
     np.testing.assert_allclose(np.asarray(neg_direct), np.asarray(neg_via_scale))
+
+
+# ---------------------------- batched BEllpack → BCOO ----------------------
+
+
+def test_batched_ellpack_to_bcoo_k1_shared_cols():
+    """Shared 1D in_cols, k=1. BCOO should have n_batch==1 and match
+    the densified BEllpack entrywise."""
+    B, O, N = 3, 4, 6
+    cols = np.array([0, 2, 3, 1])  # shape (O,), shared across batches
+    values = jnp.arange(B * O, dtype=jnp.float64).reshape(B, O) + 1.0
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    bcoo = ep.to_bcoo()
+    assert bcoo.shape == (B, O, N)
+    np.testing.assert_allclose(
+        np.asarray(bcoo.todense()), np.asarray(ep.todense())
+    )
+
+
+def test_batched_ellpack_to_bcoo_k1_per_batch_cols():
+    """Per-batch in_cols (shape (*B, nrows)), k=1."""
+    B, O, N = 2, 3, 5
+    cols_per_batch = np.array([[0, 1, 2], [2, 3, 4]])  # (B, O)
+    values = jnp.ones((B, O), dtype=jnp.float64) * jnp.asarray([[1.0], [10.0]])
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols_per_batch,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    bcoo = ep.to_bcoo()
+    np.testing.assert_allclose(
+        np.asarray(bcoo.todense()), np.asarray(ep.todense())
+    )
+
+
+def test_batched_ellpack_to_bcoo_k2_and_sentinels():
+    """k=2 bands plus a -1 sentinel in one position — BCOO keeps the
+    slot but masks value to 0."""
+    B, O, N = 2, 4, 6
+    cols_b0 = np.array([[0, 1, 2, 3], [1, 2, 3, 4]])
+    cols_b1 = np.array([[1, -1, 3, 4], [2, 3, -1, 5]])  # two sentinels
+    values = jnp.arange(B * O * 2, dtype=jnp.float64).reshape(B, O, 2) + 1.0
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols_b0, cols_b1), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    bcoo = ep.to_bcoo()
+    np.testing.assert_allclose(
+        np.asarray(bcoo.todense()), np.asarray(ep.todense())
+    )
+
+
+def test_batched_ellpack_to_bcoo_2d_batch():
+    """n_batch=2 — batch_shape=(B1, B2)."""
+    B1, B2, O, N = 2, 3, 4, 5
+    cols = np.arange(O)  # 1D shared
+    values = jnp.arange(B1 * B2 * O, dtype=jnp.float64).reshape(B1, B2, O)
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B1, B2),
+    )
+    bcoo = ep.to_bcoo()
+    assert bcoo.shape == (B1, B2, O, N)
+    np.testing.assert_allclose(
+        np.asarray(bcoo.todense()), np.asarray(ep.todense())
+    )
