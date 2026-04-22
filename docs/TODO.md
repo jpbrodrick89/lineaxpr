@@ -243,6 +243,53 @@ structural work:
 3. Deferred Sum (TODO #1) — may subsume some of BDQRTIC / BROYDN\* /
    WOODS / CHAINWOO / CRAGGLVY if CSR leaves add-order sensitivities.
 
+### Loop 2026-04-22: structural concat + BCOO reshape + sentinel prune
+
+Three incremental rule additions landed (with one reverted), each
+validated in isolation and via full sweep + plots:
+
+1. **Structural concat for BEllpacks (`2c601da`)** — all-traced
+   concat along dim < n_batch or dim == n_batch, with band widening
+   to max_k. Huge wins:
+   - BROYDN3DLS: 20.5 ms → 128 µs (160×)
+   - BDQRTIC: 47.9 ms → 6.7 ms (7.2×)
+   - DIXMAAN[DFGHL,O]: ~90 µs → ~47 µs (≈2×) each
+2. **BCOO reshape-flatten (`e4a5f6e`)** — final reshape in DRCAV
+   flattens leading batch + out into a single out axis without
+   densification:
+   - DRCAV1LQ: 44 ms → 26 ms, now BCOO output (was dense)
+   - DRCAV2LQ: 130 ms → 94 ms
+3. **Sentinel-prune + flat BCOO from `_ellpack_to_bcoo_batched`
+   (`c9cfcac`)** — static-prune `-1` sentinels at trace time, emit
+   unbatched flat BCOO of shape `(prod(batch) * out, in)`. Also
+   changed `_linop_matrix_shape(BEllpack)` to return the flat shape.
+   - DRCAV1LQ: 26 ms → 16 ms (1.6× further, total 3.1× from 6fd1d15)
+   - DRCAV2LQ: similar
+4. **Reverted: BEllpack broadcast_in_dim trailing-singleton** —
+   attempted to keep LUKSAN11–17's `jnp.stack`-pattern structural by
+   producing a batched BEllpack from `bid(BEllpack, shape=(n, 1),
+bd=(0,))`. Correctness regression on CHARDIS0: the `c9cfcac` flat
+   `_linop_matrix_shape` change loses the distinction between
+   `(n, 1, m)` and `(1, n, m)` operands that both flatten to
+   `(n, m)`; `_add_rule` mix-path then mis-treats them as
+   combinable when CHARDIS0's outer-product pattern actually needs
+   them distinct. Fixing this properly requires either reverting the
+   flat-shape change (giving up DRCAV's sentinel-prune win) or
+   tracking full batched shape separately in the mix-path (more
+   work). Defer to CSR — which sidesteps the ambiguity entirely.
+
+Remaining asdex-gap problems (after this loop) that aren't addressed
+by any rule listed in §3 and remain truly CSR / Sum territory:
+
+- LUKSAN11LS–17LS (`jnp.stack` pattern — bid+concat+reshape)
+- NONMSQRT (`reduce_sum` partial-batch)
+- WOODS (`squeeze` multi-dim)
+- BROYDN7D, TOINTGOR (`select_n` with structural branches)
+
+Plus diminishing-returns tail on TOINTGSS, BDEXP, GENHUMPS,
+FREUROTH, SBRYBND, EDENSCH, etc. (all < 3× from asdex, small
+absolute).
+
 **Post-sweep fix (commit `25bd419`)**: the initial sweep flagged
 ARGTRIGLS 2.25× slower than pre-change (98 → 222 µs). Root-caused
 to the `_reduce_sum_rule(Diagonal) → op.values` shortcut breaking
