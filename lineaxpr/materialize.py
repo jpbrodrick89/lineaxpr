@@ -986,6 +986,39 @@ def _reshape_rule(invals, traced, n, **params):
             and int(np.prod(op.batch_shape)) * op.out_size
                 == int(new_sizes[0])):
         return _ellpack_to_bcoo_batched(op)
+    # Singleton-axis-insert on unbatched BEllpack: target
+    # `(N, 1, ..., 1)` from aval `(N,)` where `N == op.out_size`. The
+    # original rows become separate batches and the trailing size-1
+    # axes become the new out axis plus singleton batch axes. Mirrors
+    # the Change 3 `bid` trailing-singleton path (commit 0123250);
+    # reshape can produce the same aval shift via different primitives.
+    # Triggered by NONMSQRT's `reshape(BE(out=N), (N, 1))` step that
+    # previously densified after the second reduce_sum.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and len(new_sizes) >= 2
+            and new_sizes[0] == op.out_size
+            and all(s == 1 for s in new_sizes[1:])
+            and op.start_row == 0 and op.end_row == op.out_size):
+        new_batch = tuple(new_sizes[:-1])
+        if op.k == 1:
+            new_values = op.values.reshape(new_batch + (1,))
+        else:
+            new_values = op.values.reshape(new_batch + (1, op.k))
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif isinstance(c, np.ndarray):
+                new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
+            else:
+                new_in_cols.append(jnp.asarray(c).reshape(
+                    new_batch + (1,) + c.shape[1:]))
+        return BEllpack(
+            start_row=0, end_row=1,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=1, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
 
     # Structural path: flatten a batched BCOO's leading (batch + out)
     # axes into a single flat out axis. Handles the final reshape in
