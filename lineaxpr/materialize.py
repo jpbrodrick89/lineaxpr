@@ -415,11 +415,22 @@ def _add_rule(invals, traced, n, **params):
 
     # Any combination of {ConstantDiagonal, Diagonal, BEllpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
+    # CHARDIS0 disambiguation: two batched BEllpacks can flat-collide to
+    # the same `_linop_matrix_shape` while representing different
+    # semantic tensors — e.g. `batch=(n,), out=1, in=m` (col-broadcast,
+    # true shape `(n, 1, m)`) vs `batch=(1,), out=n, in=m` (row-broadcast,
+    # true shape `(1, n, m)`), both flatten to `(n, m)`. Concatenating
+    # their flat BCOOs mis-aligns rows. Guard by requiring all BEllpack
+    # operands to share the same `batch_shape`; the fallback dense
+    # `reduce(add, …)` then broadcasts correctly via numpy-style rules.
     if kinds <= {ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO}:
         shapes = [_linop_matrix_shape(v) for v in vals]
         if all(s == shapes[0] for s in shapes):
-            bcoo_vals = [_to_bcoo(v, n) for v in vals]
-            return _bcoo_concat(bcoo_vals, shape=shapes[0])
+            ep_batch_shapes = {v.batch_shape for v in vals
+                               if isinstance(v, BEllpack)}
+            if len(ep_batch_shapes) <= 1:
+                bcoo_vals = [_to_bcoo(v, n) for v in vals]
+                return _bcoo_concat(bcoo_vals, shape=shapes[0])
 
     # Linear-form adds: a vector-aval-(k,) LinOp is normally stored as a
     # (k, n) matrix, but an aval-() linear form emerges either as a (n,)
@@ -932,6 +943,41 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             start_row=op.start_row, end_row=op.end_row,
             in_cols=op.in_cols, values=new_values,
             out_size=op.out_size, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
+    # Trailing-singleton (the `jnp.stack` pattern in LUKSAN11–16):
+    # unbatched BEllpack aval-(n,) broadcast to aval-(n, 1, ..., 1). The
+    # original rows become separate batches; the trailing size-1 axis
+    # becomes the new out_size=1, and any extra middle-1 axes become
+    # additional singleton batch axes. Triggered by `bid(shape=(n,
+    # 1, ..., 1), broadcast_dimensions=(0,))`.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and len(broadcast_dimensions) == 1
+            and broadcast_dimensions[0] == 0
+            and len(shape) >= 2
+            and shape[0] == op.out_size
+            and all(s == 1 for s in shape[1:])
+            and op.start_row == 0 and op.end_row == op.out_size):
+        new_batch = tuple(shape[:-1])  # (n,) or (n, 1, ...)
+        # Values: (nrows,) → (*new_batch, 1) for k=1; (nrows, k) →
+        # (*new_batch, 1, k) for k>=2. All added axes are size-1 so a
+        # plain reshape suffices (no broadcast_to needed).
+        if op.k == 1:
+            new_values = op.values.reshape(new_batch + (1,))
+        else:
+            new_values = op.values.reshape(new_batch + (1, op.k))
+        # Cols: slice stays shared; ndarray (nrows,) or (nrows, k_band)
+        # reshapes to (*new_batch, 1, ...k_band).
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            else:
+                new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
+        return BEllpack(
+            start_row=0, end_row=1,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=1, in_size=op.in_size,
             batch_shape=new_batch,
         )
     dense = _to_dense(op, n)
