@@ -412,10 +412,13 @@ def _resolve_col(col, nrows):
 
 
 def _slice_col(col, lo, hi):
-    """Slice a ColArr along its row axis: col[lo:hi]."""
+    """Slice a ColArr along its row axis (the last axis for batched cols)."""
     if isinstance(col, slice):
         start = 0 if col.start is None else col.start
         return slice(start + lo, start + hi)
+    # Per-batch cols shape (*batch_shape, nrows) — slice the nrows axis.
+    if col.ndim > 1:
+        return col[..., lo:hi]
     return col[lo:hi]
 
 

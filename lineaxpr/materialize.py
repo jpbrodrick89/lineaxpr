@@ -611,6 +611,38 @@ def _slice_rule(invals, traced, n, **params):
             out_size=k_out, in_size=operand.n,
         )
 
+    # Structural path: n-D unit-stride slice on a batched BEllpack where
+    # the slice axes cover `batch_shape + (out_size,)`. Slice the batch
+    # dims on `values` and per-batch `in_cols` via basic indexing, then
+    # slice the out_size axis via `pad_rows`. Triggers on problems that
+    # reshape(Identity) to n-D then slice (e.g. MSQRT, SPARSINE-like,
+    # DRCAV1LQ's 2D stencil).
+    if (isinstance(operand, BEllpack) and operand.n_batch > 0
+            and len(starts) == operand.n_batch + 1
+            and all(st == 1 for st in strides)):
+        batch_slicer = tuple(slice(int(s), int(e))
+                             for s, e in zip(starts[:-1], limits[:-1]))
+        out_start, out_limit = int(starts[-1]), int(limits[-1])
+        # values shape (*batch, nrows) for k=1 or (*batch, nrows, k) for k>=2.
+        tail = (slice(None),) * (operand.values.ndim - operand.n_batch)
+        new_values = operand.values[batch_slicer + tail]
+        new_in_cols = []
+        for c in operand.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif hasattr(c, "ndim") and c.ndim > 1:
+                new_in_cols.append(c[batch_slicer + (slice(None),)])
+            else:
+                new_in_cols.append(c)  # 1D shared cols
+        new_batch = tuple(b.stop - b.start for b in batch_slicer)
+        sliced = BEllpack(
+            operand.start_row, operand.end_row,
+            tuple(new_in_cols), new_values,
+            operand.out_size, operand.in_size,
+            batch_shape=new_batch,
+        )
+        return sliced.pad_rows(-out_start, -(operand.out_size - out_limit))
+
     # Fallback: densify and slice along output (non-input) axes; preserve the
     # trailing input-coordinate axis with start=0, limit=n, stride=1.
     dense = _to_dense(operand, n)
