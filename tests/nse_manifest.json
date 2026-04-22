@@ -2,10 +2,30 @@
   "_format_version": 1,
   "_note": "nse (number of stored entries) regression manifest for bcoo_jacobian over sif2jax CUTEst problems. Increases fail tests. Decreases require a manifest bump \u2014 run `uv run python -m tests.update_nse_manifest` to regenerate.",
   "problems": {
+    "ARWHEAD": {
+      "n": 5000,
+      "nse": 19997,
+      "group": "unconstrained"
+    },
     "BDEXP": {
       "n": 5000,
       "nse": 124950,
       "group": "bounded"
+    },
+    "BDQRTIC": {
+      "n": 5000,
+      "nse": 174864,
+      "group": "unconstrained"
+    },
+    "BROYDN3DLS": {
+      "n": 5000,
+      "nse": 99988,
+      "group": "unconstrained"
+    },
+    "CHAINWOO": {
+      "n": 4000,
+      "nse": 31984,
+      "group": "unconstrained"
     },
     "CHNROSNB": {
       "n": 50,
@@ -66,6 +86,11 @@
       "n": 1530,
       "nse": 772,
       "group": "quadratic"
+    },
+    "CRAGGLVY": {
+      "n": 5000,
+      "nse": 37485,
+      "group": "unconstrained"
     },
     "DIAGIQE": {
       "n": 1000,
@@ -192,9 +217,24 @@
       "nse": 5000,
       "group": "unconstrained"
     },
+    "DRCAV1LQ": {
+      "n": 4489,
+      "nse": 4576257,
+      "group": "unconstrained"
+    },
+    "DRCAV2LQ": {
+      "n": 4489,
+      "nse": 4576257,
+      "group": "unconstrained"
+    },
     "EDENSCH": {
       "n": 2000,
       "nse": 25987,
+      "group": "unconstrained"
+    },
+    "EG2": {
+      "n": 1000,
+      "nse": 3998,
       "group": "unconstrained"
     },
     "ENGVAL1": {
@@ -216,6 +256,21 @@
       "n": 1200,
       "nse": 600,
       "group": "bounded"
+    },
+    "FLETBV3M": {
+      "n": 5000,
+      "nse": 24998,
+      "group": "unconstrained"
+    },
+    "FLETCBV2": {
+      "n": 5000,
+      "nse": 24998,
+      "group": "unconstrained"
+    },
+    "FLETCBV3": {
+      "n": 5000,
+      "nse": 24998,
+      "group": "unconstrained"
     },
     "FLETCHCR": {
       "n": 1000,
@@ -242,6 +297,36 @@
       "nse": 15,
       "group": "quadratic"
     },
+    "HATFLDC": {
+      "n": 25,
+      "nse": 186,
+      "group": "bounded"
+    },
+    "INDEF": {
+      "n": 5000,
+      "nse": 24994,
+      "group": "unconstrained"
+    },
+    "LEVYMONT": {
+      "n": 100,
+      "nse": 794,
+      "group": "bounded"
+    },
+    "LIARWHD": {
+      "n": 5000,
+      "nse": 25000,
+      "group": "unconstrained"
+    },
+    "LUKSAN21LS": {
+      "n": 100,
+      "nse": 1692,
+      "group": "unconstrained"
+    },
+    "NASH": {
+      "n": 72,
+      "nse": 96,
+      "group": "quadratic"
+    },
     "NONCVXU2": {
       "n": 5000,
       "nse": 135000,
@@ -250,6 +335,11 @@
     "NONCVXUN": {
       "n": 5000,
       "nse": 135000,
+      "group": "unconstrained"
+    },
+    "NONDQUAR": {
+      "n": 5000,
+      "nse": 34996,
       "group": "unconstrained"
     },
     "QING": {
@@ -266,6 +356,26 @@
       "n": 5000,
       "nse": 5000,
       "group": "bounded"
+    },
+    "RAYBENDL": {
+      "n": 2050,
+      "nse": 75776,
+      "group": "bounded"
+    },
+    "SBRYBND": {
+      "n": 5000,
+      "nse": 1519360,
+      "group": "unconstrained"
+    },
+    "SPARSINE": {
+      "n": 5000,
+      "nse": 185000,
+      "group": "unconstrained"
+    },
+    "SROSENBR": {
+      "n": 5000,
+      "nse": 15000,
+      "group": "unconstrained"
     },
     "TABLE1": {
       "n": 1584,
@@ -295,6 +405,11 @@
     "TOINTGSS": {
       "n": 5000,
       "nse": 249900,
+      "group": "unconstrained"
+    },
+    "WOODS": {
+      "n": 4000,
+      "nse": 16000,
       "group": "unconstrained"
     },
     "YAO": {
