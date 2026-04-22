@@ -135,7 +135,14 @@ def _mul_rule(invals, traced, n, **params):
     # batch_shape=batch, out_size=S, k unchanged; values are one
     # broadcast-mul (no per-band loop); cols broadcast statically
     # across the new out axis.
+    #
+    # Gated on `traced.k >= 2`: K=1 traced ops don't have enough
+    # sparsity richness to warrant the structural BE creation —
+    # measured on EIGENALS/BLS/CLS where the mul output is immediately
+    # densified by a following `add_any(BE, dense)`, making the
+    # structural emit pure overhead (~30ms regression at n=2550).
     if (isinstance(traced_op, BEllpack)
+            and traced_op.k >= 2
             and traced_op.out_size == 1
             and traced_op.start_row == 0 and traced_op.end_row == 1
             and hasattr(scale, "shape")
