@@ -100,16 +100,26 @@ alternatives:
   biharmonic stencil). Likely subsumed by TODO #2 (CSR), which
   handles arbitrary row-column mappings natively and is dramatically
   cleaner for 2D-stencil patterns — see §3b DRCAV analysis.
-- ~~`reduce_sum`~~: **done (2026-04-22, commit `e3fa885`)** —
-  Diagonal/ConstantDiagonal/BEllpack row-sum emit the column-sum as
-  a canonical (n,) ndarray linear form rather than materialising the
-  (out_size, in_size) dense. Required for the LIARWHD-class fix.
+- `reduce_sum`: **partial (2026-04-22)** —
+  Diagonal/ConstantDiagonal/BEllpack row-sum (`axes=(0,)`, unbatched)
+  emit the column-sum as a canonical (n,) ndarray linear form (commit
+  `e3fa885`). BEllpack full-batch-axis reduction (`axes ==
+range(n_batch)`) splits into per-batch slices and sums via
+  `_add_rule`. **Still missing**: batched BEllpack out-axis-only
+  reduction (`axes=(n_batch,)`) — the LUKSAN11-16 pattern where a
+  batched BEllpack `bs=(m,), out=k, in=N` reduces the out axis to
+  yield unbatched `(m, N)`. Current fallback densifies.
 - `broadcast_in_dim`: BCOO can broadcast length-1 sparse dims (sparsify
   already supports this; length-≠1 fails upstream). **Partial (2026-
   04-22)**: scalar → (1,) now promotes to BCOO(1, n) or passes a
-  BEllpack row-vector through. Length-≠1 broadcast of sparse LinOps
-  still densifies.
-- `split`: partition entries by index along split axis.
+  BEllpack row-vector through. Trailing-singleton (`shape=(n,
+1, ..., 1), bd=(0,)`) on unbatched BEllpack promotes to batched
+  `bs=(n,), out=1` (2026-04-22, commit `0123250`). Length-≠1
+  broadcast of sparse LinOps still densifies.
+- `split`: **partial (2026-04-22)** — `axis=0` promotes operand to
+  BCOO and masks entries outside each chunk's row-range. **Still
+  missing**: non-zero axis splits on batched operands (LUKSAN's
+  `split(axis=1)` on `(m, k)` batched BEllpack).
 
 Low priority — the remaining gaps rarely fire on the curated set.
 Revisit if a benchmark flags them.
@@ -265,18 +275,27 @@ validated in isolation and via full sweep + plots:
    changed `_linop_matrix_shape(BEllpack)` to return the flat shape.
    - DRCAV1LQ: 26 ms → 16 ms (1.6× further, total 3.1× from 6fd1d15)
    - DRCAV2LQ: similar
-4. **Reverted: BEllpack broadcast_in_dim trailing-singleton** —
-   attempted to keep LUKSAN11–17's `jnp.stack`-pattern structural by
-   producing a batched BEllpack from `bid(BEllpack, shape=(n, 1),
-bd=(0,))`. Correctness regression on CHARDIS0: the `c9cfcac` flat
-   `_linop_matrix_shape` change loses the distinction between
-   `(n, 1, m)` and `(1, n, m)` operands that both flatten to
-   `(n, m)`; `_add_rule` mix-path then mis-treats them as
-   combinable when CHARDIS0's outer-product pattern actually needs
-   them distinct. Fixing this properly requires either reverting the
-   flat-shape change (giving up DRCAV's sentinel-prune win) or
-   tracking full batched shape separately in the mix-path (more
-   work). Defer to CSR — which sidesteps the ambiguity entirely.
+4. **Relanded with fix (2026-04-22, `0123250`): BEllpack
+   broadcast_in_dim trailing-singleton.** Prior attempt had been
+   reverted for a CHARDIS0 correctness bug: two batched BEllpacks
+   `(n, 1, m)` and `(1, n, m)` collided to the same flat
+   `_linop_matrix_shape` `(n, m)` and were mis-combined by the
+   BCOO-concat mix-path. Fix: added a batch-shape guard to the mix
+   path — if multiple BEllpack operands have flat-equal shapes but
+   different `batch_shape`s, reject and fall through to the dense
+   reducer (which broadcasts correctly). Preserves DRCAV's
+   sentinel-prune win. LUKSAN11-15LS picked up modest wins
+   (12-49% range); LUKSAN16/17LS unchanged — downstream densifiers
+   (split on axis≠0, reduce_sum on out-axis-only) still block full
+   closure.
+5. **Landed (2026-04-22, `b8d2bf8`): batch+out flatten in
+   `_reshape_rule`.** Batched BEllpack → unbatched flat BCOO when
+   the reshape fully flattens `(batch + out) → (prod(batch)*out,)`.
+   Closes the `bid → concat → reshape(flatten)` trio of rule
+   extensions needed for LUKSAN. No standalone perf delta today —
+   the reshape no longer densifies but downstream rules (`split`
+   axis=1, `reduce_sum` out-axis) still do. Kept as a prerequisite
+   that unblocks those rules.
 
 Remaining asdex-gap problems (after this loop) that aren't addressed
 by any rule listed in §3 and remain truly CSR / Sum territory:
