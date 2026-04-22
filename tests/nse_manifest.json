@@ -4,12 +4,12 @@
   "problems": {
     "ARWHEAD": {
       "n": 5000,
-      "nse": 19997,
+      "nse": 14998,
       "group": "unconstrained"
     },
     "BDEXP": {
       "n": 5000,
-      "nse": 124950,
+      "nse": 44982,
       "group": "bounded"
     },
     "BDQRTIC": {
@@ -24,17 +24,17 @@
     },
     "CHAINWOO": {
       "n": 4000,
-      "nse": 31984,
+      "nse": 19990,
       "group": "unconstrained"
     },
     "CHNROSNB": {
       "n": 50,
-      "nse": 441,
+      "nse": 196,
       "group": "unconstrained"
     },
     "CHNRSNBM": {
       "n": 50,
-      "nse": 294,
+      "nse": 196,
       "group": "unconstrained"
     },
     "CMPC1": {
@@ -89,7 +89,7 @@
     },
     "CRAGGLVY": {
       "n": 5000,
-      "nse": 37485,
+      "nse": 24990,
       "group": "unconstrained"
     },
     "DIAGIQE": {
@@ -134,17 +134,17 @@
     },
     "DIXMAANB": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANC": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAAND": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANE1": {
@@ -154,17 +154,17 @@
     },
     "DIXMAANF": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANG": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANH": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANI1": {
@@ -174,17 +174,17 @@
     },
     "DIXMAANJ": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANK": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANL": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANM1": {
@@ -194,17 +194,17 @@
     },
     "DIXMAANN": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANO": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DIXMAANP": {
       "n": 3000,
-      "nse": 33993,
+      "nse": 30994,
       "group": "unconstrained"
     },
     "DQDRTIC": {
@@ -219,42 +219,42 @@
     },
     "DRCAV1LQ": {
       "n": 4489,
-      "nse": 4576257,
+      "nse": 670761,
       "group": "unconstrained"
     },
     "DRCAV2LQ": {
       "n": 4489,
-      "nse": 4576257,
+      "nse": 670761,
       "group": "unconstrained"
     },
     "EDENSCH": {
       "n": 2000,
-      "nse": 25987,
+      "nse": 7996,
       "group": "unconstrained"
     },
     "EG2": {
       "n": 1000,
-      "nse": 3998,
+      "nse": 2999,
       "group": "unconstrained"
     },
     "ENGVAL1": {
       "n": 5000,
-      "nse": 29994,
+      "nse": 19996,
       "group": "unconstrained"
     },
     "ERRINROS": {
       "n": 50,
-      "nse": 294,
+      "nse": 196,
       "group": "unconstrained"
     },
     "EXPLIN": {
       "n": 1200,
-      "nse": 600,
+      "nse": 400,
       "group": "bounded"
     },
     "EXPLIN2": {
       "n": 1200,
-      "nse": 600,
+      "nse": 400,
       "group": "bounded"
     },
     "FLETBV3M": {
@@ -274,22 +274,22 @@
     },
     "FLETCHCR": {
       "n": 1000,
-      "nse": 5994,
+      "nse": 3996,
       "group": "unconstrained"
     },
     "FREUROTH": {
       "n": 5000,
-      "nse": 109978,
+      "nse": 19996,
       "group": "unconstrained"
     },
     "GENHUMPS": {
       "n": 5000,
-      "nse": 49990,
+      "nse": 19996,
       "group": "unconstrained"
     },
     "GENROSE": {
       "n": 500,
-      "nse": 2994,
+      "nse": 2495,
       "group": "unconstrained"
     },
     "GOULDQP1": {
@@ -299,7 +299,7 @@
     },
     "HATFLDC": {
       "n": 25,
-      "nse": 186,
+      "nse": 140,
       "group": "bounded"
     },
     "INDEF": {
@@ -309,12 +309,12 @@
     },
     "LEVYMONT": {
       "n": 100,
-      "nse": 794,
+      "nse": 497,
       "group": "bounded"
     },
     "LIARWHD": {
       "n": 5000,
-      "nse": 25000,
+      "nse": 15000,
       "group": "unconstrained"
     },
     "LUKSAN21LS": {
@@ -329,12 +329,12 @@
     },
     "NONCVXU2": {
       "n": 5000,
-      "nse": 135000,
+      "nse": 105000,
       "group": "unconstrained"
     },
     "NONCVXUN": {
       "n": 5000,
-      "nse": 135000,
+      "nse": 105000,
       "group": "unconstrained"
     },
     "NONDQUAR": {
@@ -359,7 +359,7 @@
     },
     "RAYBENDL": {
       "n": 2050,
-      "nse": 75776,
+      "nse": 16384,
       "group": "bounded"
     },
     "SBRYBND": {
@@ -374,7 +374,7 @@
     },
     "SROSENBR": {
       "n": 5000,
-      "nse": 15000,
+      "nse": 10000,
       "group": "unconstrained"
     },
     "TABLE1": {
@@ -404,12 +404,12 @@
     },
     "TOINTGSS": {
       "n": 5000,
-      "nse": 249900,
+      "nse": 44982,
       "group": "unconstrained"
     },
     "WOODS": {
       "n": 4000,
-      "nse": 16000,
+      "nse": 10000,
       "group": "unconstrained"
     },
     "YAO": {

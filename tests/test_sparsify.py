@@ -195,7 +195,10 @@ def test_add_rule_absorbs_diagonal_into_ellpack():
 
 
 def test_add_rule_absorbs_constant_diagonal_into_ellpack():
-    """ConstantDiagonal + Diagonal + BEllpack → BEllpack with all bands widened."""
+    """ConstantDiagonal + Diagonal + BEllpack → BEllpack with CD and D bands
+    merged (both carry `cols=arange(3)`) and E's two distinct bands preserved.
+    The partial-match band dedup in `_add_rule` is a strict generalisation of
+    the `same_cols` fast path — same dense output, fewer stored bands."""
     from lineaxpr import BEllpack
     from lineaxpr.materialize import _add_rule
 
@@ -205,7 +208,9 @@ def test_add_rule_absorbs_constant_diagonal_into_ellpack():
                 jnp.asarray([[5.0, 50.0], [6.0, 60.0], [7.0, 70.0]]), 3, 3)
     result = _add_rule([CD, D, E], [True, True, True], n=3)
     assert isinstance(result, BEllpack)
-    assert result.k == 4  # 1 (CD band) + 1 (D band) + 2 (E bands)
+    # Dedup: CD and D both have cols=arange(3) → merge into 1 band with
+    # values [1.5, 2.5, 3.5]. E's two cols are distinct → stay as 2 bands.
+    assert result.k == 3
     expected = 0.5 * np.eye(3) + np.diag([1.0, 2.0, 3.0]) + np.asarray(E.todense())
     np.testing.assert_allclose(np.asarray(result.todense()), expected)
 

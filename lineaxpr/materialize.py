@@ -51,6 +51,14 @@ from ._base import (
 materialize_rules: dict[core.Primitive, Callable] = {}
 
 
+# Bound for `_add_rule`'s partial-match band-dedup scan. Skipping when
+# `sum(v.k for v in operands) > limit` keeps the O(K_total²) cols-equality
+# scan at trace time cheap. Empirically wins for K_total in the 4–50 range
+# across FREUROTH, CRAGGLVY, WOODS; beyond that the scan cost can rival
+# the savings and the widen path is safer.
+_DEDUP_K_TOTAL_LIMIT = 100
+
+
 def _input_size(invals, traced):
     """Derive n (walk input dimension) from any traced input.
 
@@ -420,12 +428,71 @@ def _add_rule(invals, traced, n, **params):
                                first.in_cols, summed_values,
                                first.out_size, first.in_size,
                                batch_shape=first.batch_shape)
+            # Partial-match dedup: generalizes same_cols to group bands
+            # across operands by cols-equality. Bands in the same group
+            # sum their values and emit ONE band instead of len(group).
+            # Strict superset of the same_cols fast path (when every
+            # band matches band-for-band, identical behavior). Caps K
+            # at `K_total ≤ _DEDUP_K_TOTAL_LIMIT` to bound the O(K²)
+            # cols-equality scan at trace time — beyond that, fall
+            # through to the naive widen below. Targets FREUROTH /
+            # CRAGGLVY / WOODS / CHAINWOO / SROSENBR where the
+            # chain-rule walk derives the same (row, col) structure
+            # via multiple paths; measured nse reductions of 1.5–5.5×.
+            K_total = sum(v.k for v in vals)
+            n_batch = first.n_batch
+            band_axis = n_batch + 1
+            if K_total <= _DEDUP_K_TOTAL_LIMIT:
+                # Enumerate (cols, values_slice) per band. Values slice:
+                # `v.values` for k=1, `v.values[..., b]` for k>=2 — same
+                # convention as the widen path. Only tuple iteration over
+                # in_cols; values is passed whole (per CLAUDE.md "never
+                # loop over arrays").
+                all_bands: list = []
+                for v in vals:
+                    for b in range(v.k):
+                        c = _resolve_col(v.in_cols[b], v.nrows)
+                        vals_b = v.values if v.k == 1 else v.values[..., b]
+                        all_bands.append((c, vals_b))
+                # Group by cols-equality, summing values per group.
+                assigned = [-1] * len(all_bands)
+                group_cols: list = []
+                group_values: list = []
+                for i, (ci, vi) in enumerate(all_bands):
+                    if assigned[i] != -1:
+                        continue
+                    g = len(group_cols)
+                    assigned[i] = g
+                    group_cols.append(ci)
+                    current_sum = vi
+                    for j in range(i + 1, len(all_bands)):
+                        if assigned[j] != -1:
+                            continue
+                        cj, vj = all_bands[j]
+                        if _cols_equal(ci, cj):
+                            assigned[j] = g
+                            current_sum = current_sum + vj
+                    group_values.append(current_sum)
+                new_k = len(group_cols)
+                if new_k < K_total:
+                    # Stack group_values along the band axis. Slice
+                    # shapes are (*batch_shape, nrows) — we want
+                    # (*batch_shape, nrows, new_k) for k>=2 or
+                    # (*batch_shape, nrows) passthrough for new_k==1.
+                    if new_k == 1:
+                        new_values = group_values[0]
+                    else:
+                        new_values = jnp.stack(group_values, axis=-1)
+                    return BEllpack(
+                        first.start_row, first.end_row,
+                        tuple(group_cols), new_values,
+                        first.out_size, first.in_size,
+                        batch_shape=first.batch_shape,
+                    )
             # Different cols: widen bands. Values shape for n_batch=0 is
             # (nrows,) for k=1 or (nrows, k) for k>=2; concat along the
             # band axis (axis=1, i.e. the k dim). For batched values
             # (n_batch>0) the band axis is n_batch+1.
-            n_batch = first.n_batch
-            band_axis = n_batch + 1
             new_in_cols = tuple(c for v in vals for c in v.in_cols)
             if n_batch == 0:
                 # Preserve the exact unbatched HLO — previously measured
