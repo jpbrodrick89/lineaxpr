@@ -86,7 +86,25 @@ alternatives:
   columns (note: only fires on 2D+ output, which doesn't happen in
   R^n → R^n linearize-of-grad).
 - `reshape`: map linear → multi-dim indices on BCOO when shape is
-  preserved structurally.
+  preserved structurally. **Confirmed 2026-04-22** as the first
+  densifier on DRCAV1LQ/DRCAV2LQ (2D cavity stencil, n=4489=67²):
+  the walk starts with `reshape(ConstantDiagonal(n), (67, 67))`,
+  densifies immediately to `(67, 67, n)` = ~160MB, and every
+  subsequent stencil op works on the dense tensor. Narrow fix
+  prototyped (verified bit-exact): emit a batched `BEllpack` with
+  `batch_shape=new_sizes[:-1]`, `out_size=new_sizes[-1]`,
+  `in_cols[*batch_idx, r] = flat_index(*batch_idx, r)`. ~30 LoC in
+  `_reshape_rule`. **Alone it does not close DRCAV1LQ** — the next
+  op is 2D `slice` on the batched BEllpack, which only has a 1D
+  structural path in `_slice_rule` and falls to dense. Closing
+  DRCAV1LQ end-to-end requires batched BEllpack support across
+  `_slice_rule` (2D slice), `_pad_rule` (2D pad), `_mul_rule`,
+  `_neg_rule`, `_add_rule` (13 differently-shifted batched BEllpacks
+  from the 13-point biharmonic stencil), and the BEllpack methods
+  `negate` / `scale_scalar` / `scale_per_out_row` / `pad_rows` which
+  currently drop `batch_shape`. Likely subsumed by TODO #2 (CSR),
+  which handles arbitrary row-column mappings natively and is
+  cleaner for 2D-stencil patterns.
 - ~~`reduce_sum`~~: **done (2026-04-22, commit `e3fa885`)** —
   Diagonal/ConstantDiagonal/BEllpack row-sum emit the column-sum as
   a canonical (n,) ndarray linear form rather than materialising the
@@ -142,9 +160,10 @@ BEllpack of shape (m, n), and adding structural paths in
 
 - **DRCAV1LQ / DRCAV2LQ** — 2D cavity stencil, disjoint-row adds.
   Also OOMs pytest-benchmark at n=4489 (pre-existing, not our
-  regression — confirmed at commit `8563bf9`). Wants internal `Csr`
-  (TODO #2) for mixed-range BEllpack merge and to avoid the dense
-  intermediate.
+  regression — confirmed at commit `8563bf9`). Root cause traced
+  2026-04-22: first `reshape(ConstantDiagonal, (67, 67))` densifies
+  the entire walk; see TODO #3 `reshape` entry for fix scope. Wants
+  internal `Csr` (TODO #2) + batched BEllpack slice/pad/add paths.
 - **BROYDN7D / RAYBENDL** — complex mul/add trees. Wants deferred
   `Sum` (TODO #1) for order-independent add-chain bucketing.
 - **BDQRTIC** — still densifies further in. Next: single-rule trace.
