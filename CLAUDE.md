@@ -100,6 +100,34 @@ numbers use `USE_CONTAINER=1 NO_EAGER=1 bash benchmarks/run_bench.sh
 clean by default. Details + diagnostic scripts in
 `docs/BENCH_HARNESS_NOTES.md`.
 
+**Container + full sweep OOM workaround**: `USE_CONTAINER=1 ...
+--full` in a single invocation OOMs the Docker Desktop VM around
+test #118 (accumulated JAX / XLA state from ~500 concurrent
+parametrizations exceeds the default 12 GB VM limit). Work around by
+**splitting the run by problem abstract class** — each chunk is a
+separate container invocation and starts from a fresh process.
+Template (exclude CHARDIS0, which OOMs even alone):
+
+```bash
+for CLS in "AbstractUnconstrainedMinimisation" \
+           "AbstractBoundedMinimisation and not AbstractBoundedQuadraticProblem and not CHARDIS0" \
+           "AbstractConstrainedQuadraticProblem or AbstractBoundedQuadraticProblem"; do
+  USE_CONTAINER=1 NO_EAGER=1 bash benchmarks/run_bench.sh --full -- \
+    -k "(test_materialize or test_bcoo_jacobian) and ($CLS)" \
+    --benchmark-save="$(git rev-parse --short HEAD)_full_linux_$(echo $CLS | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
+done
+```
+
+Each chunk saves as a separate JSON; plots.py merges them via
+`_latest_matching` pattern discovery or you can merge manually.
+
+**Sif2jax source**: the container uses the **local editable checkout**
+(`$SIF2JAX_PATH`, default `~/pasteurcodes/sif2jax`), mounted into
+`/sif2jax` and `pip install -e`d at container start. No build-time pin.
+Whatever branch/commit is checked out locally is what the container
+sees — useful for testing sif2jax PRs without a rebuild, but means
+reproducibility across machines depends on the local checkout state.
+
 **Which benchmark stats to cite**: benchmark timings are geometrically
 distributed with long tails. **Always ignore `mean` and `max`** — they
 are dominated by a handful of outlier iterations (GC, scheduler jitter,
