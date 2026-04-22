@@ -131,11 +131,12 @@ def _mul_rule(invals, traced, n, **params):
 materialize_rules[lax.mul_p] = _mul_rule
 
 def _linop_matrix_shape(v):
-    """Return the (out_size, in_size) of any LinOp/BCOO, or None for ndarray."""
+    """Return the full tensor shape of any LinOp / BCOO (including any
+    batch leading dims for BEllpack / BCOO), or None for ndarray."""
     if isinstance(v, (ConstantDiagonal, Diagonal)):
         return (v.n, v.n)
     if isinstance(v, BEllpack):
-        return (v.out_size, v.in_size)
+        return v.shape  # (*batch_shape, out_size, in_size)
     if isinstance(v, sparse.BCOO):
         return v.shape
     return None
@@ -199,13 +200,20 @@ def _bellpack_unbatch(bep):
 def _bcoo_concat(bcoo_vals, shape):
     """Concatenate a list of BCOOs (matching shape) entry-wise.
 
+    For unbatched BCOOs the nse axis is 0 in both `data` and `indices`.
+    For batched BCOOs (`n_batch > 0`), the nse axis follows the batch
+    dims — it's `n_batch` in `data` and `indices`. We concat along that
+    axis so batches stay aligned and each batch's entries are
+    accumulated.
+
     Structural duplicates (same index appearing in multiple operands) are
     resolved at densification via scatter-add, matching the semantics of
     `lax.add_any` on summed entries.
     """
+    n_batch = bcoo_vals[0].n_batch
     return sparse.BCOO(
-        (jnp.concatenate([v.data for v in bcoo_vals]),
-         jnp.concatenate([v.indices for v in bcoo_vals])),
+        (jnp.concatenate([v.data for v in bcoo_vals], axis=n_batch),
+         jnp.concatenate([v.indices for v in bcoo_vals], axis=n_batch)),
         shape=shape,
     )
 
@@ -369,7 +377,9 @@ def _add_rule(invals, traced, n, **params):
             and all(_linop_matrix_shape(v) == _linop_matrix_shape(vals[0])
                     for v in vals)):
         shape = _linop_matrix_shape(vals[0])
-        if shape[0] == shape[1]:  # square — diagonals fit
+        # Only unbatched 2D shapes can be square; skip this
+        # diagonal-promote path for batched BEllpacks.
+        if len(shape) == 2 and shape[0] == shape[1]:  # square — diagonals fit
             full_rows_ok = all(
                 not isinstance(v, BEllpack)
                 or (v.start_row == 0 and v.end_row == shape[0])
@@ -675,6 +685,44 @@ def _pad_rule(invals, traced, n, **params):
         return sparse.BCOO(
             (operand.data, new_indices), shape=(out_size, operand.shape[1])
         )
+    # Structural n-D zero-interior pad on a batched BEllpack where pad
+    # axes cover `batch_shape + (out_size,)`. Inner (out_size) axis:
+    # `pad_rows(before, after)` shifts start_row / end_row. Outer (batch)
+    # axes: zero-pad `values` on the batch axes and extend `batch_shape`.
+    # Per-batch `in_cols` get padded with `-1` sentinels at new batch
+    # slots (values are 0 there so col doesn't matter for correctness;
+    # BCOO conversion filters). Used by DRCAV1LQ/DRCAV2LQ to pad each
+    # 13-point stencil window back to the full 2D grid.
+    if (isinstance(operand, BEllpack) and operand.n_batch > 0
+            and len(config) == operand.n_batch + 1
+            and all(int(c[2]) == 0 for c in config)):
+        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-1])
+        out_before, out_after = int(config[-1][0]), int(config[-1][1])
+        new_batch_shape = tuple(
+            b + s + a for (b, a), s in zip(batch_pads, operand.batch_shape)
+        )
+        tail_pad = ((0, 0),) * (operand.values.ndim - operand.n_batch)
+        new_values = jnp.pad(operand.values, batch_pads + tail_pad)
+        new_in_cols = []
+        for c in operand.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif hasattr(c, "ndim") and c.ndim > 1:
+                pad_cfg = batch_pads + ((0, 0),)
+                if isinstance(c, np.ndarray):
+                    new_in_cols.append(np.pad(c, pad_cfg, constant_values=-1))
+                else:
+                    new_in_cols.append(jnp.pad(c, pad_cfg, constant_values=-1))
+            else:
+                new_in_cols.append(c)  # 1D shared cols — broadcast OK
+        padded_batch = BEllpack(
+            operand.start_row, operand.end_row,
+            tuple(new_in_cols), new_values,
+            operand.out_size, operand.in_size,
+            batch_shape=new_batch_shape,
+        )
+        return padded_batch.pad_rows(out_before, out_after)
+
     if len(config) == 1 and interior > 0 and isinstance(operand, (sparse.BCOO, BEllpack)):
         # Interior padding inserts `interior` zeros between each original
         # entry — the adjoint of a strided slice. Promote BEllpack to
