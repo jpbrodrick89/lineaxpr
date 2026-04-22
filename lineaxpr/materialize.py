@@ -833,6 +833,34 @@ def _reshape_rule(invals, traced, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
+    # Structural path: flatten a batched BCOO's leading (batch + out)
+    # axes into a single flat out axis. Handles the final reshape in
+    # DRCAV1LQ/2LQ (`(67, 67) → (4489,)` as aval, LinOp `(67, 67, n) →
+    # (4489, n)`). Remaps `new_row = batch_flat * old_out + old_row`
+    # with `batch_flat = ravel_multi_index(batch_idx, batch_shape)`,
+    # cols unchanged. Only supports fully-flattening the leading dims
+    # (target rank 1); partial flattens fall through to dense.
+    if (isinstance(op, sparse.BCOO) and op.n_batch >= 1
+            and len(new_sizes) == 1
+            and int(np.prod(op.shape[:-1])) == int(new_sizes[0])):
+        nb = op.n_batch
+        old_out = op.shape[nb]  # out axis (after batch, before in)
+        in_size = op.shape[-1]
+        batch_total = int(np.prod(op.shape[:nb]))
+        nse_per_batch = op.data.shape[nb]
+        flat_data = op.data.reshape(batch_total, nse_per_batch)
+        flat_indices = op.indices.reshape(batch_total, nse_per_batch, 2)
+        # Flat batch index b contributes row offset b * old_out.
+        offsets = jnp.arange(batch_total, dtype=flat_indices.dtype) * old_out
+        new_rows = flat_indices[..., 0] + offsets[:, None]
+        new_cols = flat_indices[..., 1]
+        new_indices = jnp.stack(
+            [new_rows.reshape(-1), new_cols.reshape(-1)], axis=1,
+        )
+        return sparse.BCOO(
+            (flat_data.reshape(-1), new_indices),
+            shape=(int(new_sizes[0]), in_size),
+        )
     dense = _to_dense(op, n)
     # Reshape applies to output axes only; preserve the trailing input axis.
     return lax.reshape(dense, tuple(new_sizes) + (n,))
