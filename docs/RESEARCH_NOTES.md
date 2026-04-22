@@ -440,3 +440,70 @@ short-circuit at `primal.size < 16` to match the vmap floor.
 The threshold is a hard-coded heuristic. Could become a parameter or
 derived from a "walk-complexity" estimate (number of eqns / operand
 shape), but 16 works empirically across CUTEst.
+
+## 12. folx (microsoft/folx) — forward Laplacian, architectural cousin
+
+https://github.com/microsoft/folx, paper https://arxiv.org/abs/2307.08214.
+Came up in discussion 2026-04-22. Worth a note because architecturally
+it's the closest thing to us in the JAX ecosystem.
+
+**What it computes**: the Laplacian `∇²f = Σᵢ ∂²f/∂xᵢ² = tr(H)` for
+scalar-output `f: ℝⁿ → ℝ`, without ever materializing `H`. Also exposes
+`J` as a byproduct. Target use case is VMC / neural wavefunctions
+(FermiNet, PsiFormer) where the energy expectation needs `∇²ψ` but
+never `H`.
+
+**How**: `@forward_laplacian` traces `f` to a jaxpr, then a custom
+interpreter walks it propagating `FwdLaplArray(value, J, L)` triples
+through each primitive. Per-primitive rule is the 2nd-order chain rule
+projected onto `(J, tr(H))`:
+
+```
+J_y = g'(x) · J_x
+L_y = g'(x) · L_x + g''(x) · ‖J_x‖²
+```
+
+Equivalent to running `jax.experimental.jet` at order 2, then
+summing along the diagonal and discarding off-diagonal 2nd-order
+information — except folx also tracks **structural sparsity of `J`**
+at trace time (per-intermediate input-dependency masks), which jet
+doesn't. That sparsity tracking is the actual engineering novelty;
+`sparsity_threshold` is the user-facing knob (MLP example: 48.7 ms →
+2.59 ms).
+
+**Architectural kinship to lineaxpr**:
+
+- Custom jaxpr interpreter (same pattern as `sparsify` — §10).
+- Direct-assignment primitive rule registry (`register_function`).
+- Exact compile-time structural sparsity, not coloring.
+- Specialized data carried at each intermediate (LinOp forms for us;
+  `FwdLaplArray` triples for them).
+
+The three libraries (folx / lineaxpr / `experimental.sparse.sparsify`)
+form a small family of "single-pass jaxpr interpreters with
+structural-sparsity-aware rules." We should cite this convergence in
+any paper.
+
+**Is it a competitor?**
+
+Not directly — different target:
+
+- Wants `∇²ψ` (scalar, VMC) → folx wins decisively. We'd materialize
+  an `n×n` BCOO and take `.diagonal().sum()`, strictly more work.
+- Wants `H` (Newton / trust-region / KKT) → folx can't produce it;
+  differentiating its output recovers `H` but defeats the point.
+  lineaxpr is the right tool.
+
+**Not worth benchmarking on CUTEst** — our problem set demands full `H`,
+so folx would have to do `jacfwd(folx(f))` or similar and lose by
+design. A meaningful comparison would be "lineaxpr(f).diagonal().sum()
+vs folx(f).laplacian" on a wavefunction-shaped problem, and we'd
+likely lose by design there too. Only becomes interesting if we ever
+add a trace-only fast path to lineaxpr (TODO candidate, low priority).
+
+**Extension API comparison**: folx uses
+`register_function(prim, wrap_forward_laplacian(fn, in_axes=...))` plus
+an optional `custom_jac_hessian_jac`. Slightly more ceremony than our
+`materialize_rules[prim] = fn`, but same idea. Primitive coverage
+appears focused on what wavefunctions need; niche lax ops require user
+rules, same as us.
