@@ -136,11 +136,19 @@ def _mul_rule(invals, traced, n, **params):
     # broadcast-mul (no per-band loop); cols broadcast statically
     # across the new out axis.
     #
-    # Gated on `traced.k >= 2`: K=1 traced ops don't have enough
-    # sparsity richness to warrant the structural BE creation —
-    # measured on EIGENALS/BLS/CLS where the mul output is immediately
-    # densified by a following `add_any(BE, dense)`, making the
-    # structural emit pure overhead (~30ms regression at n=2550).
+    # Gated on `traced.k >= 2` as a proxy for "dense alternative is
+    # expensive enough that sparse emit pays off". A K=1 traced BE
+    # typically just arrived from `bid(row-vector)` or similar and the
+    # downstream op is often `add_any(..., dense_closure)` which
+    # densifies the mul result anyway — making the structural emit
+    # pure overhead. K>=2 indicates the walk has already accumulated
+    # bands (mul/add/concat), correlating with a larger dense
+    # alternative where the scatter-into-zeros + dense-add path
+    # beats XLA's fused broadcast-mul+add on small tensors. Measured
+    # on EIGENALS/BLS/CLS (n=2550, dense ~6.4M fits in L3): without
+    # gate, ~30ms regression vs master (97ms → 126ms) from the
+    # extra structural-BE-then-densify work. NONMSQRT (k=70, dense
+    # ~24M > L3) retains its 2.5× win under the gate.
     if (isinstance(traced_op, BEllpack)
             and traced_op.k >= 2
             and traced_op.out_size == 1
