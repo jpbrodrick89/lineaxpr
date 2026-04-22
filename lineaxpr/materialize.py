@@ -777,21 +777,24 @@ def _reduce_sum_rule(invals, traced, n, **params):
             if len(slices) == 1:
                 return slices[0]
             return _add_rule(list(slices), [True] * len(slices), n)
-    # Reducing the single output axis of a 2D structural LinOp yields
-    # an aval-() output — a linear form (1×n row) whose coefficients
-    # equal the column-sum of the operand. Return as a 1D (in_size,)
-    # ndarray (the walk's canonical linear-form storage). Avoids the
-    # (out_size, in_size) dense materialisation that dominated
-    # pure-diagonal CUTEst problems (LIARWHD etc.).
-    if tuple(axes) == (0,):
-        if isinstance(op, Diagonal):
-            return op.values
-        if isinstance(op, ConstantDiagonal):
-            return jnp.broadcast_to(jnp.asarray(op.value), (op.n,))
-        if isinstance(op, BEllpack) and op.n_batch == 0:
-            return _bellpack_row_sum(op)
+    # BEllpack row-sum: accumulate per-column values via scatter-add.
+    # Returns a 1D (in_size,) ndarray linear form — the Jacobian
+    # coefficients of the resulting scalar-aval variable. Avoids the
+    # (out_size, in_size) dense materialisation. Used by the LIARWHD-
+    # class walk where the walker arrives at reduce_sum with a
+    # structural BEllpack still carrying the sparsity (squeeze kept the
+    # BEllpack row-vector, _add_rule tiled it into a banded matrix).
+    if tuple(axes) == (0,) and isinstance(op, BEllpack) and op.n_batch == 0:
+        return _bellpack_row_sum(op)
+    # Fallback: densify + sum. Intentionally no shortcut for Diagonal /
+    # ConstantDiagonal — those always densify to a (n,) linear form
+    # anyway (1ᵀ diag(v) = v, dense) and returning `op.values` directly
+    # breaks XLA fusion (measured 2.25× regression on ARGTRIGLS's dense
+    # Hessian where the walk aggregates Diagonals through reduce_sum
+    # before the inevitable dense-add downstream). Letting
+    # `_to_dense + jnp.sum` stay in the jaxpr lets XLA reduce the
+    # combined graph; the (n, n) intermediate is DCE'd.
     dense = _to_dense(op, n)
-    # Sum applies to output axes only — never to the last (input-coordinate) axis.
     return jnp.sum(dense, axis=tuple(axes))
 
 materialize_rules[lax.reduce_sum_p] = _reduce_sum_rule
