@@ -126,6 +126,57 @@ def _mul_rule(invals, traced, n, **params):
         return traced_op.scale_per_out_row(scale)
     if scale_ok and isinstance(traced_op, sparse.BCOO):
         return _bcoo_scale_per_out_row(traced_op, scale)
+    # Out-size-broadcast path: scale expands a size-1 out axis to
+    # `scale.shape[-1]`. Triggered by the NONMSQRT-class pattern where
+    # an aval-(B, 1) BEllpack (from `bid`-trailing-singleton + slice /
+    # reduce_sum chain) multiplies by a (B, S) closure — the primal
+    # broadcasts to (B, S) and each of the S new rows is a scaled copy
+    # of the traced op's single row. Stays structural: new BEllpack
+    # batch_shape=batch, out_size=S, k unchanged; values are one
+    # broadcast-mul (no per-band loop); cols broadcast statically
+    # across the new out axis.
+    if (isinstance(traced_op, BEllpack)
+            and traced_op.out_size == 1
+            and traced_op.start_row == 0 and traced_op.end_row == 1
+            and hasattr(scale, "shape")
+            and len(scale.shape) == traced_op.n_batch + 1
+            and all(s in (1, t)
+                    for s, t in zip(scale.shape[:-1], traced_op.batch_shape))
+            and int(scale.shape[-1]) >= 1):
+        new_out = int(scale.shape[-1])
+        scale_arr = jnp.asarray(scale)
+        if traced_op.k == 1:
+            # traced values (*batch, 1). scale (*batch, new_out).
+            # Result (*batch, new_out).
+            new_values = scale_arr * traced_op.values
+        else:
+            # traced values (*batch, 1, k). Insert new_out axis then mul.
+            new_values = scale_arr[..., None] * traced_op.values
+        new_in_cols = []
+        for c in traced_op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif isinstance(c, np.ndarray):
+                if c.ndim == traced_op.n_batch + 1:  # (*batch, 1) per-batch
+                    new_in_cols.append(
+                        np.broadcast_to(
+                            c, traced_op.batch_shape + (new_out,)
+                        ).copy()
+                    )
+                else:
+                    new_in_cols.append(c)
+            else:
+                # Traced cols — would need jnp broadcast; keep simple by
+                # falling through to dense. Rare.
+                new_in_cols = None
+                break
+        if new_in_cols is not None:
+            return BEllpack(
+                start_row=0, end_row=new_out,
+                in_cols=tuple(new_in_cols), values=new_values,
+                out_size=new_out, in_size=traced_op.in_size,
+                batch_shape=traced_op.batch_shape,
+            )
     dense = _to_dense(traced_op, n)
     return scale[..., None] * dense
 
@@ -1085,6 +1136,59 @@ def _reduce_sum_rule(invals, traced, n, **params):
             if len(slices) == 1:
                 return slices[0]
             return _add_rule(list(slices), [True] * len(slices), n)
+        # Out-axis-only reduction on a single-batch-axis BEllpack:
+        # `axes == (n_batch,)` sums the out_size rows within each batch,
+        # yielding an unbatched `(batch, in_size)` operator whose row-b
+        # is the sum of batch b's out rows. Structural: unbatched
+        # BEllpack `out_size=B, in_size=in_size, k=O*K_orig` with
+        # (batch, orig_row, orig_band) → (new_band). Values reshape;
+        # cols stack per (orig_row, orig_band). Downstream densify
+        # goes through the single-scatter fused `.todense()` path, so
+        # wide-K does not emit per-band loops.
+        # Attacks NONMSQRT (42× vs asdex) — operator is 1/sqrt(n) dense
+        # per row (K=70 at n=4900), a natural sparsity width.
+        if (axes_t == (op.n_batch,) and op.n_batch == 1
+                and op.start_row == 0 and op.end_row == op.out_size):
+            B = op.batch_shape[0]
+            O = op.out_size
+            K = op.k
+            # New unbatched BE has k_new = O * K. The iteration order
+            # below MUST match the flattening of values: outer loop over
+            # original rows r, inner loop over original bands b, so
+            # new_band_idx = r * K + b — which matches the default
+            # C-order flatten of `values.shape = (*batch, nrows=O, k=K)`
+            # to `(B, O*K)`.
+            new_in_cols = []
+            ok = True
+            for r in range(O):
+                for b in range(K):
+                    c = op.in_cols[b]
+                    if isinstance(c, slice):
+                        rs = np.arange(c.start or 0, c.stop or O, c.step or 1)
+                        new_in_cols.append(np.broadcast_to(
+                            np.asarray(rs[r]), (B,)).copy())
+                    elif isinstance(c, np.ndarray) and c.ndim == 1:
+                        new_in_cols.append(np.broadcast_to(
+                            c[r:r+1], (B,)).copy())
+                    elif isinstance(c, np.ndarray) and c.ndim == 2:
+                        new_in_cols.append(c[:, r])
+                    else:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if ok:
+                if K == 1:
+                    # (B, O) already in natural r-major order, k=O.
+                    new_values = op.values
+                else:
+                    # (B, O, K) → flatten to (B, O*K) in r-major, b-minor order.
+                    new_values = op.values.reshape(B, O * K)
+                return BEllpack(
+                    start_row=0, end_row=B,
+                    in_cols=tuple(new_in_cols), values=new_values,
+                    out_size=B, in_size=op.in_size,
+                )
     # BEllpack row-sum: accumulate per-column values via scatter-add.
     # Returns a 1D (in_size,) ndarray linear form — the Jacobian
     # coefficients of the resulting scalar-aval variable. Avoids the

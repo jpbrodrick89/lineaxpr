@@ -236,56 +236,99 @@ class BEllpack:
         return core.ShapedArray((self.in_size,), self.dtype)
 
     def todense(self):
+        # K=1 retains the old single-scatter form (already optimal — no
+        # per-band loop to begin with). K>=2 fuses all bands' cols and
+        # values into one scatter-add via (nrows, k) index arrays, per
+        # the "never loop over arrays" rule (CLAUDE.md). Cols stack is
+        # static (tuple iteration at trace time), values is passed
+        # whole (no per-band slicing).
         if self.n_batch > 0:
-            # Single scatter into a (*batch, out_size, in_size) zeros
-            # buffer. Previous implementation looped `batch_total` times
-            # in Python calling unbatched `todense` per slice, which
-            # emitted O(batch_total) small kernels and dominated
-            # densification time for problems that reshape Identity to
-            # 2D (~70× slowdown on NONMSQRT). This version emits one
-            # scatter per band regardless of batch size.
-            rows_1d = np.arange(self.start_row, self.end_row)
-            out = jnp.zeros(self.batch_shape + (self.out_size, self.in_size),
-                            self.dtype)
-            k = self.k
-            # Build broadcastable batch/row index arrays once.
-            batch_grids = np.meshgrid(
-                *[np.arange(d) for d in self.batch_shape],
-                np.arange(self.nrows), indexing="ij",
-            )
-            # batch_grids[:-1] are the per-batch-axis indices; last is nrows.
-            batch_idx_arrays = batch_grids[:-1]
-            row_idx = batch_grids[-1] + self.start_row  # shift to absolute
-            for b in range(k):
-                cols_b = _resolve_col(self.in_cols[b], self.nrows)
-                vals_b = self.values if k == 1 else self.values[..., b]
-                # Broadcast cols to (*batch_shape, nrows):
-                if isinstance(cols_b, np.ndarray) and cols_b.ndim == 1:
-                    cols_nd = np.broadcast_to(cols_b, self.batch_shape + (self.nrows,))
-                else:
-                    cols_nd = jnp.asarray(cols_b)
-                if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
-                    out = out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(vals_b)
-                else:
-                    mask = cols_nd >= 0
-                    safe_cols = jnp.where(mask, cols_nd, 0)
-                    safe_vals = jnp.where(mask, vals_b, jnp.zeros((), self.dtype))
-                    out = out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(safe_vals)
-            return out
+            return self._todense_batched()
+        return self._todense_unbatched()
+
+    def _todense_unbatched(self):
         rows_1d = np.arange(self.start_row, self.end_row)
         dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
-        for b in range(k):
-            cols_b = _resolve_col(self.in_cols[b], self.nrows)
-            vals_b = self.values if k == 1 else self.values[..., b]
+        if k == 1:
+            cols_b = _resolve_col(self.in_cols[0], self.nrows)
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
-                dense = dense.at[rows_1d, cols_b].add(vals_b)
+                return dense.at[rows_1d, cols_b].add(self.values)
+            mask = cols_b >= 0
+            safe_cols = jnp.where(mask, cols_b, 0)
+            safe_vals = jnp.where(mask, self.values,
+                                  jnp.zeros((), self.dtype))
+            return dense.at[rows_1d, safe_cols].add(safe_vals)
+        resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
+        all_np = all(isinstance(c, np.ndarray) for c in resolved)
+        if all_np:
+            cols_nk = np.stack(resolved, axis=-1)  # (nrows, k), static
+            static_ok = bool((cols_nk >= 0).all())
+        else:
+            cols_nk = jnp.stack([jnp.asarray(c) for c in resolved], axis=-1)
+            static_ok = False
+        rows_nk = np.broadcast_to(rows_1d[:, None], (self.nrows, k))
+        if static_ok:
+            return dense.at[rows_nk, cols_nk].add(self.values)
+        mask = cols_nk >= 0
+        safe_cols = jnp.where(mask, cols_nk, 0)
+        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
+        return dense.at[rows_nk, safe_cols].add(safe_vals)
+
+    def _todense_batched(self):
+        out = jnp.zeros(self.batch_shape + (self.out_size, self.in_size),
+                        self.dtype)
+        k = self.k
+        batch_grids = np.meshgrid(
+            *[np.arange(d) for d in self.batch_shape],
+            np.arange(self.nrows), indexing="ij",
+        )
+        batch_idx_arrays = batch_grids[:-1]
+        row_idx = batch_grids[-1] + self.start_row
+        nb_shape = self.batch_shape + (self.nrows,)
+        if k == 1:
+            cols_b = _resolve_col(self.in_cols[0], self.nrows)
+            if isinstance(cols_b, np.ndarray) and cols_b.ndim == 1:
+                cols_nd = np.broadcast_to(cols_b, nb_shape)
             else:
-                mask = cols_b >= 0
-                safe_cols = jnp.where(mask, cols_b, 0)
-                safe_vals = jnp.where(mask, vals_b, jnp.zeros((), self.dtype))
-                dense = dense.at[rows_1d, safe_cols].add(safe_vals)
-        return dense
+                cols_nd = jnp.asarray(cols_b)
+            if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
+                return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(self.values)
+            mask = cols_nd >= 0
+            safe_cols = jnp.where(mask, cols_nd, 0)
+            safe_vals = jnp.where(mask, self.values,
+                                  jnp.zeros((), self.dtype))
+            return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(safe_vals)
+        resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
+        all_np = all(isinstance(c, np.ndarray) for c in resolved)
+        if all_np:
+            cols_per_band = []
+            for c in resolved:
+                if c.ndim == 1:
+                    cols_per_band.append(np.broadcast_to(c, nb_shape))
+                else:
+                    cols_per_band.append(c)
+            cols_ndk = np.stack(cols_per_band, axis=-1)
+            static_ok = bool((cols_ndk >= 0).all())
+        else:
+            cols_per_band = []
+            for c in resolved:
+                ca = jnp.asarray(c)
+                if ca.ndim == 1:
+                    ca = jnp.broadcast_to(ca, nb_shape)
+                cols_per_band.append(ca)
+            cols_ndk = jnp.stack(cols_per_band, axis=-1)
+            static_ok = False
+        def _expand(ix):
+            return np.broadcast_to(ix[..., None], nb_shape + (k,))
+        batch_idx_k = tuple(_expand(a) for a in batch_idx_arrays)
+        row_idx_k = _expand(row_idx)
+        if static_ok:
+            return out.at[batch_idx_k + (row_idx_k, cols_ndk)].add(self.values)
+        mask = cols_ndk >= 0
+        safe_cols = jnp.where(mask, cols_ndk, 0)
+        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
+        return out.at[batch_idx_k + (row_idx_k, safe_cols)].add(safe_vals)
 
     def to_bcoo(self):
         return _ellpack_to_bcoo(self)
