@@ -153,21 +153,21 @@ BEllpack of shape (m, n), and adding structural paths in
 - **SBRYBND** — 893 µs asdex, 4,725 µs ours (5.3×). Similar to
   BDQRTIC class; trace needed.
 
-**Known regressions in the post-change sweep** (all still
-significantly ahead of asdex; old lineaxpr was faster than asdex too,
-so these are "lost some lead" rather than "now behind"):
+**Post-sweep fix (commit `25bd419`)**: the initial sweep flagged
+ARGTRIGLS 2.25× slower than pre-change (98 → 222 µs). Root-caused
+to the `_reduce_sum_rule(Diagonal) → op.values` shortcut breaking
+XLA fusion (6 reduce-window kernel launches vs baseline's 3, despite
+lower total flops). Since `reduce_sum(Diagonal(v))` always yields a
+dense `(n,)` linear form anyway (no structural rep possible),
+reverting the Diagonal/ConstantDiagonal branches of
+`_reduce_sum_rule` — while keeping the BEllpack branch — fixes
+ARGTRIGLS (recovered to 86.8 µs, faster than old baseline) AND
+mildly improves FLETBV3M (82 → 54 µs) and FLETCBV2 (70 → 45 µs).
+§3b closures preserved.
 
-- **ARGTRIGLS** materialize + bcoo: 85 µs → 230 µs (2.7× vs old
-  lineaxpr, but still 0.62× of asdex-bcoo 370 µs). HLO inspection:
-  our `_reduce_sum_rule(Diagonal) → op.values` shortcut breaks an
-  XLA fusion that the old `_to_dense + jnp.sum` path enabled,
-  yielding 6 reduce-window kernel launches vs baseline's 3. Trace
-  op counts are uniformly _lower_ post-change; the slowdown is
-  kernel-launch overhead, not extra work. Candidate fixes:
-  (a) emit `jnp.asarray(op.values)` to force a fresh buffer that
-  XLA can fuse differently; (b) skip the shortcut when the
-  downstream consumer is a broadcast-add. Low priority — absolute
-  time is modest and we're still ahead of asdex.
+**Remaining smaller regressions vs old lineaxpr** (all still ahead
+of or near asdex-bcoo):
+
 - **SBRYBND** bcoo: 3,000 µs → 4,725 µs (1.58×). Still 5.3× behind
   asdex; no clean win lost. Likely tied to the same add-chain
   pattern as BDQRTIC.
