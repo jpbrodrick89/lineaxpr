@@ -103,68 +103,90 @@ Revisit if a benchmark flags them.
 
 ### 3b. Close the asdex-bcoo gap on large sparse-Hessian problems
 
-**Progress (2026-04-22)**: 5/11 problems closed by the linear-form
-structural walk (commit `e3fa885`). Mac-native post-change runtimes
-compared to Linux asdex-bcoo (mac ~1.3–2× penalty vs Linux, so these
-understate the Linux-on-Linux advantage):
+**Progress (2026-04-22, commit `87a30df`)**: 5/11 problems closed by
+the linear-form structural walk, confirmed on the clean Linux sweep
+(`.benchmarks/Linux-CPython-3.12-64bit/0029-0031_*_full_linux_*.json`):
 
-| problem  | before (Linux) | after (mac) | asdex bcoo (Linux) | status                 |
-| -------- | -------------- | ----------- | ------------------ | ---------------------- |
-| LIARWHD  | 8,738 µs       | 43 µs       | 35 µs              | **closed** (~matching) |
-| EG2      | 489 µs         | 41 µs       | 46 µs              | **closed** (ahead)     |
-| NONDQUAR | 17,149 µs      | 61 µs       | 73 µs              | **closed** (ahead)     |
-| FLETBV3M | 5,135 µs       | 66 µs       | 73 µs              | **closed** (ahead)     |
-| FLETCBV3 | 5,257 µs       | 53 µs       | 79 µs              | **closed** (ahead)     |
-| BDQRTIC  | 50,009 µs      | 124,045 µs  | 157 µs             | open — needs Sum/Csr   |
-| BROYDN7D | 26,970 µs      | 55,790 µs   | 210 µs             | open — needs Sum       |
-| DRCAV1LQ | 194,119 µs     | 210,765 µs  | 1,473 µs           | open — needs Csr       |
-| DRCAV2LQ | 193,718 µs     | 213,063 µs  | 1,432 µs           | open — needs Csr       |
-| NONMSQRT | 15,888 µs      | 24,918 µs   | 308 µs             | open — densifies still |
-| RAYBENDL | 4,410 µs       | 5,703 µs    | 91 µs              | open — complex tree    |
+| problem  | pre (Linux) | post (Linux) | asdex bcoo | post/asdex | status                          |
+| -------- | ----------- | ------------ | ---------- | ---------- | ------------------------------- |
+| LIARWHD  | 8,374 µs    | 49 µs        | 35 µs      | 1.40×      | **closed** (171× vs pre)        |
+| EG2      | 591 µs      | 41 µs        | 46 µs      | 0.90×      | **closed, ahead** (14× vs pre)  |
+| NONDQUAR | 19,558 µs   | 60 µs        | 73 µs      | 0.82×      | **closed, ahead** (326× vs pre) |
+| FLETBV3M | 5,820 µs    | 82 µs        | 73 µs      | 1.12×      | **closed** (71× vs pre)         |
+| FLETCBV3 | 5,940 µs    | 50 µs        | 79 µs      | 0.63×      | **closed, ahead** (118× vs pre) |
+| BDQRTIC  | —           | 48,590 µs    | 157 µs     | 310×       | improved ~1.03× from pre, open  |
+| BROYDN7D | —           | 27,531 µs    | 210 µs     | 131×       | open — needs Sum (TODO #1)      |
+| DRCAV1LQ | —           | OOM (bench)  | 1,473 µs   | —          | open — needs Csr (TODO #2)      |
+| DRCAV2LQ | —           | OOM (bench)  | 1,432 µs   | —          | open — needs Csr (TODO #2)      |
+| NONMSQRT | —           | 16,006 µs    | 308 µs     | 52×        | open — densifies; needs trace   |
+| RAYBENDL | —           | 4,465 µs     | 91 µs      | 49×        | open — complex tree; needs Sum  |
 
-Root cause of the closed 5 was **linear-form densification** at the
-`add(scalar-aval-LinOp, vector-LinOp)` broadcast inside linearized
-grad: `slice(Identity, [0:1])` emits a 1-row BEllpack (sparse linear
-form) which `_squeeze_rule` used to densify to `(n,)` ndarray,
-forcing the subsequent `add` onto the dense fallback and bloating
-intermediates to `(n, n)` dense. Fixed by keeping the BEllpack
-row-vector through squeeze, adding a broadcast-add branch in
-`_add_rule` that tiles the sparse row to a column-constant BEllpack
-of shape (m, n), and adding structural paths in `_reduce_sum_rule`
-(Diagonal / ConstantDiagonal / BEllpack) and `_broadcast_in_dim_rule`
-(scalar → (1,) → BCOO).
+Bonus closures outside the original §3b list, same sweep:
 
-**Remaining 6**: not blocked by linear-form; bottlenecks are
-elsewhere:
+- **ARWHEAD** 16,318 µs → 52 µs (314× vs pre)
+- **INDEF** 35,007 µs → 184 µs (190× vs pre)
+- **FLETCBV2** 5,552 µs → 70 µs (79× vs pre)
 
-- **DRCAV1LQ / DRCAV2LQ** — 2D cavity stencil with disjoint-row adds.
-  Wants internal `Csr` (TODO #2) for the arrowhead / mixed-range
-  BEllpack merge.
-- **BROYDN7D / RAYBENDL** — complex mul/add trees with range
-  sensitivity. Wants deferred `Sum` (TODO #1) for order-independent
-  add-chain bucketing.
-- **BDQRTIC** — still densifies somewhere further into the walk.
-  Next: single-rule trace to find the first dense fallback.
-- **NONMSQRT** — `mul(BEllpack, ArrayImpl(4996, 5000))` somewhere
-  densifies. Next: same kind of single-rule trace.
+Root cause was **linear-form densification** at `add(linear_form,
+vector-LinOp)` in the linearized grad. `slice(Identity, [0:1])`
+emits a 1-row BEllpack; `_squeeze_rule` used to densify its row to
+a `(n,)` ndarray, forcing the subsequent `add` onto the dense
+fallback and bloating intermediates to `(n, n)`. Fixed by keeping
+the BEllpack row-vector through squeeze, adding a broadcast-add
+branch in `_add_rule` that tiles the sparse row to a column-constant
+BEllpack of shape (m, n), and adding structural paths in
+`_reduce_sum_rule` (Diagonal / ConstantDiagonal / BEllpack) and
+`_broadcast_in_dim_rule` (scalar → (1,) → BCOO).
 
-**Compile-time note (2026-04-22)**: the old runtime gap came with a
-compile-time trade-off. asdex runs `hessian_sparsity` (a per-primitive
-jaxpr index-set walk, conceptually similar to lineaxpr's walk)
-followed by graph coloring. That costs ~50–250 ms on most problems,
-but blows up when the pattern has many dependencies: DMN15102LS 5.0s,
-DRCAV1LQ 1.4s, SBRYBND 890ms, PENALTY3 692ms. Lineaxpr compile is
-steady (median 81ms, p90 173ms) except **NONDQUAR which hits
-1290ms** — 5× asdex on the same problem. NONDQUAR is a lineaxpr
-compile outlier to profile alongside the runtime gap (runtime is now
-good; compile still slow). Asdex has no fast path for low-sparsity
-cases (e.g. pure-diagonal LIARWHD still triggers full
-detection+coloring, 156ms).
+**Remaining open**:
 
-Post-closure break-even: on the 5 closed problems, lineaxpr now beats
-asdex on _both_ compile (~100ms) and runtime (~50µs), no break-even
-calculation needed. For the open 6, asdex still breaks even after
-~4 hessian evaluations until Sum/Csr land.
+- **DRCAV1LQ / DRCAV2LQ** — 2D cavity stencil, disjoint-row adds.
+  Also OOMs pytest-benchmark at n=4489 (pre-existing, not our
+  regression — confirmed at commit `8563bf9`). Wants internal `Csr`
+  (TODO #2) for mixed-range BEllpack merge and to avoid the dense
+  intermediate.
+- **BROYDN7D / RAYBENDL** — complex mul/add trees. Wants deferred
+  `Sum` (TODO #1) for order-independent add-chain bucketing.
+- **BDQRTIC** — still densifies further in. Next: single-rule trace.
+- **NONMSQRT** — `mul(BEllpack, dense)` somewhere densifies. Next:
+  single-rule trace.
+- **SBRYBND** — 893 µs asdex, 4,725 µs ours (5.3×). Similar to
+  BDQRTIC class; trace needed.
+
+**Known regressions in the post-change sweep** (all still
+significantly ahead of asdex; old lineaxpr was faster than asdex too,
+so these are "lost some lead" rather than "now behind"):
+
+- **ARGTRIGLS** materialize + bcoo: 85 µs → 230 µs (2.7× vs old
+  lineaxpr, but still 0.62× of asdex-bcoo 370 µs). HLO inspection:
+  our `_reduce_sum_rule(Diagonal) → op.values` shortcut breaks an
+  XLA fusion that the old `_to_dense + jnp.sum` path enabled,
+  yielding 6 reduce-window kernel launches vs baseline's 3. Trace
+  op counts are uniformly _lower_ post-change; the slowdown is
+  kernel-launch overhead, not extra work. Candidate fixes:
+  (a) emit `jnp.asarray(op.values)` to force a fresh buffer that
+  XLA can fuse differently; (b) skip the shortcut when the
+  downstream consumer is a broadcast-add. Low priority — absolute
+  time is modest and we're still ahead of asdex.
+- **SBRYBND** bcoo: 3,000 µs → 4,725 µs (1.58×). Still 5.3× behind
+  asdex; no clean win lost. Likely tied to the same add-chain
+  pattern as BDQRTIC.
+- **GAUSS1LS** bcoo: 62 → 81 µs (1.32×). Small absolute, low signal.
+- **NASH** bcoo (5.7 → 8.6 µs), **LEVYMONT** materialize (10 → 14
+  µs) — too small to call real regressions; within cross-platform
+  noise even on clean Linux.
+
+**Compile-time note (2026-04-22)**: asdex runs `hessian_sparsity`
+(per-primitive jaxpr index-set walk) + graph coloring, costing
+~50–250 ms on most problems but blowing up on dependency-heavy
+patterns: DMN15102LS 5.0s, DRCAV1LQ 1.4s, SBRYBND 890ms, PENALTY3
+692ms. Lineaxpr compile is steady (median 81ms, p90 173ms) except
+**NONDQUAR which hits 1290ms** (5× asdex). NONDQUAR runtime is now
+good but compile is still a lineaxpr outlier — profile separately.
+
+Post-closure break-even: on the 5 closed problems lineaxpr beats
+asdex on _both_ compile and runtime. For the open 5 runtime losers,
+asdex breaks even after ~4 Hessian evaluations until Sum/Csr land.
 
 ### 4. Upstream `add_any` / `pad` / `scatter-add` to `jax.experimental.sparse`
 
