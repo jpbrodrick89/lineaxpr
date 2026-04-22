@@ -789,6 +789,48 @@ def _squeeze_rule(invals, traced, n, **params):
         # dense. Only valid when the row is sparse (few bands); dense
         # rows should go via BCOO, not a k-many-bands BEllpack.
         return op
+    # Batched BEllpack with out_size=1 squeezing the out axis: flatten
+    # batch axes into a new unbatched `out_size = prod(batch)`. Each
+    # original batch's single output row becomes a row of the new
+    # unbatched BEllpack. Attacks WOODS (`reshape → slice → squeeze` on
+    # the `(1000, 4)` variable grid, 123× vs asdex).
+    if (isinstance(op, BEllpack) and op.n_batch >= 1
+            and op.out_size == 1
+            and op.start_row == 0 and op.end_row == 1
+            and dimensions == (op.n_batch,)):
+        B = int(np.prod(op.batch_shape))
+        # Values: k=1 is (*batch, 1) → (B,); k>=2 is (*batch, 1, k) → (B, k).
+        if op.k == 1:
+            new_values = op.values.reshape(B)
+        else:
+            new_values = op.values.reshape(B, op.k)
+        new_in_cols = []
+        ok = True
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                rs = np.arange(c.start or 0, c.stop or 1, c.step or 1)
+                # nrows=1 so slice yields 1 col; tile to (B,).
+                if len(rs) == 1:
+                    new_in_cols.append(np.broadcast_to(rs, (B,)).copy())
+                else:
+                    ok = False; break
+            elif isinstance(c, np.ndarray):
+                if c.ndim == op.n_batch + 1:  # (*batch, 1) per-batch
+                    new_in_cols.append(c.reshape(B))
+                elif c.ndim == 1 and c.shape[0] == 1:  # shared (1,)
+                    new_in_cols.append(np.broadcast_to(c, (B,)).copy())
+                elif c.ndim == 1 and c.shape[0] == B:
+                    new_in_cols.append(c)
+                else:
+                    ok = False; break
+            else:  # traced cols
+                ok = False; break
+        if ok:
+            return BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), values=new_values,
+                out_size=B, in_size=op.in_size,
+            )
     if isinstance(op, (BEllpack, sparse.BCOO)):
         # Densify (sparse → (out_size, in_size)) then squeeze leading axes.
         return lax.squeeze(_to_dense(op, n), dimensions)
