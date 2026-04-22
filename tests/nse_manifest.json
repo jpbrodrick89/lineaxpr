@@ -219,12 +219,12 @@
     },
     "DRCAV1LQ": {
       "n": 4489,
-      "nse": 670761,
+      "nse": 1702701,
       "group": "unconstrained"
     },
     "DRCAV2LQ": {
       "n": 4489,
-      "nse": 670761,
+      "nse": 1702701,
       "group": "unconstrained"
     },
     "EDENSCH": {
@@ -340,6 +340,11 @@
     "NONDQUAR": {
       "n": 5000,
       "nse": 34996,
+      "group": "unconstrained"
+    },
+    "NONMSQRT": {
+      "n": 4900,
+      "nse": 1033900,
       "group": "unconstrained"
     },
     "QING": {

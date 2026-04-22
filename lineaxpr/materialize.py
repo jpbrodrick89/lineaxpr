@@ -67,6 +67,50 @@ materialize_rules: dict[core.Primitive, Callable] = {}
 BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "25"))
 
 
+def _dedup_band_tuple(in_cols, values_per_band, nrows, limit=None):
+    """Group bands with identical cols, summing their values.
+
+    Inputs:
+      in_cols:          tuple/list of k cols (slice or np.ndarray; traced
+                        jnp cols fall back to no-dedup).
+      values_per_band:  list of k values arrays (one per band). Each is
+                        `(*batch_shape, nrows)` for the k=1 band-slice
+                        convention. No Python loop over these arrays —
+                        each `values_per_band[i]` was obtained by a
+                        single trace-time slice.
+      nrows:            resolved nrows for `_resolve_col`.
+      limit:            `K ≤ limit` gates the O(K²) scan; defaults to
+                        `BELLPACK_DEDUP_LIMIT`.
+
+    Returns `(group_cols: list, group_values: list)`. If no dedup
+    happens (every band unique), returns inputs as-is (same length).
+    """
+    k = len(in_cols)
+    if limit is None:
+        limit = BELLPACK_DEDUP_LIMIT
+    if k <= 1 or k > limit:
+        return list(in_cols), list(values_per_band)
+    resolved = [_resolve_col(c, nrows) for c in in_cols]
+    assigned = [-1] * k
+    group_cols: list = []
+    group_values: list = []
+    for i in range(k):
+        if assigned[i] != -1:
+            continue
+        g = len(group_cols)
+        assigned[i] = g
+        group_cols.append(resolved[i])
+        current_sum = values_per_band[i]
+        for j in range(i + 1, k):
+            if assigned[j] != -1:
+                continue
+            if _cols_equal(resolved[i], resolved[j]):
+                assigned[j] = g
+                current_sum = current_sum + values_per_band[j]
+        group_values.append(current_sum)
+    return group_cols, group_values
+
+
 def _input_size(invals, traced):
     """Derive n (walk input dimension) from any traced input.
 
@@ -1213,6 +1257,63 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             out_size=1, in_size=op.in_size,
             batch_shape=new_batch,
         )
+    # Leading-dim row-broadcast: `bid(unbatched BE out=N, shape=(N,
+    # M_1, ..., M_{r-1}), bd=(0,))`. Output aval adds trailing
+    # broadcast axes — each of the N original rows is replicated
+    # across the new axes. Represent as batched BE `bs=(N, M_1, ...,
+    # M_{r-2}), out=M_{r-1}`, values and cols broadcast-tiled over the
+    # new axes. Chains with the reshape singleton-insert
+    # (`_reshape_rule`) and dedup-in-reduce_sum to unblock NONMSQRT's
+    # final `bid` step. An earlier version of this rule (reverted)
+    # regressed because the upstream dedup was missing — K_intermediate
+    # blew up past the dense alternative. With dedup, K at this step
+    # is ≤ 70 for NONMSQRT-class (vs 5000+ without), and the bid
+    # produces BE with nse close to the true matrix nnz.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and len(broadcast_dimensions) == 1
+            and broadcast_dimensions[0] == 0
+            and len(shape) >= 2
+            and shape[0] == op.out_size
+            and any(s > 1 for s in shape[1:])
+            and op.start_row == 0 and op.end_row == op.out_size):
+        new_batch = tuple(shape[:-1])           # (N, M_1, ..., M_{r-2})
+        new_out = int(shape[-1])                # M_{r-1}
+        N = op.out_size
+        if op.k == 1:
+            reshape_shape = (N,) + (1,) * (len(new_batch) - 1) + (1,)
+            new_values = jnp.broadcast_to(
+                op.values.reshape(reshape_shape),
+                new_batch + (new_out,),
+            )
+        else:
+            reshape_shape = (N,) + (1,) * (len(new_batch) - 1) + (1, op.k)
+            new_values = jnp.broadcast_to(
+                op.values.reshape(reshape_shape),
+                new_batch + (new_out, op.k),
+            )
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif isinstance(c, np.ndarray):
+                reshape_c = (N,) + (1,) * (len(new_batch) - 1) + (1,) + c.shape[1:]
+                new_in_cols.append(
+                    np.broadcast_to(c.reshape(reshape_c),
+                                    new_batch + (new_out,) + c.shape[1:])
+                )
+            else:
+                ca = jnp.asarray(c)
+                reshape_c = (N,) + (1,) * (len(new_batch) - 1) + (1,) + c.shape[1:]
+                new_in_cols.append(
+                    jnp.broadcast_to(ca.reshape(reshape_c),
+                                     new_batch + (new_out,) + c.shape[1:])
+                )
+        return BEllpack(
+            start_row=0, end_row=new_out,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=new_out, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
     dense = _to_dense(op, n)
     # Map each output axis to the corresponding input axis (or broadcast it).
     out_dims = tuple(broadcast_dimensions) + (len(shape),)  # add input axis
@@ -1307,6 +1408,46 @@ def _reduce_sum_rule(invals, traced, n, **params):
                 else:
                     # (B, O, K) → flatten to (B, O*K) in r-major, b-minor order.
                     new_values = op.values.reshape(B, O * K)
+                # Dedup the O*K emitted bands. After out-axis reduction
+                # many (r, b) pairs produce cols-identical bands — e.g.
+                # NONMSQRT at n=4900 has O*K=5040 bands but only 70
+                # unique cols (72× savings). Hash-group by cols bytes
+                # (O(K) at trace time) and sum per-group values via one
+                # scatter-add HLO op. Not gated on BELLPACK_DEDUP_LIMIT:
+                # the dedup savings on wide-K justify the linear-time
+                # cost (and the values scatter-add is one HLO op
+                # regardless of K).
+                def _col_key(c):
+                    if isinstance(c, np.ndarray):
+                        return ("np", c.shape, c.tobytes())
+                    if isinstance(c, slice):
+                        return ("slc", c.start, c.stop, c.step)
+                    return ("id", id(c))  # traced — won't group
+                assigned = np.empty(len(new_in_cols), dtype=np.int64)
+                group_cols: list = []
+                key_to_group: dict = {}
+                for i, c in enumerate(new_in_cols):
+                    k_ = _col_key(c)
+                    g = key_to_group.get(k_)
+                    if g is None:
+                        g = len(group_cols)
+                        key_to_group[k_] = g
+                        group_cols.append(c)
+                    assigned[i] = g
+                n_groups = len(group_cols)
+                if n_groups < len(new_in_cols):
+                    # Scatter-add: new_values shape (B, O*K),
+                    # assigned shape (O*K,), output shape (B, n_groups).
+                    # `.at[..., assigned].add(new_values)` accumulates
+                    # along the last axis with repeated indices.
+                    dedup_values = jnp.zeros(
+                        (B, n_groups), dtype=new_values.dtype
+                    ).at[:, assigned].add(new_values)
+                    return BEllpack(
+                        start_row=0, end_row=B,
+                        in_cols=tuple(group_cols), values=dedup_values,
+                        out_size=B, in_size=op.in_size,
+                    )
                 return BEllpack(
                     start_row=0, end_row=B,
                     in_cols=tuple(new_in_cols), values=new_values,
