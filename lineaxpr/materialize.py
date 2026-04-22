@@ -675,7 +675,33 @@ def _reshape_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    new_sizes = params["new_sizes"]
+    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    # Structural path: splitting the output axis of a (Constant)Diagonal
+    # into batch-shape + nrows encodes the reshape permutation into a
+    # batched BEllpack with k=1. `in_cols[*batch_idx, r] =
+    # flat_index(*batch_idx, r)` so that densifying recovers
+    # `lax.reshape(diag.todense(), (*new_sizes, n))` bit-exactly. Storage
+    # is O(n) — no (67, 67, 4489)-class dense intermediate. Triggered by
+    # 2D-stencil problems (DRCAV1LQ etc.) that start with
+    # `reshape(Identity, (sqrt_n, sqrt_n))`. Downstream rules that don't
+    # yet support batched BEllpack will still densify at their own site;
+    # this keeps the walk structural at least through reshape.
+    if (isinstance(op, (ConstantDiagonal, Diagonal))
+            and len(new_sizes) >= 2
+            and int(np.prod(new_sizes)) == op.n):
+        batch_shape = new_sizes[:-1]
+        nrows = new_sizes[-1]
+        flat_idx = np.arange(op.n).reshape(new_sizes)
+        if isinstance(op, ConstantDiagonal):
+            values = jnp.broadcast_to(jnp.asarray(op.value), new_sizes)
+        else:
+            values = op.values.reshape(new_sizes)
+        return BEllpack(
+            start_row=0, end_row=nrows,
+            in_cols=(flat_idx,), values=values,
+            out_size=nrows, in_size=op.n,
+            batch_shape=batch_shape,
+        )
     dense = _to_dense(op, n)
     # Reshape applies to output axes only; preserve the trailing input axis.
     return lax.reshape(dense, tuple(new_sizes) + (n,))

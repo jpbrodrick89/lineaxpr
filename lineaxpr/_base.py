@@ -285,26 +285,35 @@ class BEllpack:
 
     def negate(self):
         return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       -self.values, self.out_size, self.in_size)
+                       -self.values, self.out_size, self.in_size,
+                       batch_shape=self.batch_shape)
 
     def scale_scalar(self, s):
         return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       s * self.values, self.out_size, self.in_size)
+                       s * self.values, self.out_size, self.in_size,
+                       batch_shape=self.batch_shape)
 
     def scale_per_out_row(self, v):
         v_arr = jnp.asarray(v)
-        if v_arr.shape[0] == self.nrows:
+        # For batched BEllpack, `v` comes from a closure at the output
+        # aval's shape (`*batch_shape, out_size`); slice the trailing
+        # axis to the active row range. For unbatched, same shape
+        # convention (v_arr is 1D).
+        if self.n_batch > 0:
+            v_slice = v_arr[..., self.start_row:self.end_row]
+        elif v_arr.shape[0] == self.nrows:
             v_slice = v_arr
         else:
-            # v is length out_size; slice to our row range.
             v_slice = v_arr[self.start_row:self.end_row]
-        # 1D values: direct 1D mul. 2D values: broadcast v along columns.
-        if self.values.ndim == 1:
+        # values shape: (*batch, nrows) for k=1, (*batch, nrows, k) for k>=2.
+        # v_slice shape: (*batch, nrows). For k>=2 broadcast a trailing axis.
+        if self.values.ndim == self.n_batch + 1:  # k=1
             scaled = v_slice * self.values
         else:
-            scaled = v_slice[:, None] * self.values
+            scaled = v_slice[..., None] * self.values
         return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       scaled, self.out_size, self.in_size)
+                       scaled, self.out_size, self.in_size,
+                       batch_shape=self.batch_shape)
 
     def pad_rows(self, before: int, after: int):
         """Pad along the out_size axis. Negative before/after truncates."""
@@ -316,7 +325,8 @@ class BEllpack:
         trim_bottom = max(0, new_end - new_out_size)
         if trim_top == 0 and trim_bottom == 0:
             return BEllpack(new_start, new_end, self.in_cols, self.values,
-                           new_out_size, self.in_size)
+                           new_out_size, self.in_size,
+                           batch_shape=self.batch_shape)
         nrows_old = self.nrows
         lo = trim_top
         hi = nrows_old - trim_bottom
@@ -325,12 +335,18 @@ class BEllpack:
             empty_shape = (0,) if self.k == 1 else (0, self.k)
             empty_vals = jnp.empty(empty_shape, self.dtype)
             return BEllpack(0, 0, empty_cols, empty_vals,
-                           new_out_size, self.in_size)
+                           new_out_size, self.in_size,
+                           batch_shape=self.batch_shape)
         new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
-        new_values = self.values[lo:hi]
+        # Slice values along the nrows axis (after batch dims).
+        if self.n_batch == 0:
+            new_values = self.values[lo:hi]
+        else:
+            new_values = self.values[(slice(None),) * self.n_batch + (slice(lo, hi),)]
         return BEllpack(new_start + lo, new_end - trim_bottom,
                        new_in_cols, new_values,
-                       new_out_size, self.in_size)
+                       new_out_size, self.in_size,
+                       batch_shape=self.batch_shape)
 
 
 def _normalize_values(values, k: int, batch_shape=(), nrows=None):
@@ -513,8 +529,10 @@ def _to_bcoo(op, n: int):
 
 
 def _traced_shape(op) -> tuple:
+    """Return the aval shape of the walk-variable this LinOp represents
+    (i.e., the LinOp shape minus the trailing input-coordinate axis)."""
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return (op.n,)
     if isinstance(op, BEllpack):
-        return (op.out_size,)
+        return (*op.batch_shape, op.out_size)
     return tuple(op.shape[:-1])
