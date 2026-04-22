@@ -58,6 +58,60 @@ library.
   `docs/RESEARCH_NOTES.md` §10. We mirror its patterns (direct-assignment
   rule registry, single-env walk) but keep our own mixed-format space.
 
+## Hard rule: never loop over arrays, only over tuples
+
+**Python `for` loops must iterate structural containers (tuples,
+lists of static `np.ndarray`s, `range(small_static_k)`), never
+`jnp.ndarray` values.**
+
+The LinOp forms (`BEllpack` especially) have a mix of static and
+traced data:
+
+- **Static, safe to loop**: `BEllpack.in_cols` is a `tuple` of length
+  `k`; each entry is either `slice`, `np.ndarray`, or `jnp.ndarray`.
+  Looping over the tuple is fine — the loop body runs at trace time,
+  not in the emitted HLO.
+- **Traced, must NOT loop**: `BEllpack.values` is a single
+  `jnp.ndarray` of shape `(*batch, nrows)` or `(*batch, nrows, k)`.
+  A Python loop that slices `values[..., b]` for `b in range(k)`
+  emits `k` separate HLO scatter/gather/arithmetic ops, each a tiny
+  kernel whose launch overhead dominates on modern accelerators.
+
+Pattern to **avoid**:
+
+```python
+for b in range(k):
+    vals_b = values[..., b]        # emits k gathers
+    dense = dense.at[rows, cols[b]].add(vals_b)   # emits k scatters
+```
+
+Pattern to **use** (gather cols from the static tuple, then scatter
+once with the whole values tensor):
+
+```python
+cols_stacked = np.stack([resolve(c) for c in in_cols], axis=-1)  # static
+rows_stacked = np.broadcast_to(rows[:, None], (nrows, k))
+dense = dense.at[rows_stacked, cols_stacked].add(values)  # one scatter
+```
+
+The `cols_stacked`/`rows_stacked` computation runs on `np.ndarray`s at
+trace time and emits no HLO. The single `.at[].add(values)` scatter
+is one HLO op regardless of `k`.
+
+**Caveat**: the fused pattern can trigger expensive XLA constant-
+folding on large static index arrays. If you see
+`"constant-folding an instruction is taking > 1s"` during compile,
+profile before declaring the fusion a win — the per-band loop may
+still be faster in practice because XLA constant-folds each small
+scatter independently without the blow-up. Measure both ways on the
+affected-problem subset.
+
+Existing violations (audit 2026-04-22, to be fixed with measured
+verification): `_base.py:259, 278` (`todense`), `491, 509, 573`
+(`_ellpack_to_bcoo[_batched]`), `materialize.py:197`
+(`_bellpack_unbatch`), `materialize.py:1061` (some rule). Each
+violation is a latent wide-K slowness.
+
 ## Key invariants
 
 - The walk produces **bit-exact** output (vs `vmap(hvp)(eye)` reference).
