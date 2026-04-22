@@ -138,6 +138,98 @@ dominated by the same transient noise as `mean`/`max`. Use `min`,
 (what a tight-loop user sees); `median` captures typical runtime. If a
 delta shows up in `mean` but not `min`/`median`, it's noise.
 
+**Sweep vs isolated min — sweep-level cross-problem contamination is
+still a factor on Linux container**. Even in the clean container, a
+sweep's reported `min` can be 1.3–2× off from the true warm floor for
+a problem, because the benchmark harness amortises warmup across
+sibling tests. **Before declaring a sweep-level regression real,
+re-measure isolated** with the snippet below (8 runs × N=50 iters,
+min-of-minimums):
+
+```python
+fn = jax.jit(lineaxpr.bcoo_hessian(f))
+for _ in range(5): jax.block_until_ready(fn(y))  # warmup
+mins = []
+for _ in range(8):
+    N=50; t=time.perf_counter()
+    for _ in range(N): o = fn(y); jax.block_until_ready(o)
+    mins.append((time.perf_counter()-t)*1e6/N)
+mins.sort()
+# Cite mins[0] (best warm floor) and mins[3] (median-of-8)
+```
+
+We've routinely seen a problem flagged at +30µs in the sweep come out
+within 2µs of baseline isolated. Don't commit a "fix" for a sweep-
+flagged regression until isolated confirms it.
+
+## Development loop (rule-change pattern)
+
+When adding a small structural rule change (one primitive's rule, or a
+narrow helper), follow this loop. Deviating is fine for docs-only or
+purely additive changes, but the loop catches real regressions early
+and keeps the commit graph clean.
+
+1. **Small incremental change** — one primitive rule or helper per
+   commit. If a rule extension exposes a latent bug elsewhere (e.g.
+   a missing method on `BEllpack.pad_rows` that only batched operands
+   hit), fix the bug in the same commit and mention it in the message
+   — but don't fold in unrelated improvements.
+
+2. **Validate correctness** — `uv run pytest tests/ -q` (unit,
+   ~45 s). If the change touches anything that might be exercised by
+   the full sif2jax surface (`_add_rule`, `_reshape_rule`, batched
+   paths, sentinels, etc.), also run `uv run pytest
+tests/test_sif2jax_sweep.py -m slow --tb=line -q` (~3 min). The
+   slow sweep caught a CHARDIS0 correctness bug on a 2026-04-22
+   broadcast_in_dim change the unit tests missed.
+
+3. **Spot-check expected-win problems in isolation** — before the
+   full bench, verify the change delivers on the problem(s) it was
+   motivated by. If you don't see the expected win, stop and
+   understand why. Either (a) the theory was wrong, (b) a later
+   densifier is still blocking, or (c) the change is net-negative —
+   make a wise call on whether to keep it. Accepting a change that
+   doesn't deliver its expected win is a code smell; either adjust
+   or drop.
+
+4. **Curated bench regression check** — `USE_CONTAINER=1 bash
+benchmarks/run_bench.sh` (~45 s, saves
+   `.benchmarks/Linux-*/NNNN_<sha>_lineaxpr.json`). Diff against the
+   previous `*_lineaxpr.json`; any regression >1.3× AND >15µs
+   absolute is material, but always isolated-verify before
+   concluding (see the sweep-vs-isolated note above). Sub-15µs or
+   sub-1.3× deltas are usually noise.
+
+5. **Commit** — descriptive subject + body explaining motivation,
+   affected rule(s), expected win, measured win, any known
+   trade-offs or follow-up work. Co-author tag for Claude.
+
+6. **Full sweep** — kick off in the background via a detached nohup
+   runner script (not a Bash tool with `run_in_background=true` —
+   that tends to get killed by harness activity). Use the chunked
+   template from the OOM workaround above. ~15–25 min. Monitor
+   completion with a `tail -f | grep --line-buffered` Monitor tool
+   call.
+
+7. **Generate plots** — merge chunks into a combined `*_full.json`
+   and `*_full_folded.json`, then
+   `uv run python -m benchmarks.plots --tag full --platform Linux`
+   (jax_min baseline) followed by the same command with
+   `--baseline asdex_bcoo`. Produces 5 PNGs per commit under
+   `benchmarks/plots/`: `abs`, `ratio_vs_jax_min`,
+   `scatter_vs_jax_min`, `ratio_vs_asdex_bcoo`, `scatter_vs_asdex_bcoo`.
+   It's easy to forget the second `--baseline`; if you only see 3
+   plots for a given SHA, regenerate.
+
+8. **Check full-sweep regressions** vs the previous commit's full
+   sweep. Same isolate-to-confirm rule applies. Large sweep-level
+   regressions on problems whose code paths the change didn't touch
+   are almost always noise.
+
+When the loop surfaces a correctness bug (step 2), revert the change
+immediately and either diagnose or file as follow-up; don't try to
+patch forward through correctness failures.
+
 ## Useful quick commands
 
 ```bash
