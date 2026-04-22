@@ -37,6 +37,7 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
+    _ellpack_to_bcoo_batched,
     _resolve_col,
     _to_bcoo,
     _to_dense,
@@ -861,6 +862,22 @@ def _reshape_rule(invals, traced, n, **params):
             and len(new_sizes) == 1
             and op.shape == (int(new_sizes[0]), op.shape[-1])):
         return op
+
+    # Structural path: batched BEllpack → unbatched flat BCOO when the
+    # reshape fully flattens the leading (batch + out) axes into a
+    # single aval dimension. Delegates to `_ellpack_to_bcoo_batched`,
+    # which already emits a flat BCOO of shape
+    # `(prod(batch) * out_size, in_size)` via
+    # `flat_row = batch_flat * out_size + row_within_batch`. Handles
+    # the final reshape in LUKSAN11-16's `jnp.stack` chain
+    # (`bid → concat → reshape(flatten)`) so the whole chain stays
+    # structural end-to-end. Target must be rank 1 and the total equal
+    # `prod(batch) * out_size`; otherwise fall through.
+    if (isinstance(op, BEllpack) and op.n_batch >= 1
+            and len(new_sizes) == 1
+            and int(np.prod(op.batch_shape)) * op.out_size
+                == int(new_sizes[0])):
+        return _ellpack_to_bcoo_batched(op)
 
     # Structural path: flatten a batched BCOO's leading (batch + out)
     # axes into a single flat out axis. Handles the final reshape in
