@@ -167,6 +167,82 @@ BEllpack of shape (m, n), and adding structural paths in
 - **SBRYBND** — 893 µs asdex, 4,725 µs ours (5.3×). Similar to
   BDQRTIC class; trace needed.
 
+### 3c. Additional asdex-gap problems (not in original §3b)
+
+Cross-checked 2026-04-22 via `lx_ratio_vs_jax > 1.2 * asdex_ratio_vs_jax`
+on the full Linux sweep (commit `d1c004e`). Below are the 20+ problems
+where lineaxpr is materially behind asdex-bcoo but weren't in §3b's
+original list.
+
+**Big-n jax-fails cluster** (jax.hessian times out at n=5000; ratios
+are `lx/asdex_bcoo`). All plausible add-chain / complex-tree patterns,
+same flavor as BROYDN7D:
+
+| problem    | n    | lineaxpr  | asdex  | lx/as | category                      |
+| ---------- | ---- | --------- | ------ | ----- | ----------------------------- |
+| BDQRTIC    | 5000 | 52,135 µs | 137 µs | 380×  | (already in §3b)              |
+| BROYDN3DLS | 5000 | 21,171 µs | 68 µs  | 313×  | Broyden tridiagonal — Sum/Csr |
+| CRAGGLVY   | 5000 | 18,916 µs | 79 µs  | 239×  | Cragg-Levy — complex tree     |
+| BROYDN7D   | 5000 | 26,863 µs | 183 µs | 147×  | (already in §3b)              |
+| WOODS      | 4000 | 3,329 µs  | 28 µs  | 118×  | Wood's function — mul tree    |
+| CHAINWOO   | 4000 | 5,204 µs  | 56 µs  | 93×   | Chained Wood — same as WOODS? |
+| RAYBENDL   | 2050 | 4,460 µs  | 59 µs  | 76×   | (already in §3b; see below)   |
+| SROSENBR   | 5000 | 3,217 µs  | 44 µs  | 74×   | Sum-of-Rosenbrocks            |
+| NONMSQRT   | 4900 | 13,954 µs | 269 µs | 52×   | (already in §3b)              |
+| TOINTGSS   | 5000 | 294 µs    | 117 µs | 2.5×  | small abs gap                 |
+| BDEXP      | 5000 | 159 µs    | 68 µs  | 2.3×  | Boundary exp                  |
+| GENHUMPS   | 5000 | 437 µs    | 221 µs | 2.0×  | Gen humps                     |
+| FREUROTH   | 5000 | 144 µs    | 74 µs  | 2.0×  | Freudenstein-Roth             |
+| SBRYBND    | 5000 | 1,621 µs  | 846 µs | 1.9×  | (already in §3b regression)   |
+
+**Small-n LUKSAN cluster** (n≈100, all L-BFGS test problems). Ratios
+are `lx/jax_min` vs `asdex/jax_min` — asdex is 3–7× further ahead of
+jax than lineaxpr is. Trace of LUKSAN11LS shows the densifier is
+`broadcast_in_dim[BEllpack → (n, 1, n)]` from `jnp.stack` pattern in
+the objective (stack → concat → reshape chain in the linearized grad):
+
+| problem    | n   | lineaxpr | jax    | asdex | lx/jax | as/jax | lx/as |
+| ---------- | --- | -------- | ------ | ----- | ------ | ------ | ----- |
+| LUKSAN11LS | 100 | 30 µs    | 42 µs  | 9 µs  | 0.71×  | 0.21×  | 3.4×  |
+| LUKSAN12LS | 98  | 64 µs    | 77 µs  | 12 µs | 0.83×  | 0.15×  | 5.4×  |
+| LUKSAN13LS | 98  | 39 µs    | 66 µs  | 10 µs | 0.59×  | 0.15×  | 4.0×  |
+| LUKSAN14LS | 98  | 33 µs    | 52 µs  | 9 µs  | 0.63×  | 0.18×  | 3.5×  |
+| LUKSAN15LS | 100 | 133 µs   | 153 µs | 50 µs | 0.87×  | 0.33×  | 2.7×  |
+| LUKSAN16LS | 100 | 54 µs    | 72 µs  | 17 µs | 0.75×  | 0.23×  | 3.2×  |
+| LUKSAN17LS | 100 | 241 µs   | 323 µs | 34 µs | 0.75×  | 0.11×  | 7.0×  |
+
+Structurally: `jnp.stack([a, b])` decomposes to
+`broadcast_in_dim(singleton) + concatenate(axis=1) + reshape(flatten)`.
+Each operand is a BEllpack up to `broadcast_in_dim`, then densifies.
+BEllpack path could work with 3 rule extensions (middle-singleton
+broadcast, same-batch concat along out axis, batch+out flatten). CSR
+path is trivial — the whole chain is metadata updates + triple-stack.
+
+**Others**:
+
+| problem  | n    | lineaxpr | jax      | asdex    | note                                |
+| -------- | ---- | -------- | -------- | -------- | ----------------------------------- |
+| TOINTGOR | 50   | 19 µs    | 23 µs    | 10 µs    | small, 1.9× lx/as-ratio             |
+| EDENSCH  | 2000 | 42 µs    | 988 µs   | 26 µs    | jax.hessian slow — likely densifies |
+| PENALTY3 | 200  | 8,598 µs | 6,612 µs | 6,941 µs | 1.24× lx/as-ratio, large absolute   |
+
+RAYBENDL's hard step is the **strided slice** `y[::2]` / `y[1::2]` in
+the first two primitives — `_slice_rule` only handles `strides=(1,)`,
+so strided slices densify immediately and everything downstream is
+dense. ~5 LoC extension to emit
+`BEllpack(in_cols=(np.arange(start, limit, stride),), ...)` probably
+closes it end-to-end. Independent of CSR.
+
+**Summary**: CSR / deferred Sum address the big-n and LUKSAN clusters;
+strided-slice fix closes RAYBENDL; LUKSAN could in principle stay
+BEllpack but is much cleaner in CSR. Rough priority for the next
+structural work:
+
+1. Strided slice in `_slice_rule` (RAYBENDL, ~5 LoC, independent)
+2. CSR (TODO #2) — unlocks big-n jax-fails, LUKSAN cluster, DRCAV
+3. Deferred Sum (TODO #1) — may subsume some of BDQRTIC / BROYDN\* /
+   WOODS / CHAINWOO / CRAGGLVY if CSR leaves add-order sensitivities.
+
 **Post-sweep fix (commit `25bd419`)**: the initial sweep flagged
 ARGTRIGLS 2.25× slower than pre-change (98 → 222 µs). Root-caused
 to the `_reduce_sum_rule(Diagonal) → op.values` shortcut breaking
