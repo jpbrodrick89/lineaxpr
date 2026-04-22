@@ -236,35 +236,42 @@ class BEllpack:
         return core.ShapedArray((self.in_size,), self.dtype)
 
     def todense(self):
-        # For batched BEllpack, materialize each batch slice via the
-        # unbatched todense and stack on the leading axes. Keeps the
-        # densification logic simple and shares it with the n_batch==0
-        # case (loop body below).
         if self.n_batch > 0:
-            # Flatten batch dims, densify per slice, reshape.
-            B_total = 1
-            for d in self.batch_shape:
-                B_total *= d
-            slices = []
-            for flat_idx in range(B_total):
-                # Unravel to per-axis index.
-                idx = []
-                rem = flat_idx
-                for d in self.batch_shape[::-1]:
-                    idx.insert(0, rem % d); rem //= d
-                idx = tuple(idx)
-                # Build an unbatched BEllpack for this slice.
-                in_cols_s = tuple(
-                    _col_batch_index(c, idx) for c in self.in_cols
-                )
-                vals_s = self.values[idx]
-                one = BEllpack(
-                    self.start_row, self.end_row, in_cols_s, vals_s,
-                    self.out_size, self.in_size, batch_shape=(),
-                )
-                slices.append(one.todense())
-            stacked = jnp.stack(slices, axis=0)
-            return stacked.reshape(self.batch_shape + (self.out_size, self.in_size))
+            # Single scatter into a (*batch, out_size, in_size) zeros
+            # buffer. Previous implementation looped `batch_total` times
+            # in Python calling unbatched `todense` per slice, which
+            # emitted O(batch_total) small kernels and dominated
+            # densification time for problems that reshape Identity to
+            # 2D (~70× slowdown on NONMSQRT). This version emits one
+            # scatter per band regardless of batch size.
+            rows_1d = np.arange(self.start_row, self.end_row)
+            out = jnp.zeros(self.batch_shape + (self.out_size, self.in_size),
+                            self.dtype)
+            k = self.k
+            # Build broadcastable batch/row index arrays once.
+            batch_grids = np.meshgrid(
+                *[np.arange(d) for d in self.batch_shape],
+                np.arange(self.nrows), indexing="ij",
+            )
+            # batch_grids[:-1] are the per-batch-axis indices; last is nrows.
+            batch_idx_arrays = batch_grids[:-1]
+            row_idx = batch_grids[-1] + self.start_row  # shift to absolute
+            for b in range(k):
+                cols_b = _resolve_col(self.in_cols[b], self.nrows)
+                vals_b = self.values if k == 1 else self.values[..., b]
+                # Broadcast cols to (*batch_shape, nrows):
+                if isinstance(cols_b, np.ndarray) and cols_b.ndim == 1:
+                    cols_nd = np.broadcast_to(cols_b, self.batch_shape + (self.nrows,))
+                else:
+                    cols_nd = jnp.asarray(cols_b)
+                if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
+                    out = out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(vals_b)
+                else:
+                    mask = cols_nd >= 0
+                    safe_cols = jnp.where(mask, cols_nd, 0)
+                    safe_vals = jnp.where(mask, vals_b, jnp.zeros((), self.dtype))
+                    out = out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(safe_vals)
+            return out
         rows_1d = np.arange(self.start_row, self.end_row)
         dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
