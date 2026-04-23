@@ -219,12 +219,12 @@
     },
     "DRCAV1LQ": {
       "n": 4489,
-      "nse": 1702701,
+      "nse": 670761,
       "group": "unconstrained"
     },
     "DRCAV2LQ": {
       "n": 4489,
-      "nse": 1702701,
+      "nse": 670761,
       "group": "unconstrained"
     },
     "EDENSCH": {
@@ -329,12 +329,12 @@
     },
     "NONCVXU2": {
       "n": 5000,
-      "nse": 105000,
+      "nse": 45000,
       "group": "unconstrained"
     },
     "NONCVXUN": {
       "n": 5000,
-      "nse": 105000,
+      "nse": 45000,
       "group": "unconstrained"
     },
     "NONDQUAR": {
@@ -344,7 +344,7 @@
     },
     "NONMSQRT": {
       "n": 4900,
-      "nse": 1033900,
+      "nse": 347900,
       "group": "unconstrained"
     },
     "QING": {

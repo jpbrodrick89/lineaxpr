@@ -53,18 +53,19 @@ materialize_rules: dict[core.Primitive, Callable] = {}
 
 
 # Cap on `K_total = sum(v.k for v in operands)` for `_add_rule`'s
-# partial-match band-dedup scan. Above the cap the O(K²) cols-equality
-# scan is skipped and the rule falls through to naive band-widening.
+# partial-match band-dedup scan. Above the cap the scan is skipped and
+# the rule falls through to naive band-widening.
 #
 # Configurable via the `LINEAXPR_BELLPACK_DEDUP_LIMIT` env var, or by
 # assigning to `lineaxpr.materialize.BELLPACK_DEDUP_LIMIT` at runtime.
-# Default 25 is empirically optimal across FREUROTH / CRAGGLVY / WOODS
-# / CHAINWOO / SROSENBR — widening chains there stay under K_total ≤ 10
-# when dedup fires, so 25 provides headroom. Higher values add compile
-# overhead on wide-K problems (e.g. NONMSQRT's K~5000 intermediate)
-# without runtime benefit when those operators downstream-densify
-# anyway.
-BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "25"))
+#
+# Default 200: empirically captures all observed wins across FREUROTH /
+# CRAGGLVY / WOODS / CHAINWOO / SROSENBR (K_total ≤ 20), DRCAV1LQ/2LQ
+# (K_total up to 39), and NONMSQRT (K_total up to 141). Since the
+# dedup uses a hash-based grouping (O(K) at trace time via
+# `col.tobytes()` keys), compile-time cost scales linearly in K even
+# at large limits — no reason to go lower for a tight budget.
+BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "200"))
 
 
 def _dedup_band_tuple(in_cols, values_per_band, nrows, limit=None):
@@ -495,42 +496,38 @@ def _add_rule(invals, traced, n, **params):
             n_batch = first.n_batch
             band_axis = n_batch + 1
             if K_total <= BELLPACK_DEDUP_LIMIT:
-                # Enumerate (cols, values_slice) per band. Values slice:
-                # `v.values` for k=1, `v.values[..., b]` for k>=2 — same
-                # convention as the widen path. Only tuple iteration over
-                # in_cols; values is passed whole (per CLAUDE.md "never
-                # loop over arrays").
-                all_bands: list = []
+                # Hash-based grouping via `col.tobytes()` keys. Same
+                # algorithm as `_reduce_sum_rule`'s dedup — consistent
+                # approach, O(K) at trace time. Empirically saves ~17%
+                # compile time on NONMSQRT vs O(K²) `np.array_equal`
+                # (285ms → 235ms); other problems flat. Values slice:
+                # `v.values` for k=1, `v.values[..., b]` for k>=2 —
+                # same convention as the widen path below; tuple
+                # iteration over in_cols, values passed whole (per
+                # CLAUDE.md "never loop over arrays").
+                def _col_key(c):
+                    if isinstance(c, np.ndarray):
+                        return ("np", c.shape, c.tobytes())
+                    if isinstance(c, slice):
+                        return ("slc", c.start, c.stop, c.step)
+                    return ("id", id(c))  # traced — won't group
+                group_cols: list = []
+                group_values: list = []
+                key_to_group: dict = {}
                 for v in vals:
                     for b in range(v.k):
                         c = _resolve_col(v.in_cols[b], v.nrows)
                         vals_b = v.values if v.k == 1 else v.values[..., b]
-                        all_bands.append((c, vals_b))
-                # Group by cols-equality, summing values per group.
-                assigned = [-1] * len(all_bands)
-                group_cols: list = []
-                group_values: list = []
-                for i, (ci, vi) in enumerate(all_bands):
-                    if assigned[i] != -1:
-                        continue
-                    g = len(group_cols)
-                    assigned[i] = g
-                    group_cols.append(ci)
-                    current_sum = vi
-                    for j in range(i + 1, len(all_bands)):
-                        if assigned[j] != -1:
-                            continue
-                        cj, vj = all_bands[j]
-                        if _cols_equal(ci, cj):
-                            assigned[j] = g
-                            current_sum = current_sum + vj
-                    group_values.append(current_sum)
+                        k_ = _col_key(c)
+                        g = key_to_group.get(k_)
+                        if g is None:
+                            key_to_group[k_] = len(group_cols)
+                            group_cols.append(c)
+                            group_values.append(vals_b)
+                        else:
+                            group_values[g] = group_values[g] + vals_b
                 new_k = len(group_cols)
                 if new_k < K_total:
-                    # Stack group_values along the band axis. Slice
-                    # shapes are (*batch_shape, nrows) — we want
-                    # (*batch_shape, nrows, new_k) for k>=2 or
-                    # (*batch_shape, nrows) passthrough for new_k==1.
                     if new_k == 1:
                         new_values = group_values[0]
                     else:
