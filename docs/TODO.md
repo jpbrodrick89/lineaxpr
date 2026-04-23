@@ -164,7 +164,14 @@ and current to identify the specific XLA optimization gap. Low
 priority — single problem, ~25% slowdown on a 20ms baseline,
 massively outweighed by LUKSAN 11-15 wins (3-6×).
 
-### 0e. DMN15103LS residual regression (+8% after ac3c7a6)
+### 0e. ~~DMN15103LS residual regression~~ — RECOVERED (4ff0881)
+
+Added batch-broadcast to `_add_rule`, mirror of `_mul_rule`'s
+batch-expand. DMN15103LS went 52 → 42.8 ms (-18%, better than the
++8% original regression). Unexpected bonuses: LUKSAN11LS -36%,
+LUKSAN12LS -14%, NONMSQRT -8%. Zero regressions in slow sweep.
+
+### 0e-old. (superseded) DMN15103LS residual regression (+8% after ac3c7a6)
 
 **Context**: the `_mul_rule` batch-expand + `_reduce_sum_rule`
 smart-densify combo (ac3c7a6) recovered DMN15102LS (13% improvement
