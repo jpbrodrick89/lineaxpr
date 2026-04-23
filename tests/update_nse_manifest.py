@@ -28,6 +28,12 @@ MANIFEST_PATH = Path(__file__).parent / "nse_manifest.json"
 
 
 def _collect():
+    """Yield `(group, instance, name)` for each sif2jax problem.
+
+    For problems whose default n exceeds MAX_N but have a SIZE_OVERRIDES
+    entry, substitute the smaller variant — its nse replaces the
+    default's in the manifest under the same bare class name key.
+    """
     from sif2jax.cutest._bounded_minimisation import (
         bounded_minimisation_problems as B,
     )
@@ -36,9 +42,15 @@ def _collect():
         unconstrained_minimisation_problems as U,
     )
 
+    from tests.test_sif2jax_sweep import SIZE_OVERRIDES
+
     for group, plist in [("unconstrained", U), ("bounded", B), ("quadratic", Q)]:
         for p in plist:
-            yield group, p, p.__class__.__name__
+            name = p.__class__.__name__
+            y = p.y0
+            if (y.ndim == 1 and y.shape[0] > MAX_N) and name in SIZE_OVERRIDES:
+                p = type(p)(**SIZE_OVERRIDES[name])
+            yield group, p, name
 
 
 def main():

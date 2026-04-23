@@ -17,6 +17,11 @@
       "nse": 174864,
       "group": "unconstrained"
     },
+    "BOX": {
+      "n": 500,
+      "nse": 4500,
+      "group": "unconstrained"
+    },
     "BROYDN3DLS": {
       "n": 5000,
       "nse": 99988,
@@ -86,6 +91,11 @@
       "n": 1530,
       "nse": 772,
       "group": "quadratic"
+    },
+    "COSINE": {
+      "n": 500,
+      "nse": 1996,
+      "group": "unconstrained"
     },
     "CRAGGLVY": {
       "n": 5000,
@@ -207,6 +217,11 @@
       "nse": 30994,
       "group": "unconstrained"
     },
+    "DIXON3DQ": {
+      "n": 500,
+      "nse": 1994,
+      "group": "unconstrained"
+    },
     "DQDRTIC": {
       "n": 5000,
       "nse": 14994,
@@ -307,6 +322,11 @@
       "nse": 24994,
       "group": "unconstrained"
     },
+    "INDEFM": {
+      "n": 500,
+      "nse": 2994,
+      "group": "unconstrained"
+    },
     "LEVYMONT": {
       "n": 100,
       "nse": 497,
@@ -315,6 +335,31 @@
     "LIARWHD": {
       "n": 5000,
       "nse": 15000,
+      "group": "unconstrained"
+    },
+    "LUKSAN11LS": {
+      "n": 100,
+      "nse": 396,
+      "group": "unconstrained"
+    },
+    "LUKSAN12LS": {
+      "n": 98,
+      "nse": 608,
+      "group": "unconstrained"
+    },
+    "LUKSAN13LS": {
+      "n": 98,
+      "nse": 608,
+      "group": "unconstrained"
+    },
+    "LUKSAN14LS": {
+      "n": 98,
+      "nse": 544,
+      "group": "unconstrained"
+    },
+    "LUKSAN15LS": {
+      "n": 100,
+      "nse": 1080,
       "group": "unconstrained"
     },
     "LUKSAN21LS": {

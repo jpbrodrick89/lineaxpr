@@ -47,13 +47,12 @@ REL_TOL = 1e-6
 # Format: problem class name → short reason string.
 KNOWN_UNIMPLEMENTED: dict[str, str] = {
     # CURLY family uses `conv_general_dilated` in their objective (a
-    # sliding-window sum pattern). Their default-n variants are above
-    # MAX_N so they skip on size, but the SIZE_OVERRIDES 500-n variants
-    # hit the unimplemented primitive. File keyed by `[override]` suffix
-    # to match the pytest id.
-    "CURLY10[override]": "conv_general_dilated primitive unimplemented",
-    "CURLY20[override]": "conv_general_dilated primitive unimplemented",
-    "CURLY30[override]": "conv_general_dilated primitive unimplemented",
+    # sliding-window sum pattern). Keyed by bare class name — their
+    # default-n variants are too big (would skip on size), but the
+    # size-override variants exercise the unimplemented primitive.
+    "CURLY10": "conv_general_dilated primitive unimplemented",
+    "CURLY20": "conv_general_dilated primitive unimplemented",
+    "CURLY30": "conv_general_dilated primitive unimplemented",
 }
 
 # Constructor kwargs for smaller variants of problems whose default size
@@ -112,47 +111,33 @@ except ImportError:
 
 
 def _collect():
-    """Yield `(group, instance, pytest_id, is_override)` for every
-    sweep-eligible problem.
-
-    For problems whose default `y0.shape[0]` exceeds `MAX_N` but have a
-    `SIZE_OVERRIDES` entry, yield an additional smaller-n variant with
-    `is_override=True`; that variant runs the correctness check only,
-    skipping the nse manifest regression (which is keyed by default
-    size). The original (too-big) problem is still yielded and hits the
-    MAX_N skip, so it stays visible in the skip count.
-    """
+    """Yield `(group, instance, name)` for each sif2jax problem."""
     for group, plist in _GROUPS:
         for p in plist:
-            name = p.__class__.__name__
-            yield group, p, name, False
-            # Add a smaller variant when the default is too big AND we
-            # know how to construct a smaller one.
-            if name in SIZE_OVERRIDES:
-                y = p.y0
-                if y.ndim == 1 and y.shape[0] > MAX_N:
-                    try:
-                        small = type(p)(**SIZE_OVERRIDES[name])
-                        yield group, small, f"{name}[override]", True
-                    except TypeError:
-                        # Kwargs don't match this class' constructor —
-                        # silently fall through (the too-big one will
-                        # skip via the MAX_N gate).
-                        pass
+            yield group, p, p.__class__.__name__
 
 
 def _id(param):
-    _group, _p, pid, _is_override = param
-    return pid
+    _group, _p, name = param
+    return name
 
 
 @pytest.mark.slow
 @pytest.mark.skipif(not _GROUPS, reason="sif2jax not installed")
 @pytest.mark.parametrize("param", list(_collect()) if _GROUPS else [], ids=_id)
 def test_sif2jax_correctness_and_nse(param):
-    group, p, pid, is_override = param
-    name = p.__class__.__name__
+    group, p, name = param
+
+    # If the default size is too big but we have a smaller-variant
+    # constructor, swap in the override. All downstream code (including
+    # the nse manifest) is keyed by bare class name — the override's
+    # smaller-n `nse` replaces the default's in the manifest. The
+    # constructor call is expected to always succeed; if it doesn't,
+    # `SIZE_OVERRIDES[name]` is stale and we want to fail loudly.
     y = p.y0
+    if (y.ndim == 1 and y.shape[0] > MAX_N) and name in SIZE_OVERRIDES:
+        p = type(p)(**SIZE_OVERRIDES[name])
+        y = p.y0
 
     # Size gate: skip huge problems and multi-dim y0 (out of scope).
     if y.ndim != 1:
@@ -162,12 +147,8 @@ def test_sif2jax_correctness_and_nse(param):
 
     n = int(y.shape[0])
 
-    # Check both the bare class name and the full pytest id (which is
-    # `{name}[override]` for size-override variants). This lets us mark
-    # primitives as unimplemented at either granularity.
-    for key in (pid, name):
-        if key in KNOWN_UNIMPLEMENTED:
-            pytest.skip(f"known-unimplemented: {KNOWN_UNIMPLEMENTED[key]}")
+    if name in KNOWN_UNIMPLEMENTED:
+        pytest.skip(f"known-unimplemented: {KNOWN_UNIMPLEMENTED[name]}")
 
     def f(z):
         return p.objective(z, p.args)
@@ -199,16 +180,14 @@ def test_sif2jax_correctness_and_nse(param):
     if isinstance(S, sparse.BCOO):
         dense_count = n * n
         assert S.nse <= dense_count, (
-            f"{pid}: nse={S.nse} > n*n={dense_count} (n={n}). "
+            f"{name}: nse={S.nse} > n*n={dense_count} (n={n}). "
             f"smart-densify should have caught this."
         )
 
     # nse regression (only meaningful when S is a BCOO — dense returns
-    # skip the check). Also skip for size-overridden variants — the
-    # manifest nse is keyed by default-n, which won't match the
-    # smaller-variant's nse.
-    if is_override:
-        return
+    # skip the check). Manifest is keyed by bare class name; for
+    # size-overridden problems the recorded nse is the override's
+    # smaller-n nse, not the default-n.
     if isinstance(S, sparse.BCOO):
         manifest = _load_manifest()
         entry = manifest.get(name)
