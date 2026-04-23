@@ -157,23 +157,18 @@ clean by default. Details + diagnostic scripts in
 **Container + full sweep OOM workaround**: `USE_CONTAINER=1 ...
 --full` in a single invocation OOMs the Docker Desktop VM around
 test #118 (accumulated JAX / XLA state from ~500 concurrent
-parametrizations exceeds the default 12 GB VM limit). Work around by
-**splitting the run by problem abstract class** — each chunk is a
-separate container invocation and starts from a fresh process.
-Template (exclude CHARDIS0, which OOMs even alone):
+parametrizations exceeds the default 12 GB VM limit). Use the
+committed chunked runner instead — splits the sweep by abstract
+problem class so each chunk is a fresh container invocation, and runs
+both folded and unfolded regimes:
 
 ```bash
-for CLS in "AbstractUnconstrainedMinimisation" \
-           "AbstractBoundedMinimisation and not AbstractBoundedQuadraticProblem and not CHARDIS0" \
-           "AbstractConstrainedQuadraticProblem or AbstractBoundedQuadraticProblem"; do
-  USE_CONTAINER=1 NO_EAGER=1 bash benchmarks/run_bench.sh --full -- \
-    -k "(test_materialize or test_bcoo_jacobian) and ($CLS)" \
-    --benchmark-save="$(git rev-parse --short HEAD)_full_linux_$(echo $CLS | awk '{print $1}' | tr '[:upper:]' '[:lower:]')"
-done
+nohup bash benchmarks/run_full_chunked.sh > /tmp/full_sweep.log 2>&1 &
+# then: tail -f /tmp/full_sweep.log | grep -E "^===|passed|FAILED"
+# and merge chunks via:
+uv run python -m benchmarks.merge_chunks <short_sha> folded
+uv run python -m benchmarks.merge_chunks <short_sha> linux
 ```
-
-Each chunk saves as a separate JSON; plots.py merges them via
-`_latest_matching` pattern discovery or you can merge manually.
 
 **Sif2jax source**: the container uses the **local editable checkout**
 (`$SIF2JAX_PATH`, default `~/pasteurcodes/sif2jax`), mounted into
@@ -258,27 +253,25 @@ benchmarks/run_bench.sh` (~45 s, saves
    affected rule(s), expected win, measured win, any known
    trade-offs or follow-up work. Co-author tag for Claude.
 
-6. **Full sweep** — kick off in the background via a detached nohup
-   runner script (not a Bash tool with `run_in_background=true` —
-   that tends to get killed by harness activity). Use the chunked
-   template from the OOM workaround above. ~15–25 min. Monitor
-   completion with a `tail -f | grep --line-buffered` Monitor tool
-   call.
+6. **Full sweep** — detached-nohup `benchmarks/run_full_chunked.sh`
+   (not a Bash tool with `run_in_background=true` — that tends to get
+   killed by harness activity). Runs both folded and unfolded regimes
+   in chunks. ~15–25 min. Monitor via `tail -f | grep --line-buffered`
+   through the Monitor tool. Merge with
+   `uv run python -m benchmarks.merge_chunks <sha> {folded,linux}`.
 
-7. **Generate plots** — merge chunks into a combined `*_full.json`
-   and `*_full_folded.json`, then
+7. **Generate plots** — after merging,
    `uv run python -m benchmarks.plots --tag full --platform Linux`
-   (jax_min baseline) followed by the same command with
-   `--baseline asdex_bcoo`. Produces 5 PNGs per commit under
-   `benchmarks/plots/`: `abs`, `ratio_vs_jax_min`,
-   `scatter_vs_jax_min`, `ratio_vs_asdex_bcoo`, `scatter_vs_asdex_bcoo`.
-   It's easy to forget the second `--baseline`; if you only see 3
-   plots for a given SHA, regenerate.
+   (jax*min baseline) followed by the same command with
+   `--baseline asdex_bcoo`. Plus `--problem-filter unconstrained`
+   variants for publication. Outputs under `benchmarks/plots/`:
+   `abs`, `ratio_vs*_`, `scatter*vs*_`, `_large_\*` sub-variants.
 
-8. **Check full-sweep regressions** vs the previous commit's full
-   sweep. Same isolate-to-confirm rule applies. Large sweep-level
+8. **Check full-sweep regressions** via
+   `uv run python -m benchmarks.diff_full <prev>.json <new>.json`
+   (reports CLAUDE.md-threshold regressions/wins). Large sweep-level
    regressions on problems whose code paths the change didn't touch
-   are almost always noise.
+   are almost always noise — isolate-verify before acting.
 
 When the loop surfaces a correctness bug (step 2), revert the change
 immediately and either diagnose or file as follow-up; don't try to
