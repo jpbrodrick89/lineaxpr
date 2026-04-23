@@ -53,7 +53,26 @@ matmul path. Benefits any problem with transposed-reshape patterns.
 HADAMALS itself is small (n=20, 1.3MB dense fits in L2) so the
 direct win is modest; larger-dim transpose chains would benefit more.
 
-### 0d-pre. Investigate DMN15102LS regression source (not scatter-add)
+### 0d-pre. ~~DMN15102LS regression~~ — RECOVERED (ac3c7a6)
+
+Resolved via the `_mul_rule` batch-expand path + `_reduce_sum_rule`
+smart-densify combination. DMN15102LS isolated went 24.5 → 21 ms
+(baseline 18-20 ms, so within noise).
+
+Key insight: `mul(BE, dense)` is sparsity-preserving in principle, so
+staying structural via batch-expand is the right mechanic — but
+downstream rules that accumulate bands can blow past `k >= in_size`,
+at which point the BE uses same storage as dense with extra
+bookkeeping. The `_densify_if_wider_than_dense` helper catches this at
+reduce_sum and add-rule emission points, preventing wide-k BE from
+flowing through expensive downstream chains (pad, further adds).
+
+A743104 sweep stats showed an EIGEN\* 1.6× "regression" that was ruled
+out via isolated measurement — actually 4-7% improvement vs 094627a.
+Sweep-level cross-problem contamination per CLAUDE.md; EIGEN's dense-
+pattern problems are the canonical contamination victims.
+
+### 0d-pre-old. (superseded) Investigate DMN15102LS regression source (not scatter-add)
 
 **Context**: 094627a sweep (2026-04-23) flagged DMN15102LS as
 regressed 1.25× (+4.5 ms, 20 → 24.5 ms) vs baseline. Bisect
