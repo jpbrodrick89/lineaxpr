@@ -62,24 +62,51 @@ coloring might win (LUKSAN16LS, DQDRTIC, 0f covers this).
 
 ## Priority 0 — open
 
-### 0c. Structural `_transpose_rule` for BEllpack
+### 0c. ~~Structural `_transpose_rule` for BEllpack~~ **DONE** (commit ac1a462)
 
-**Current**: `_transpose_rule` unconditionally densifies via
-`_to_dense(op, n); lax.transpose(...)`, regardless of op form.
+Landed with an additional `_add_rule` batched-BCOO-concat branch to
+stop row-range-mismatched batched BEs from rank-collapsing via the
+flat `_to_bcoo` path. Followups below.
 
-**Why it matters**: HADAMALS (2026-04-23) showed step 1 of its HVP
-walk is `transpose(BEllpack(20, 20, 400)) → ArrayImpl(20, 20, 400)`,
-densifying immediately. Everything downstream (dot_general, diagonal,
-scatter-add) then runs dense because the chain started dense.
+### 0j. ~~Unify `_ellpack_to_bcoo{,_batched,_keep_batch}` → always-batched~~ **DONE**
 
-**Fix**: for batched BEllpack, `transpose` on the non-input axes is a
-structural permutation — swap axes of `values` and per-batch
-`in_cols`, update `batch_shape`/`out_size`. No data copy. ~30 LoC.
+Landed post-0c. `_ellpack_to_bcoo_batched` now preserves `n_batch` (no
+longer flattens to unbatched 2D). The semantic asymmetry is gone —
+batched BEllpack → batched BCOO, unbatched BEllpack → unbatched BCOO.
+Walker's existing final reshapes (`_reshape_rule` batched-BE →
+unbatched-BE at line 1293 and batched-BCOO → unbatched-BCOO at line 1411) handle the final collapse at the correct point.
 
-**Cascade**: unblocks `dot_general` (Q.T @ Q linearized) to stay
-structural via the existing sparse-vs-closure matmul path. HADAMALS
-itself is tiny (dense fits in L2) so the direct win is modest; larger
-transposed-reshape patterns would benefit more.
+Sweep: 323 passed, 54 skipped, 0 failed (no walker-level regression —
+every problem's final reshape correctly unbatches). Manifest diff:
+none (DRCAV etc. stay at their existing nse since the batched BCOO
+gets flattened by the walker, not by conversion).
+
+### 0k. `_cond_rule` tracer-index support
+
+**Current** (2026-04-23, commit ac1a462): `_cond_rule` requires the
+branch index to be compile-time-concrete — `int(np.asarray(index_val))`
+on the closure value. Works un-jitted (closure values are concrete
+Python ints), works jitted **under `EAGER_CONSTANT_FOLDING=TRUE`** (ECF
+folds shape-derived index expressions eagerly), fails jitted in the
+unfolded regime because the closure becomes a `DynamicJaxprTracer`.
+
+**Surfaced by**: HADAMALS under the jit-wrapped sweep without ECF
+(`_run_full_chunked.sh --linux` chunk, commit ac1a462: 2 failures in
+`benchmarks/test_full.py` — materialize + bcoo_jacobian). Also caught by
+`tests/test_sif2jax_sweep.py` but worked around there via
+`UNFOLDED_UNSUPPORTED={HADAMALS}` which runs it un-jitted.
+
+**Fix**: extend `_cond_rule` to treat tracer indices whose aval is a
+compile-time-concrete scalar the same as a closure int. Approaches:
+(a) wrap the `int(np.asarray(...))` in `jax.ensure_compile_time_eval()`
+to force evaluation; (b) inspect the aval for a concrete value via
+`jax.core.get_aval(idx)` and fall back to the walker if it isn't one;
+(c) accept a traced index and emit structural output from each branch
+concurrently, then `select`-compose at the LinOp level (more invasive).
+
+**Payoff**: removes the `UNFOLDED_UNSUPPORTED` exception list; HADAMALS
+runs jitted in the unfolded sweep; strict-mode bench stops flagging it.
+Self-contained — no dependency on 0c/0d/0j.
 
 ### 0d. Structural 2D point-gather / scatter-add
 

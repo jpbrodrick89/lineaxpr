@@ -700,140 +700,26 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
 
 
 def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
-    """Convert a batched BEllpack to an UNBATCHED flat `sparse.BCOO` of
-    shape `(prod(batch_shape) * out_size, in_size)`.
-
-    When all per-band `in_cols` are static `np.ndarray`s (the common
-    case after `_reshape_rule` / `_slice_rule` / `_pad_rule`), `-1`
-    sentinel positions are pruned at trace time, giving the output an
-    exact `nse = count_of_non_sentinel_positions`. This is what makes
-    the 2D pad on DRCAV usable — without pruning, sentinel positions
-    inflate the BCOO with junk `(row, 0, value=0)` entries that neither
-    batched BCOO nor `sum_duplicates(nse=...)` can remove at fixed cost.
-
-    When any band has a traced (`jnp.ndarray`) cols array, we fall
-    back to emitting the full `(prod(batch) * out_size * k, ...)`
-    flat BCOO with mask-to-zero (no trace-time prune possible).
-
-    Flat row index: `flat_row = batch_flat * out_size + row_within_batch`,
-    where `batch_flat = ravel_multi_index(batch_idx, batch_shape, 'C')`."""
-    nrows = e.nrows
-    k = e.k
-    B = e.batch_shape
-    prod_B = int(np.prod(B)) if B else 1
-    out_size = e.out_size
-    in_size = e.in_size
-    flat_shape = (prod_B * out_size, in_size)
-
-    def _col_as_np_broadcast_to_batch(col):
-        """Return an np.ndarray of shape (*B, nrows) if col is static;
-        else return None to indicate we need the dynamic path."""
-        if isinstance(col, slice):
-            col = _resolve_col(col, nrows)
-        if isinstance(col, np.ndarray):
-            if col.ndim == 1:
-                return np.broadcast_to(col, B + (nrows,))
-            return col
-        return None  # jnp.ndarray — dynamic
-
-    # Per-batch flat row offsets: shape (*B, 1) broadcasting to (*B, nrows).
-    batch_offsets_flat = (np.arange(prod_B).reshape(B) * out_size
-                          if B else np.zeros((), dtype=np.int64))
-    rows_1d = np.arange(e.start_row, e.end_row)
-    global_rows_np = batch_offsets_flat[..., None] + rows_1d  # (*B, nrows)
-
-    static_cols_per_band = [_col_as_np_broadcast_to_batch(c) for c in e.in_cols]
-    all_static = all(c is not None for c in static_cols_per_band)
-
-    if all_static:
-        # Static prune: collect valid entries across all bands, build
-        # a flat unbatched BCOO with exactly the non-sentinel count.
-        kept_rows, kept_cols, kept_vals = [], [], []
-        for b in range(k):
-            cols_b = static_cols_per_band[b]  # np.ndarray shape (*B, nrows)
-            keep = cols_b >= 0  # np bool mask
-            if keep.all():
-                kept_rows.append(global_rows_np.reshape(-1))
-                kept_cols.append(cols_b.reshape(-1))
-                if k == 1:
-                    kept_vals.append(e.values.reshape(-1))
-                else:
-                    kept_vals.append(e.values[..., b].reshape(-1))
-            else:
-                idx = np.nonzero(keep.reshape(-1))[0]
-                kept_rows.append(global_rows_np.reshape(-1)[idx])
-                kept_cols.append(cols_b.reshape(-1)[idx])
-                if k == 1:
-                    v_flat = e.values.reshape(-1)
-                else:
-                    v_flat = e.values[..., b].reshape(-1)
-                kept_vals.append(jnp.take(v_flat, jnp.asarray(idx)))
-        rows_final = np.concatenate(kept_rows) if kept_rows else np.zeros((0,), dtype=np.int64)
-        cols_final = np.concatenate(kept_cols) if kept_cols else np.zeros((0,), dtype=np.int64)
-        indices = jnp.asarray(np.stack([rows_final, cols_final], axis=1))
-        vals_final = jnp.concatenate(kept_vals) if kept_vals else jnp.zeros((0,), e.dtype)
-        return sparse.BCOO((vals_final, indices), shape=flat_shape,
-                           indices_sorted=False, unique_indices=False)
-
-    # Traced cols — no static prune; emit a flat unbatched BCOO with
-    # `-1` positions masked to (col=0, value=0). Size = prod_B * nrows * k.
-    def _expand_cols_to_batch_jnp(col):
-        if isinstance(col, slice):
-            col = _resolve_col(col, nrows)
-        if isinstance(col, np.ndarray):
-            if col.ndim == 1:
-                return jnp.asarray(np.broadcast_to(col, B + (nrows,)))
-            return jnp.asarray(col)
-        if col.ndim == 1:
-            return jnp.broadcast_to(col, B + (nrows,))
-        return col
-    rows_full = jnp.asarray(global_rows_np)  # (*B, nrows)
-    if k == 1:
-        cols_full = _expand_cols_to_batch_jnp(e.in_cols[0])
-        mask = cols_full >= 0
-        safe_cols = jnp.where(mask, cols_full, 0)
-        data = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
-        indices = jnp.stack(
-            [rows_full.reshape(-1), safe_cols.reshape(-1)], axis=1
-        )
-        return sparse.BCOO((data.reshape(-1), indices), shape=flat_shape,
-                           indices_sorted=False, unique_indices=False)
-    per_band_cols = [_expand_cols_to_batch_jnp(c) for c in e.in_cols]
-    cols_stacked = jnp.stack(per_band_cols, axis=-1)   # (*B, nrows, k)
-    rows_stacked = jnp.broadcast_to(rows_full[..., None], cols_stacked.shape)
-    mask = cols_stacked >= 0
-    safe_cols = jnp.where(mask, cols_stacked, 0)
-    safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
-    indices = jnp.stack(
-        [rows_stacked.reshape(-1), safe_cols.reshape(-1)], axis=1
-    )
-    return sparse.BCOO((safe_vals.reshape(-1), indices), shape=flat_shape,
-                       indices_sorted=False, unique_indices=False)
-
-
-def _ellpack_to_bcoo_keep_batch(e: "BEllpack") -> sparse.BCOO:
-    """Variant of `_ellpack_to_bcoo_batched` that preserves `n_batch`.
-    Emits a batched `sparse.BCOO` of shape
+    """Convert a batched BEllpack to a batched `sparse.BCOO` of shape
     `(*batch_shape, out_size, in_size)` with `n_batch = len(batch_shape)`.
 
-    Unlike `_ellpack_to_bcoo_batched` (which flattens to 2D and prunes
-    sentinels exactly), this keeps the batch rank so downstream rules
-    that reason about `(*output_shape, in_size)` still see the right
-    number of dimensions.
+    Sentinel pruning: batched BCOO requires uniform nse per batch, so a
+    slot can only be dropped when enough batches have a sentinel there.
+    Static-cols path applies the **min-shared-sentinel prune**: stable-
+    argsort puts non-sentinels first within each batch, take the first
+    `uniform_nse = nrows*k - min(sentinels_per_batch)` slots per batch.
+    Residual sentinels in batches whose count exceeds the minimum stay
+    as `(col=0, value=0)` masked entries. Traced-cols path keeps all
+    `nrows * k` slots with sentinel masking.
 
-    Sentinel pruning: batched BCOO requires uniform nse per batch, so
-    a slot can only be dropped when every batch has a sentinel there.
-    When every band has **shared 1D static cols** (the common case —
-    slice / arange / static `np.ndarray`), sentinel positions match
-    across batches and we prune uniformly to `nse = count(non_sentinel)`.
-    When any band has per-batch or traced cols, we fall back to keeping
-    all `nrows * k` slots per batch with sentinels masked as
-    `(col=0, value=0)`.
-
-    Used internally by `_add_rule`'s BCOO-concat fallback when any
-    operand is a batched BEllpack; the flat variant would silently
-    collapse the batch axis into a flat row axis and break downstream
-    transpose / reshape rules that key off operand rank.
+    Previously this helper flattened to an unbatched 2D BCOO
+    `(prod_batch * out, in)` — semantically a 3D→2D collapse. That
+    hid that the walker should have unbatched at its final reshape,
+    and broke downstream rules (e.g. `_transpose_rule`) that key off
+    LinOp rank. The walker's final `reshape (*output, n) → (total, n)`
+    step (`_reshape_rule` batched-BE → unbatched-BE at line 1293 and
+    batched-BCOO → unbatched-BCOO at line 1411) is what now
+    collapses batch rank at the correct point.
     """
     if e.n_batch == 0:
         return _ellpack_to_bcoo(e)

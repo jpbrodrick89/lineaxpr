@@ -50,7 +50,7 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
-    _ellpack_to_bcoo_keep_batch,
+    _ellpack_to_bcoo_batched,
     _resolve_col,
     _to_bcoo,
     _to_dense,
@@ -316,20 +316,22 @@ def _mul_rule(invals, traced, n, **params):
 materialize_rules[lax.mul_p] = _mul_rule
 
 def _linop_matrix_shape(v):
-    """Return the shape used to check operand compatibility in
-    `_add_rule`'s mix-path. For unbatched LinOps this is the natural
-    2D `(out_size, in_size)`. For batched BEllpack this is the
-    flattened shape `(prod(batch_shape) * out_size, in_size)` —
-    matching what `_ellpack_to_bcoo_batched` emits (an unbatched
-    flat BCOO). This lets batched BEllpacks flow through the BCOO-
-    concat path consistently with unbatched operands."""
+    """Return the structural shape used to check operand compatibility
+    in `_add_rule`'s mix-path. Unbatched LinOps → 2D `(out, in)`;
+    batched BEllpack → `(*batch_shape, out_size, in_size)` (matching
+    what `_ellpack_to_bcoo_batched` now emits — a batched BCOO, since
+    the old flat-collapse was removed in commit TODO-0j). BCOO passes
+    through its own shape.
+
+    Returning structural (rather than flattened) shape keeps operand
+    compatibility honest: a batched BE only matches another batched
+    LinOp with the same batch structure, and batched-vs-unbatched
+    mixes fall through to the dense fallback rather than attempting
+    a `_bcoo_concat` across inconsistent `n_batch` values."""
     if isinstance(v, (ConstantDiagonal, Diagonal)):
         return (v.n, v.n)
     if isinstance(v, BEllpack):
-        prod_batch = 1
-        for d in v.batch_shape:
-            prod_batch *= d
-        return (prod_batch * v.out_size, v.in_size)
+        return (*v.batch_shape, v.out_size, v.in_size)
     if isinstance(v, sparse.BCOO):
         return v.shape
     return None
@@ -826,7 +828,7 @@ def _add_rule(invals, traced, n, **params):
                 )
                 if be_match and bcoo_match:
                     converted = [
-                        _ellpack_to_bcoo_keep_batch(v)
+                        _ellpack_to_bcoo_batched(v)
                         if isinstance(v, BEllpack) else v
                         for v in vals
                     ]
@@ -1313,11 +1315,11 @@ def _reshape_rule(invals, traced, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    # Pass-through: BCOO whose flat shape already equals the target
-    # LinOp shape `(*new_sizes, n)`. Happens when batched BEllpacks
-    # were converted to unbatched-flat BCOO by `_ellpack_to_bcoo_batched`
-    # (static-prune path) and the subsequent reshape is the walk's
-    # final aval-flatten — structurally a no-op.
+    # Pass-through: unbatched BCOO whose shape already equals the
+    # target `(*new_sizes, n)`. Rare post-0j (batched BEllpacks now
+    # convert to batched BCOO, not unbatched-flat), but still fires
+    # when an already-unbatched BCOO reaches a final aval-flatten
+    # reshape that's structurally a no-op.
     if (isinstance(op, sparse.BCOO) and op.n_batch == 0
             and len(new_sizes) == 1
             and op.shape == (int(new_sizes[0]), op.shape[-1])):
@@ -1325,8 +1327,7 @@ def _reshape_rule(invals, traced, n, **params):
 
     # Structural path: batched BEllpack → unbatched BEllpack when the
     # reshape fully flattens the leading (batch + out) axes into one
-    # aval dimension. Stays in BE form (was previously emitting flat
-    # BCOO via `_ellpack_to_bcoo_batched`) so downstream ops (`mul`,
+    # aval dimension. Stays in BE form so downstream ops (`mul`,
     # band-widen `add`, `pad`) can carry BE-specific fast paths.
     # Values reshape `(*batch, nrows) → (B*O,)` for k=1 or `(*batch,
     # nrows, k) → (B*O, k)` for k>=2. Per-band cols broadcast to
