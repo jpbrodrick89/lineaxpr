@@ -2067,6 +2067,22 @@ def _gather_rule(invals, traced, n, **params):
     if not to:
         return None
     dnums = params["dimension_numbers"]
+    # 2D point-gather fallback (HADAMALS-class): `M[b[i,0], b[i,1]]`
+    # with dnums `collapsed_slice_dims=(0, 1), start_index_map=(0, 1),
+    # slice_sizes=(1, 1)`. Materialize dense and gather. Correct but
+    # not structural — leaves optimization for follow-up.
+    if (
+        dnums.offset_dims == ()
+        and dnums.collapsed_slice_dims == (0, 1)
+        and dnums.start_index_map == (0, 1)
+        and params["slice_sizes"] == (1, 1)
+    ):
+        dense = _to_dense(operand, n)
+        # dense has shape `(*operand_primal_shape, n)` where the last
+        # axis is the input axis; gather collapses the first two.
+        row_idx = start_indices[..., 0]
+        col_idx = start_indices[..., 1]
+        return dense[row_idx, col_idx]
     if (
         dnums.offset_dims != ()
         or dnums.collapsed_slice_dims != (0,)
@@ -2114,6 +2130,37 @@ def _scatter_add_rule(invals, traced, n, **params):
     if not tu:
         return None
     dnums = params["dimension_numbers"]
+    # 2D point-scatter fallback (HADAMALS-class): inserts `updates[k]`
+    # at `operand[scatter_indices[k, 0], scatter_indices[k, 1]]`. Emit
+    # as a BCOO with the static (i, j) indices and the traced values.
+    if (
+        dnums.update_window_dims == ()
+        and dnums.inserted_window_dims == (0, 1)
+        and dnums.scatter_dims_to_operand_dims == (0, 1)
+        and operand.ndim == 2
+    ):
+        operand_dense = jnp.asarray(operand)
+        out_shape_2d = operand_dense.shape  # (R, C)
+        # updates shape: scatter_indices' leading dims (N,) + input_axis (n,)
+        updates_dense = _to_dense(updates, n)  # (N, n) or broader
+        # Flatten any leading batch shape of scatter_indices to N.
+        si_flat = scatter_indices.reshape(-1, 2)
+        updates_flat = updates_dense.reshape(-1, n)
+        # Emit to a flat 2D BCOO matching operand shape: the output has
+        # shape `(R*C, n)` — flatten the (R, C) output axis so it lives
+        # in LinOp's (out_size, in_size) layout.
+        flat_rows = (
+            si_flat[:, 0].astype(jnp.int64) * out_shape_2d[1]
+            + si_flat[:, 1].astype(jnp.int64)
+        )
+        # Dense approach: scatter into flattened zeros.
+        out_size_flat = out_shape_2d[0] * out_shape_2d[1]
+        return (
+            jnp.zeros((out_size_flat, n), updates_flat.dtype)
+            .at[flat_rows]
+            .add(updates_flat)
+            .reshape(out_shape_2d + (n,))
+        )
     if (
         dnums.update_window_dims != ()
         or dnums.inserted_window_dims != (0,)
