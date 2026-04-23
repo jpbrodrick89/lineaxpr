@@ -38,7 +38,6 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
-    _ellpack_to_bcoo_batched,
     _resolve_col,
     _to_bcoo,
     _to_dense,
@@ -1087,21 +1086,57 @@ def _reshape_rule(invals, traced, n, **params):
             and op.shape == (int(new_sizes[0]), op.shape[-1])):
         return op
 
-    # Structural path: batched BEllpack → unbatched flat BCOO when the
-    # reshape fully flattens the leading (batch + out) axes into a
-    # single aval dimension. Delegates to `_ellpack_to_bcoo_batched`,
-    # which already emits a flat BCOO of shape
-    # `(prod(batch) * out_size, in_size)` via
-    # `flat_row = batch_flat * out_size + row_within_batch`. Handles
-    # the final reshape in LUKSAN11-16's `jnp.stack` chain
-    # (`bid → concat → reshape(flatten)`) so the whole chain stays
-    # structural end-to-end. Target must be rank 1 and the total equal
-    # `prod(batch) * out_size`; otherwise fall through.
+    # Structural path: batched BEllpack → unbatched BEllpack when the
+    # reshape fully flattens the leading (batch + out) axes into one
+    # aval dimension. Stays in BE form (was previously emitting flat
+    # BCOO via `_ellpack_to_bcoo_batched`) so downstream ops (`mul`,
+    # band-widen `add`, `pad`) can carry BE-specific fast paths.
+    # Values reshape `(*batch, nrows) → (B*O,)` for k=1 or `(*batch,
+    # nrows, k) → (B*O, k)` for k>=2. Per-band cols broadcast to
+    # `(*batch, nrows)` if 1D, then reshape to `(B*O,)`. Final BCOO
+    # conversion (if needed) happens at the public-API boundary via
+    # the now-vectorized `_ellpack_to_bcoo`. Target must be rank 1
+    # and the total equal `prod(batch) * out_size`; otherwise fall
+    # through.
     if (isinstance(op, BEllpack) and op.n_batch >= 1
             and len(new_sizes) == 1
             and int(np.prod(op.batch_shape)) * op.out_size
                 == int(new_sizes[0])):
-        return _ellpack_to_bcoo_batched(op)
+        prod_b = int(np.prod(op.batch_shape))
+        total = prod_b * op.out_size
+        if op.k == 1:
+            new_values = op.values.reshape(total)
+        else:
+            new_values = op.values.reshape(total, op.k)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                rs = np.arange(c.start or 0, c.stop or op.nrows,
+                               c.step or 1)
+                c_full = np.broadcast_to(
+                    rs, op.batch_shape + (op.nrows,)
+                )
+                new_in_cols.append(c_full.reshape(total))
+            elif isinstance(c, np.ndarray):
+                if c.ndim == 1:
+                    c_full = np.broadcast_to(
+                        c, op.batch_shape + (op.nrows,)
+                    )
+                    new_in_cols.append(c_full.reshape(total))
+                else:
+                    new_in_cols.append(c.reshape(total))
+            else:
+                ca = jnp.asarray(c)
+                if ca.ndim == 1:
+                    ca = jnp.broadcast_to(
+                        ca, op.batch_shape + (op.nrows,)
+                    )
+                new_in_cols.append(ca.reshape(total))
+        return BEllpack(
+            start_row=0, end_row=total,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=total, in_size=op.in_size,
+        )
     # Singleton-axis-insert on unbatched BEllpack: target
     # `(N, 1, ..., 1)` from aval `(N,)` where `N == op.out_size`. The
     # original rows become separate batches and the trailing size-1
