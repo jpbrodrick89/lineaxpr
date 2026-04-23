@@ -526,23 +526,22 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
         return sparse.BCOO((vals_safe, indices), shape=e.shape)
 
-    # k>=2 path — values is (nrows, k). Dispatch by cols-type and nrows:
+    # k>=2 path — values is (nrows, k). Dispatch by cols-type and k:
     #   * Static cols: always vectorize. Indices are built in pure np
     #     (single compile-time constant through BCOO; the downstream
     #     `_bcoo_concat` np.concatenate path preserves foldability);
-    #     values are a single `.T.reshape(-1)` op regardless of K. This
-    #     matters for wide-K static patterns like NONMSQRT (k=71,
-    #     nrows=4900), where the loop form would emit 71 slice+concat
-    #     HLO ops per call.
-    #   * Traced cols (jnp-backed `in_cols`, e.g. NONCVX where upstream
-    #     rules produced `DynamicJaxprTracer` cols): dispatch by nrows.
-    #     Vectorization via jnp.concatenate of K jnp inputs interacts
-    #     badly with XLA fusion at large nrows (nested concat fused
-    #     into kernel, loses top-level SIMD parallelism → 4× regression
-    #     on NONCVX nrows=5000). At small nrows (LUKSAN pattern), the
-    #     loop form's K jnp.where × K concat is more op-heavy per unit
-    #     work and fusion wins.
-    _BE_TO_BCOO_VEC_NROWS_THRESHOLD = 256
+    #     values are a single `.T.reshape(-1)` op regardless of K.
+    #   * Traced cols: dispatch by k. Small k (k ≤ threshold, NONCVX-
+    #     class): loop form — K per-band jnp.where + K-input concat
+    #     stays at top level where XLA SIMD-parallelizes (measured 4×
+    #     on NONCVX k=3 nrows=5000; confirmed same failure mode at
+    #     small nrows when the K-input pattern gets fusion-trapped).
+    #     Large k (SPARSINE k=6, LUKSAN k=4-6, NONMSQRT k=71): vec
+    #     form — per-op dispatch cost of K jnp.wheres dominates at
+    #     large K; single-shot stack+reshape wins. The boundary was
+    #     chosen to match the empirical split: NONCVX k=3 is the only
+    #     known case needing loop; SPARSINE k=6 and up want vec.
+    _BE_TO_BCOO_LOOP_K_THRESHOLD = 3
     per_band_cols = [_resolve_col(c, nrows) for c in e.in_cols]
     any_traced_cols = any(not isinstance(c, np.ndarray) for c in per_band_cols)
     if not any_traced_cols:
@@ -558,8 +557,8 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
         return sparse.BCOO((jnp.take(vals_flat, keep), indices),
                            shape=e.shape)
-    # Traced cols — gate by nrows.
-    if nrows >= _BE_TO_BCOO_VEC_NROWS_THRESHOLD:
+    # Traced cols — gate by k.
+    if k <= _BE_TO_BCOO_LOOP_K_THRESHOLD:
         # Loop form (old): K per-band jnp.where + K-input concat.
         rows_parts, cols_parts, vals_parts = [], [], []
         for b in range(k):
