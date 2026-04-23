@@ -4,6 +4,75 @@ Empirically-grounded; see `RESEARCH_NOTES.md` for the reasoning.
 
 ## Priority 0 — next up
 
+### 0a. Ensure unimplemented rules lead to test failures, not skips
+
+**Context**: `tests/test_sif2jax_sweep.py` currently catches
+`NotImplementedError` from the walk and silently skips the problem.
+That hides regressions when a previously-working problem starts
+hitting an unsupported primitive path after a rule change.
+
+**Proposal**: drop the try/except around `lineaxpr.bcoo_hessian(f)(y)`
+in the sweep test. `NotImplementedError` should fail the test.
+Problems that are known-broken (missing primitive we haven't
+implemented) get explicit `pytest.mark.skip` entries with a reason,
+so the skip surface is intentional and visible.
+
+### 0b. Expand correctness coverage by running large problems at smaller sizes
+
+**Context**: 77 of 78 current skips are `n > MAX_N=5000`. Most
+problems accept constructor size parameters (e.g.
+`CURLY10(n=10000, k=10)`, `YATP1LS(N=350)`, `TORSION1(q=37)`). We
+could instantiate smaller variants for correctness coverage.
+
+**Proposal**: add a `SIZE_OVERRIDES` dict mapping class names to
+kwargs for smaller constructors. Collect both the default problem
+(for nse manifest + correctness when `n ≤ MAX_N`) and a smaller
+variant (just for correctness when default is too big). Keep the
+original skip for problems without a known size-parameter path.
+
+### 0c. Fix densification in `_transpose_rule`
+
+**Context**: HADAMALS walk instrumentation (2026-04-23) showed the
+very first structural op after `reshape` (`transpose`) eagerly
+densifies:
+
+```
+0: reshape    ConstantDiagonal(400,400) → BEllpack(20, 20, 400)  ✓
+1: transpose  BEllpack(20, 20, 400)     → ArrayImpl(20, 20, 400)  ← dense
+```
+
+The entire downstream matmul/diagonal/scatter chain then runs dense.
+`_transpose_rule` currently does `_to_dense(op, n); lax.transpose(...)`
+unconditionally regardless of op form.
+
+**Proposal**: for BEllpack with batched structure, `transpose` on
+the non-input axes is a structural permutation — swap axes of
+`values` and per-batch `in_cols`, update `batch_shape`/`out_size`.
+No data copy. ~30 LoC.
+
+**Cascade impact**: unblocks the downstream `dot_general` (Q.T @ Q
+linearized) to stay structural via the existing sparse-vs-closure
+matmul path. Benefits any problem with transposed-reshape patterns.
+HADAMALS itself is small (n=20, 1.3MB dense fits in L2) so the
+direct win is modest; larger-dim transpose chains would benefit more.
+
+### 0d. Implement structural 2D point-gather / scatter-add
+
+**Context**: `jnp.diagonal` emits a 2-branch cond (platform
+dispatch) whose active branch uses 2D point-gather /
+scatter-add with `collapsed_slice_dims=(0, 1)`. Current rules
+(`bc46c45`) fall back to dense for correctness.
+
+**Proposal**: structural emit — when operand is BEllpack with batch
+shape, `M[b[i,0], b[i,1]]` is: pick batch=`b[i,0]`, out-idx=`b[i,1]`,
+keep input axis. Emit a new BEllpack with `batch_shape=()`,
+`out_size=N` (gather length), values/cols gathered along the
+(batch, out) axes. Scatter-add is the dual.
+
+**Impact**: benefits HADAMALS-class problems only if `0c` (transpose
+fix) also lands, since the 2D gather currently receives dense input
+because of upstream densification.
+
 ### 1. Deferred `Sum` LinOp for order-independent add-chain bucketing
 
 **Motivation**: the heat-equation test in `tests/test_materialize.py`
