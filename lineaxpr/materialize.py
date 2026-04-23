@@ -346,11 +346,25 @@ def _bcoo_concat(bcoo_vals, shape):
     `lax.add_any` on summed entries.
     """
     n_batch = bcoo_vals[0].n_batch
-    return sparse.BCOO(
-        (jnp.concatenate([v.data for v in bcoo_vals], axis=n_batch),
-         jnp.concatenate([v.indices for v in bcoo_vals], axis=n_batch)),
-        shape=shape,
-    )
+    # Indices path: if every BCOO's indices are concretely np-backed
+    # (the common case — `_ellpack_to_bcoo` builds them via pure np),
+    # concatenate in numpy so the result stays a single compile-time
+    # constant. Using `jnp.concatenate` on K constant DeviceArrays
+    # emits a traced concat that XLA "compresses" into a runtime
+    # `iota + gather` pattern when it detects tile-like regularity
+    # — paying per-call decompression cost that dominates on NONCVX /
+    # LUKSAN-class problems. Fall back to `jnp.concatenate` if any
+    # operand is a tracer.
+    try:
+        indices = np.concatenate(
+            [np.asarray(v.indices) for v in bcoo_vals], axis=n_batch
+        )
+    except (jax.errors.TracerArrayConversionError, TypeError):
+        indices = jnp.concatenate(
+            [v.indices for v in bcoo_vals], axis=n_batch
+        )
+    data = jnp.concatenate([v.data for v in bcoo_vals], axis=n_batch)
+    return sparse.BCOO((data, indices), shape=shape)
 
 
 def _tile_1row_bellpack(ep, target_rows):
