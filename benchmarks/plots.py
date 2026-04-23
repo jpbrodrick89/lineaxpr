@@ -231,6 +231,59 @@ def times_for(idx, method: str) -> dict[str, tuple[float, int]]:
     return {p: v for (p, m), v in idx.items() if m == canon}
 
 
+# Abstract-type filters for publication plots. Loaded lazily so plot
+# invocations without `--problem-filter` don't need sif2jax imported.
+_PROBLEM_TYPES: dict[str, str] | None = None
+
+def _problem_types() -> dict[str, str]:
+    """Map problem class name → abstract-type tag.
+
+    Tags: 'unconstrained', 'bounded-min', 'bounded-quad', 'constrained-quad'.
+    """
+    global _PROBLEM_TYPES
+    if _PROBLEM_TYPES is not None:
+        return _PROBLEM_TYPES
+    try:
+        import sif2jax
+        from sif2jax._problem import (
+            AbstractUnconstrainedMinimisation, AbstractBoundedMinimisation,
+            AbstractBoundedQuadraticProblem, AbstractConstrainedQuadraticProblem,
+        )
+    except ImportError:
+        _PROBLEM_TYPES = {}
+        return _PROBLEM_TYPES
+    _PROBLEM_TYPES = {}
+    for p in sif2jax.problems:
+        name = p.__class__.__name__
+        # Check specific subclasses before their parents.
+        if isinstance(p, AbstractUnconstrainedMinimisation):
+            _PROBLEM_TYPES[name] = "unconstrained"
+        elif isinstance(p, AbstractConstrainedQuadraticProblem):
+            _PROBLEM_TYPES[name] = "constrained-quad"
+        elif isinstance(p, AbstractBoundedQuadraticProblem):
+            _PROBLEM_TYPES[name] = "bounded-quad"
+        elif isinstance(p, AbstractBoundedMinimisation):
+            _PROBLEM_TYPES[name] = "bounded-min"
+    return _PROBLEM_TYPES
+
+
+def filter_problems(
+    data: dict[str, tuple[float, int]],
+    tag: str | None,
+) -> dict[str, tuple[float, int]]:
+    """Keep only problems whose abstract tag matches.
+
+    `tag` values: 'unconstrained', 'bounded-min', 'bounded-quad',
+    'constrained-quad', or None for no filtering. Problems absent from
+    sif2jax's problem list (e.g. out-of-sweep benchmarks) are dropped
+    when a filter is active — they can't be classified.
+    """
+    if tag is None:
+        return data
+    types = _problem_types()
+    return {p: v for p, v in data.items() if types.get(p) == tag}
+
+
 # -------------------------- plot helpers ---------------------------------
 
 
@@ -366,6 +419,15 @@ def main():
                     help="Restrict to a platform dir, e.g. 'Linux' or 'Darwin'. "
                          "Mac/Linux numbers aren't comparable; pick one. "
                          "Defaults to the current OS.")
+    ap.add_argument("--problem-filter", default=None,
+                    choices=[None, "unconstrained", "bounded-min",
+                             "bounded-quad", "constrained-quad"],
+                    help="Restrict plots to problems of a given abstract "
+                         "type. Useful for publication: 'unconstrained' "
+                         "drops the 176 bounded/constrained problems from "
+                         "the plot, leaving just the ~201 true "
+                         "unconstrained-minimisation benchmarks. Output "
+                         "filename includes the filter tag.")
     args = ap.parse_args()
 
     global _PLATFORM_FILTER
@@ -392,13 +454,19 @@ def main():
     baseline_times = times_for(idx, baseline_method)
     baseline_label = METHOD_STYLE.get(baseline_method, {}).get("label", baseline_method)
 
+    # Apply problem filter (post-method-split so each method-dict shrinks).
+    if args.problem_filter is not None:
+        runs = {m: filter_problems(d, args.problem_filter) for m, d in runs.items()}
+        baseline_times = filter_problems(baseline_times, args.problem_filter)
+
     PLOT_DIR.mkdir(exist_ok=True)
     commit = _commit_from_lx(lx)
     counter = _counter_from_lx(lx)
-    # Default stem: NNNN_<commit>_<tag> — matches the bench JSON's
-    # naming scheme so it's obvious which bench a plot came from
-    # (and NNNN tie-breaks between multiple runs of the same commit).
-    stem = args.name or f"{counter}_{commit}_{args.tag}"
+    # Default stem: NNNN_<commit>_<tag>[_<filter>] — `_<filter>` suffix
+    # added when a problem-filter is active, so publication plots don't
+    # collide with the regression-tracking plots.
+    filter_suffix = f"_{args.problem_filter}" if args.problem_filter else ""
+    stem = args.name or f"{counter}_{commit}_{args.tag}{filter_suffix}"
 
     # Status summary to stderr.
     for m, t in runs.items():
@@ -406,12 +474,14 @@ def main():
     print(f"  baseline {baseline_method:20s}: n_problems={len(baseline_times)}")
 
     kinds = (["abs", "ratio", "scatter"] if args.kind == "all" else [args.kind])
+    title_filter = (f" [{args.problem_filter}]"
+                    if args.problem_filter else "")
 
     for kind in kinds:
         fig, ax = plt.subplots(figsize=(10, 6))
         if kind == "abs":
             plot_inverse_cdf_abs(ax, runs)
-            ax.set_title(f"{counter} · Hessian extraction — absolute runtime (sorted), commit {commit}")
+            ax.set_title(f"{counter} · Hessian extraction{title_filter} — absolute runtime (sorted), commit {commit}")
             path = Path(args.out_dir) / f"{stem}_abs.png"
         elif kind == "ratio":
             if not baseline_times:
@@ -419,7 +489,7 @@ def main():
                 plt.close(fig)
                 continue
             plot_inverse_cdf_ratio(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"{counter} · Hessian extraction — runtime / {baseline_label} "
+            ax.set_title(f"{counter} · Hessian extraction{title_filter} — runtime / {baseline_label} "
                          f"(sorted), commit {commit}")
             path = Path(args.out_dir) / f"{stem}_ratio_vs_{baseline_method}.png"
         elif kind == "scatter":
@@ -428,7 +498,7 @@ def main():
                 plt.close(fig)
                 continue
             plot_scatter(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"{counter} · Hessian extraction — {baseline_label} vs method, commit {commit}")
+            ax.set_title(f"{counter} · Hessian extraction{title_filter} — {baseline_label} vs method, commit {commit}")
             path = Path(args.out_dir) / f"{stem}_scatter_vs_{baseline_method}.png"
         fig.tight_layout()
         fig.savefig(path, dpi=150, bbox_inches="tight")
