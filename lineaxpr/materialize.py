@@ -1758,6 +1758,47 @@ def _split_rule(invals, traced, n, **params):
         return None
     sizes = params["sizes"]
     axis = params["axis"]
+    # Structural path: batched BE split along the out-axis (== n_batch).
+    # Slice values and each band's cols along the out axis; keep batch_shape.
+    # Requires full out coverage so each chunk's rows map to [0, sz) cleanly.
+    if (isinstance(operand, BEllpack)
+            and operand.n_batch >= 1
+            and axis == operand.n_batch
+            and operand.start_row == 0
+            and operand.end_row == operand.out_size):
+        nb = operand.n_batch
+        out = []
+        start = 0
+        for sz in sizes:
+            sz_i = int(sz)
+            end = start + sz_i
+            val_slc = [slice(None)] * operand.values.ndim
+            val_slc[nb] = slice(start, end)
+            new_values = operand.values[tuple(val_slc)]
+            new_in_cols = []
+            for c in operand.in_cols:
+                arr = c
+                if isinstance(arr, np.ndarray):
+                    if arr.ndim == 1:
+                        new_in_cols.append(arr[start:end])
+                    else:
+                        slc = [slice(None)] * arr.ndim
+                        slc[nb] = slice(start, end)
+                        new_in_cols.append(arr[tuple(slc)])
+                else:
+                    arr_j = jnp.asarray(arr)
+                    if arr_j.ndim == 1:
+                        new_in_cols.append(arr_j[start:end])
+                    else:
+                        slc = [slice(None)] * arr_j.ndim
+                        slc[nb] = slice(start, end)
+                        new_in_cols.append(arr_j[tuple(slc)])
+            out.append(BEllpack(
+                0, sz_i, tuple(new_in_cols), new_values,
+                sz_i, operand.in_size, batch_shape=operand.batch_shape,
+            ))
+            start = end
+        return out
     # Structural path: split along output axis 0 (the "out_size" dim).
     # Promote (Constant)Diagonal/BEllpack → BCOO and split each chunk by
     # masking entries whose row falls outside its range.
