@@ -109,20 +109,47 @@ massively outweighed by LUKSAN 11-15 wins (3-6×).
 **Context**: the `_mul_rule` batch-expand + `_reduce_sum_rule`
 smart-densify combo (ac3c7a6) recovered DMN15102LS (13% improvement
 isolated vs 094627a) but DMN15103LS still shows +8% isolated
-(51 → 55 ms). Sibling problem; same objective structure as DMN15102
-but different `n_peaks` and `n_data`.
+(51 → 55 ms).
 
-Likely cause: smart-densify threshold `k >= in_size` is a binary gate.
-DMN15103 has different shape ratios that may hit the BE path slightly
-past the threshold (e.g., k just below in_size so stays BE) or the
-batch-expand produces a shape where a downstream op doesn't densify
-as expected.
+**DMN15103 vs DMN15102 — objective diff**: DMN15102 has 2 strided
+slices `y[0::2], y[1::2]` (weights, widths — positions is closure).
+DMN15103 has 3 strided slices `y[0::3], y[1::3], y[2::3]` (weights,
+widths, positions). The extra `positions` variable adds a
+`(x_expanded - pos_expanded)` subtraction in the objective — a new
+traced subtract-from-closure path.
 
-**Proposal**: instrument DMN15103 the way we did DMN15102 (form
-transition log); see where the extra 4ms goes. Possibly needs a
-tighter threshold (densify at `k >= in_size * 0.8`?) or densify at
-an additional rule emission point. Low priority — 4ms regression
-dwarfed by wider session gains.
+**Diagnosis** (walk trace, 2026-04-23):
+
+| Step            | 094627a form           | a743104 form             |
+| --------------- | ---------------------- | ------------------------ |
+| 15: add(BE, BE) | → dense (4643, 33, 99) | → dense (same)           |
+| **20: div**     | → dense                | → **BE kept structural** |
+| **35: mul**     | → dense                | → BE                     |
+| **36: add_any** | n/a (already dense)    | → dense                  |
+
+At 094627a, div densifies and rest of walk is dense. At a743104,
+my `_mul_rule` batch-expand path keeps div/mul structural through
+steps 20–35, but step 36 `add_any(BE, dense_sibling)` densifies
+anyway — so the 15 intermediate BE ops are pure overhead (+4 ms).
+
+**Root**: step 15 `add(BE(batch=(4643,)), BE(batch=(1,))) → dense`
+happens before step 20 because `_add_rule` lacks a batch-broadcast
+path (the `_mul_rule` analog). The resulting dense at step 15 later
+collides with my structural BE at step 36 in an add_any, forcing
+dense-output regardless.
+
+**Options**:
+
+1. Add batch-broadcast to `_add_rule` so step 15 stays BE. Would
+   unlock the whole walk staying BE, but risks DMN15102-style
+   `k >= in_size` blowup if downstream accumulates bands.
+
+2. Gate `_mul_rule` batch-expand on whether a sibling operand in
+   the walk env is already dense at matching shape — skip structural
+   if the downstream is destined to densify. Requires walker-level
+   look-ahead or env introspection.
+
+Low priority — 4 ms regression dwarfed by session's wider wins.
 
 ### 0d. Implement structural 2D point-gather / scatter-add
 
