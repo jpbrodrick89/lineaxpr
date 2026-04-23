@@ -1532,13 +1532,34 @@ def _concatenate_rule(invals, traced, n, **params):
                             new_in_cols.append(jnp.concatenate(
                                 [jnp.asarray(c) for c in parts], axis=dimension))
                     else:
-                        # 1D shared cols — all identical for a batch-axis
-                        # concat to be structural. Fall back if they differ.
+                        # All 1D cols. Two sub-cases:
+                        #   - All identical across operands: keep as 1D
+                        #     (most efficient — broadcasts across batches).
+                        #   - Differ: broadcast each to `(batch_shape[dim],
+                        #     nrows)` and concatenate along `dim`, giving
+                        #     per-batch 2D cols of shape `(sum_batch,
+                        #     nrows)`. Closes LUKSAN17LS's
+                        #     `concat(4 × BE(bs=(1,), out=49), dim=0)`
+                        #     where each operand has different strided
+                        #     1D cols (0,2,4,…; 1,3,5,…; etc.) — this
+                        #     previously fell through to dense fallback.
                         if all(np.array_equal(np.asarray(c), np.asarray(parts[0])) for c in parts[1:]):
                             new_in_cols.append(parts[0])
                         else:
-                            new_in_cols = None
-                            break
+                            norm = []
+                            for v, c in zip(invals, parts):
+                                shape = v.batch_shape + (v.nrows,)
+                                if isinstance(c, np.ndarray):
+                                    norm.append(np.broadcast_to(c, shape))
+                                else:
+                                    norm.append(jnp.broadcast_to(c, shape))
+                            if all(isinstance(c, np.ndarray) for c in norm):
+                                new_in_cols.append(
+                                    np.concatenate(norm, axis=dimension))
+                            else:
+                                new_in_cols.append(jnp.concatenate(
+                                    [jnp.asarray(c) for c in norm],
+                                    axis=dimension))
                 if new_in_cols is not None:
                     new_batch = list(invals[0].batch_shape)
                     new_batch[dimension] = sum(v.batch_shape[dimension] for v in invals)
