@@ -1137,44 +1137,6 @@ def _reshape_rule(invals, traced, n, **params):
             in_cols=tuple(new_in_cols), values=new_values,
             out_size=total, in_size=op.in_size,
         )
-    # Unflatten on unbatched BEllpack: target `(A, B)` from aval `(N,)`
-    # where `N == op.out_size == A * B` and B > 1. Inverse of the
-    # batch+out flatten emit above. Each flat row i becomes (batch_idx,
-    # local_row) = (i // B, i % B); `values` and each band's cols
-    # reshape directly from `(N,)` to `(A, B)` (or `(A, B, k)` for
-    # values at k>=2). Closes LUKSAN11-15LS's `reshape → mul → reshape`
-    # chain where the intermediate (198,) flat BE was previously
-    # densified at the unflatten step.
-    if (isinstance(op, BEllpack) and op.n_batch == 0
-            and len(new_sizes) == 2
-            and int(new_sizes[0]) * int(new_sizes[1]) == op.out_size
-            and int(new_sizes[1]) > 1
-            and op.start_row == 0 and op.end_row == op.out_size):
-        A = int(new_sizes[0])
-        B_out = int(new_sizes[1])
-        new_batch = (A,)
-        # Values: (N,) → (A, B) for k=1, (N, k) → (A, B, k) for k>=2.
-        if op.k == 1:
-            new_values = op.values.reshape(A, B_out)
-        else:
-            new_values = op.values.reshape(A, B_out, op.k)
-        new_in_cols = []
-        for c in op.in_cols:
-            if isinstance(c, slice):
-                # Slice covers [0, N); reshape to per-(batch, row) by
-                # resolving then reshaping.
-                rs = np.arange(c.start or 0, c.stop or op.nrows, c.step or 1)
-                new_in_cols.append(rs.reshape(A, B_out))
-            elif isinstance(c, np.ndarray):
-                new_in_cols.append(c.reshape(A, B_out))
-            else:
-                new_in_cols.append(jnp.asarray(c).reshape(A, B_out))
-        return BEllpack(
-            start_row=0, end_row=B_out,
-            in_cols=tuple(new_in_cols), values=new_values,
-            out_size=B_out, in_size=op.in_size,
-            batch_shape=new_batch,
-        )
     # Singleton-axis-insert on unbatched BEllpack: target
     # `(N, 1, ..., 1)` from aval `(N,)` where `N == op.out_size`. The
     # original rows become separate batches and the trailing size-1
