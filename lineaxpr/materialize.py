@@ -16,6 +16,18 @@ The LinOp classes (`ConstantDiagonal`, `Diagonal`, `BEllpack`; see
 `_base.py`) let common patterns (scalar · I, vector-scaled I, sparse
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
+
+## Known gap: non-finite closures in structural paths
+
+Our structural rules assume `0 * x = 0` for any `x`. This is correct
+when `x` is finite but wrong for `x ∈ {inf, nan}` (where `0 * inf = nan`).
+When a mul/div/add structural rule emits a BEllpack/BCOO that skips
+zero positions, it silently drops positions where the closure operand
+has `inf`/`nan`. CUTEst objectives don't produce non-finite intermediate
+values in practice, so this is a latent correctness gap rather than an
+observed issue. A fully-general fix would require reading the closure
+for non-finite entries (essentially densifying), losing the structural
+optimisation — not worth it unless the gap bites.
 """
 
 from __future__ import annotations
