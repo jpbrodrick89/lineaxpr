@@ -198,6 +198,51 @@ def _mul_rule(invals, traced, n, **params):
         return traced_op.scale_per_out_row(scale)
     if scale_ok and isinstance(traced_op, sparse.BCOO):
         return _bcoo_scale_per_out_row(traced_op, scale)
+    # Batch-expand path: scale broadcasts same-ndim as traced_var_shape
+    # but expands one or more size-1 batch axes of the BE (dims where BE
+    # has 1 and scale has K > 1). Structurally: new BEllpack with
+    # enlarged batch_shape, values broadcast-mul'd. Cols pattern
+    # preserved. Motivation: DMN15102LS's `BE(batch=(1,), out=33, k=2) /
+    # closure(4643, 33)` should stay structural (nse per batch preserved
+    # by mul-sparsity-preservation).
+    if (isinstance(traced_op, BEllpack)
+            and hasattr(scale, "shape")
+            and len(scale.shape) == len(traced_var_shape)
+            and all(s == t or t == 1 for s, t in
+                    zip(scale.shape, traced_var_shape))
+            and scale.shape[-1] == traced_var_shape[-1]):
+        new_batch = scale.shape[:-1]
+        scale_arr = jnp.asarray(scale)
+        if traced_op.k == 1:
+            new_values = scale_arr * traced_op.values
+        else:
+            new_values = scale_arr[..., None] * traced_op.values
+        new_in_cols = []
+        can_emit = True
+        for c in traced_op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif isinstance(c, np.ndarray):
+                if c.ndim == 1:
+                    new_in_cols.append(c)
+                elif c.shape[:len(traced_op.batch_shape)] == traced_op.batch_shape \
+                        and all(t == 1 for t in traced_op.batch_shape):
+                    new_in_cols.append(
+                        np.broadcast_to(c, new_batch + c.shape[-1:]).copy()
+                    )
+                else:
+                    can_emit = False
+                    break
+            else:
+                can_emit = False
+                break
+        if can_emit:
+            return BEllpack(
+                start_row=traced_op.start_row, end_row=traced_op.end_row,
+                in_cols=tuple(new_in_cols), values=new_values,
+                out_size=traced_op.out_size, in_size=traced_op.in_size,
+                batch_shape=new_batch,
+            )
     # Out-size-broadcast path: scale expands a size-1 out axis to
     # `scale.shape[-1]`. Triggered by the NONMSQRT-class pattern where
     # an aval-(B, 1) BEllpack (from `bid`-trailing-singleton + slice /
@@ -342,6 +387,27 @@ def _bellpack_unbatch(bep):
             batch_shape=(),
         ))
     return tuple(result)
+
+
+def _densify_if_wider_than_dense(op, n):
+    """Densify a BEllpack whose k ≥ in_size — no storage win over dense.
+
+    When k ≥ in_size, the BE stores one band per input column (or more),
+    and `values.shape = (*batch, out, k)` already equals dense storage
+    `(*batch, out, in_size)`. Any downstream rule that needs to compute
+    on it pays BE's bookkeeping overhead for no sparsity benefit. This
+    helper is called at emission points in rules that can grow k
+    unboundedly (reduce_sum out-axis, add band-widening) to prevent BE
+    from carrying effectively-dense state through the rest of the walk.
+
+    Motivation: DMN15102LS regressed 1.25× (2026-04-23 sweep) because
+    `reduce_sum` out-axis emitted `k=in_size=66` BE that then flowed
+    through 9 downstream adds and a pad, where a dense path would have
+    been a single scatter-add.
+    """
+    if isinstance(op, BEllpack) and op.k >= op.in_size:
+        return _to_dense(op, n)
+    return op
 
 
 def _bcoo_concat(bcoo_vals, shape):
@@ -1539,16 +1605,16 @@ def _reduce_sum_rule(invals, traced, n, **params):
                     dedup_values = jnp.zeros(
                         (B, n_groups), dtype=new_values.dtype
                     ).at[:, assigned].add(new_values)
-                    return BEllpack(
+                    return _densify_if_wider_than_dense(BEllpack(
                         start_row=0, end_row=B,
                         in_cols=tuple(group_cols), values=dedup_values,
                         out_size=B, in_size=op.in_size,
-                    )
-                return BEllpack(
+                    ), n)
+                return _densify_if_wider_than_dense(BEllpack(
                     start_row=0, end_row=B,
                     in_cols=tuple(new_in_cols), values=new_values,
                     out_size=B, in_size=op.in_size,
-                )
+                ), n)
     # BEllpack row-sum: accumulate per-column values via scatter-add.
     # Returns a 1D (in_size,) ndarray linear form — the Jacobian
     # coefficients of the resulting scalar-aval variable. Avoids the
