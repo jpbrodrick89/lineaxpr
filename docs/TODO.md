@@ -56,32 +56,37 @@ matmul path. Benefits any problem with transposed-reshape patterns.
 HADAMALS itself is small (n=20, 1.3MB dense fits in L2) so the
 direct win is modest; larger-dim transpose chains would benefit more.
 
-### 0d-pre. `_add_rule`: BE + dense via sparse scatter-add (not BE.todense)
+### 0d-pre. Investigate DMN15102LS regression source (not scatter-add)
 
 **Context**: 094627a sweep (2026-04-23) flagged DMN15102LS as
-regressed 1.25× (+4.5 ms) vs baseline. Bisect attributed it to
-commit 93e8c3f (step 2, reshape emit BE instead of BCOO).
+regressed 1.25× (+4.5 ms, 20 → 24.5 ms) vs baseline. Bisect
+attributed it to commit 93e8c3f (step 2, reshape emit BE instead
+of BCOO).
 
-Walk instrumentation: baseline had 6× dense+dense add_any (already
-dense by the time add_any runs). Current has 6× BE+dense → dense
-via `_add_rule`'s fallback, all at shape (4643, 33, 66) or
-(1, 33, 66) — unfolds BE's 153 K nonzeros into 10 M-element zeros
-via `_todense_batched` per call.
+**Investigation**: rule invocation counts are **identical** between
+baseline and current (25 mul, 10 add_any, 5 reduce_sum, 4
+broadcast_in_dim, etc.). Walker does the exact same work. Only
+the intermediate LinOp forms differ.
 
-DMN's Hessian is effectively dense, so the final result is correct
-either way — step 2 just moved the densification location, and the
-current BE→dense path is slower than baseline's early-densify path.
+Walk shows 6× add_any BE+dense→dense via `_add_rule`'s fallback
+at current, vs baseline's mix (6× dense+dense, 2× dense+BE→dense,
+1× BE+BE→BE, 1× BE+dense→dense). All shapes `(4643, 33, 66)` or
+`(1, 33, 66)`.
 
-**Proposal**: in `_add_rule`, when one operand is a batched BEllpack
-and the other is dense (ArrayImpl) of matching shape, avoid
-`BE._todense_batched()`. Either:
-(a) Convert BE → BCOO (structural, cheap) then BCOO + dense via
-scatter-add on indices. XLA-optimized path.
-(b) Direct scatter-add: `dense.at[batch_idx, row, in_col].add(BE.values)`
-using the BE's static cols. Skip BCOO intermediate.
+**Microbench ruled out scatter-add fix**: `BE.todense() + dense`
+vs `dense.at[indices].add(BE.values)` — both 3273 µs at shape
+(4643, 33, 66). XLA fuses the zeros+scatter+add into an efficient
+single op. Swapping the walker path wouldn't help.
 
-Either keeps the final result dense but avoids the full 10M-zero
-scatter. Expected to recover DMN15102LS ~1.25× regression.
+**Probable root cause**: XLA emits different HLO based on the
+intermediate LinOp shapes/forms flowing through jit tracing.
+Baseline's earlier-densification pattern may fuse better than
+current's late-densification pattern.
+
+**Status**: no trivial fix; needs HLO-level diff between baseline
+and current to identify the specific XLA optimization gap. Low
+priority — single problem, ~25% slowdown on a 20ms baseline,
+massively outweighed by LUKSAN 11-15 wins (3-6×).
 
 ### 0d. Implement structural 2D point-gather / scatter-add
 
