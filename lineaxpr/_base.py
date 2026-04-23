@@ -526,60 +526,39 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
         return sparse.BCOO((vals_safe, indices), shape=e.shape)
 
-    # k>=2 path — values is (nrows, k). Dispatch by nrows:
-    #   * Large nrows (>= threshold): emit K per-band values slices
-    #     (loop form). Downstream K*Ncalls top-level concat inputs let
-    #     XLA SIMD-parallelize (NONCVX pattern: 3 calls × nrows=5000,
-    #     `outer_dimension_partitions=["2"]` on the concat). Collapsing
-    #     to one merged slice forces XLA to fuse concat into the values
-    #     kernel, losing parallelism (measured 4× regression).
-    #   * Small nrows (< threshold): vectorize — values as single
-    #     `.reshape(-1)`, rows via np.tile, cols via np.concatenate.
-    #     Per-op dispatch cost dominates for tiny slices; fusion wins
-    #     (LUKSAN pattern: 5 calls × nrows=32, k=4-6).
-    # Indices are ALWAYS built via pure np so the downstream
-    # `_bcoo_concat` (materialize.py) can `np.concatenate` them into
-    # one compile-time constant, avoiding XLA iota-decomposition.
+    # k>=2 path — values is (nrows, k). Dispatch by cols-type and nrows:
+    #   * Static cols: always vectorize. Indices are built in pure np
+    #     (single compile-time constant through BCOO; the downstream
+    #     `_bcoo_concat` np.concatenate path preserves foldability);
+    #     values are a single `.T.reshape(-1)` op regardless of K. This
+    #     matters for wide-K static patterns like NONMSQRT (k=71,
+    #     nrows=4900), where the loop form would emit 71 slice+concat
+    #     HLO ops per call.
+    #   * Traced cols (jnp-backed `in_cols`, e.g. NONCVX where upstream
+    #     rules produced `DynamicJaxprTracer` cols): dispatch by nrows.
+    #     Vectorization via jnp.concatenate of K jnp inputs interacts
+    #     badly with XLA fusion at large nrows (nested concat fused
+    #     into kernel, loses top-level SIMD parallelism → 4× regression
+    #     on NONCVX nrows=5000). At small nrows (LUKSAN pattern), the
+    #     loop form's K jnp.where × K concat is more op-heavy per unit
+    #     work and fusion wins.
     _BE_TO_BCOO_VEC_NROWS_THRESHOLD = 256
     per_band_cols = [_resolve_col(c, nrows) for c in e.in_cols]
     any_traced_cols = any(not isinstance(c, np.ndarray) for c in per_band_cols)
     if not any_traced_cols:
-        if nrows < _BE_TO_BCOO_VEC_NROWS_THRESHOLD:
-            # Vectorized for small nrows: values .T.reshape(-1),
-            # indices via pure np band-major.
-            rows_flat = np.concatenate([rows_1d] * k)
-            cols_flat = np.concatenate(per_band_cols)
-            vals_flat = e.values.T.reshape(-1)
-            mask = cols_flat >= 0
-            if mask.all():
-                indices = np.stack([rows_flat, cols_flat], axis=1)
-                return sparse.BCOO((vals_flat, indices), shape=e.shape)
-            keep = np.nonzero(mask)[0]
-            indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
-            return sparse.BCOO((jnp.take(vals_flat, keep), indices),
-                               shape=e.shape)
-        # Loop form (large nrows): byte-for-byte old code.
-        kept_rows, kept_cols, kept_vals = [], [], []
-        for b in range(k):
-            cols_b = per_band_cols[b]
-            if (cols_b >= 0).all():
-                kept_rows.append(rows_1d)
-                kept_cols.append(cols_b)
-                kept_vals.append(e.values[:, b])
-            else:
-                keep = np.nonzero(cols_b >= 0)[0]
-                kept_rows.append(rows_1d[keep])
-                kept_cols.append(cols_b[keep])
-                kept_vals.append(jnp.take(e.values[:, b], keep))
-        rows_flat = np.concatenate(kept_rows)
-        cols_flat = np.concatenate(kept_cols)
-        indices = np.stack([rows_flat, cols_flat], axis=1)
-        vals_flat = jnp.concatenate(kept_vals)
-        return sparse.BCOO((vals_flat, indices), shape=e.shape)
-    # Traced cols — also dispatch by nrows (same SIMD-vs-fusion
-    # tradeoff as the static branch; NONCVX hits this path with
-    # nrows=5000 and K=3, where the loop form's top-level K-input
-    # concat lets XLA SIMD-parallelize).
+        # Static cols: always vectorize (any K, any nrows).
+        rows_flat = np.concatenate([rows_1d] * k)
+        cols_flat = np.concatenate(per_band_cols)
+        vals_flat = e.values.T.reshape(-1)
+        mask = cols_flat >= 0
+        if mask.all():
+            indices = np.stack([rows_flat, cols_flat], axis=1)
+            return sparse.BCOO((vals_flat, indices), shape=e.shape)
+        keep = np.nonzero(mask)[0]
+        indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
+        return sparse.BCOO((jnp.take(vals_flat, keep), indices),
+                           shape=e.shape)
+    # Traced cols — gate by nrows.
     if nrows >= _BE_TO_BCOO_VEC_NROWS_THRESHOLD:
         # Loop form (old): K per-band jnp.where + K-input concat.
         rows_parts, cols_parts, vals_parts = [], [], []
