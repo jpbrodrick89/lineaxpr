@@ -623,12 +623,12 @@ def _add_rule(invals, traced, n, **params):
                         new_values = group_values[0]
                     else:
                         new_values = jnp.stack(group_values, axis=-1)
-                    return BEllpack(
+                    return _densify_if_wider_than_dense(BEllpack(
                         first.start_row, first.end_row,
                         tuple(group_cols), new_values,
                         first.out_size, first.in_size,
                         batch_shape=first.batch_shape,
-                    )
+                    ), n)
             # Different cols: widen bands. Values shape for n_batch=0 is
             # (nrows,) for k=1 or (nrows, k) for k>=2; concat along the
             # band axis (axis=1, i.e. the k dim). For batched values
@@ -645,10 +645,11 @@ def _add_rule(invals, traced, n, **params):
                          else jnp.expand_dims(v.values, band_axis)
                          for v in vals]
                 new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
-            return BEllpack(first.start_row, first.end_row,
-                           new_in_cols, new_values,
-                           first.out_size, first.in_size,
-                           batch_shape=first.batch_shape)
+            return _densify_if_wider_than_dense(BEllpack(
+                first.start_row, first.end_row,
+                new_in_cols, new_values,
+                first.out_size, first.in_size,
+                batch_shape=first.batch_shape), n)
 
     # Mix of {ConstantDiagonal, Diagonal, BEllpack} at matching (n, n) shape:
     # promote diagonals to BEllpack bands over the full row range and

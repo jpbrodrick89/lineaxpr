@@ -196,22 +196,33 @@ def test_add_rule_absorbs_diagonal_into_ellpack():
 
 def test_add_rule_absorbs_constant_diagonal_into_ellpack():
     """ConstantDiagonal + Diagonal + BEllpack → BEllpack with CD and D bands
-    merged (both carry `cols=arange(3)`) and E's two distinct bands preserved.
+    merged (both carry `cols=arange(n)`) and E's two distinct bands preserved.
     The partial-match band dedup in `_add_rule` is a strict generalisation of
-    the `same_cols` fast path — same dense output, fewer stored bands."""
+    the `same_cols` fast path — same dense output, fewer stored bands.
+
+    Uses n=5 (not n=3) so the post-dedup `k=3 < in_size=5`, keeping the
+    result as a structural BEllpack. At n=3 (k=in_size) the
+    `_densify_if_wider_than_dense` helper would return dense — still
+    correct but defeats this test's structural-emit verification.
+    """
     from lineaxpr import BEllpack
     from lineaxpr.materialize import _add_rule
 
-    CD = ConstantDiagonal(3, 0.5)
-    D = Diagonal(jnp.asarray([1.0, 2.0, 3.0]))
-    E = BEllpack(0, 3, (np.array([1, 0, 2]), np.array([2, 2, 0])),
-                jnp.asarray([[5.0, 50.0], [6.0, 60.0], [7.0, 70.0]]), 3, 3)
-    result = _add_rule([CD, D, E], [True, True, True], n=3)
+    CD = ConstantDiagonal(5, 0.5)
+    D = Diagonal(jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0]))
+    E = BEllpack(0, 5,
+                (np.array([1, 0, 2, 3, 4]), np.array([2, 2, 0, 1, 3])),
+                jnp.asarray([[5.0, 50.0], [6.0, 60.0], [7.0, 70.0],
+                             [8.0, 80.0], [9.0, 90.0]]),
+                5, 5)
+    result = _add_rule([CD, D, E], [True, True, True], n=5)
     assert isinstance(result, BEllpack)
-    # Dedup: CD and D both have cols=arange(3) → merge into 1 band with
-    # values [1.5, 2.5, 3.5]. E's two cols are distinct → stay as 2 bands.
+    # Dedup: CD and D both have cols=arange(5) → merge into 1 band with
+    # values [1.5, 2.5, 3.5, 4.5, 5.5]. E's two cols are distinct → 2 bands.
     assert result.k == 3
-    expected = 0.5 * np.eye(3) + np.diag([1.0, 2.0, 3.0]) + np.asarray(E.todense())
+    expected = (0.5 * np.eye(5)
+                + np.diag([1.0, 2.0, 3.0, 4.0, 5.0])
+                + np.asarray(E.todense()))
     np.testing.assert_allclose(np.asarray(result.todense()), expected)
 
 
