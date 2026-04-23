@@ -79,28 +79,39 @@ def _block(out):
     return out
 
 
-def _compile(fn, primal):
+def _compile(fn, primal, strict: bool = False):
     """Compile `fn.lower(primal).compile()` — helper for _make.
 
     Skips (not fails) if compile or warmup exceeds COMPILE_TIMEOUT_S to
     avoid hanging the whole bench on pathological problems.
+
+    `strict=True` (lineaxpr extractors) lets walk-level exceptions
+    propagate so silent walk-failures don't disappear from the bench —
+    compile-timeout stays a skip because it's a legitimate size gate.
     """
     try:
         t0 = time.perf_counter()
         compiled = fn.lower(primal).compile()
-        compile_s = time.perf_counter() - t0
-        if compile_s > COMPILE_TIMEOUT_S:
-            pytest.skip(f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
-                        f"({compile_s:.1f}s)")
+    except Exception:
+        if strict:
+            raise
+        return None
+    compile_s = time.perf_counter() - t0
+    if compile_s > COMPILE_TIMEOUT_S:
+        pytest.skip(f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                    f"({compile_s:.1f}s)")
+    try:
         t0 = time.perf_counter()
         _block(compiled(primal))
-        warmup_s = time.perf_counter() - t0
-        if warmup_s > COMPILE_TIMEOUT_S:
-            pytest.skip(f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
-                        f"({warmup_s:.1f}s)")
-        return compiled
     except Exception:
+        if strict:
+            raise
         return None
+    warmup_s = time.perf_counter() - t0
+    if warmup_s > COMPILE_TIMEOUT_S:
+        pytest.skip(f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+                    f"({warmup_s:.1f}s)")
+    return compiled
 
 
 def _make(extractor_kind, problem):
@@ -133,14 +144,14 @@ def _make(extractor_kind, problem):
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y)
-        return _compile(fn, problem.y0)
+        return _compile(fn, problem.y0, strict=True)
 
     if extractor_kind == "bcoo":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y, format="bcoo")
-        return _compile(fn, problem.y0)
+        return _compile(fn, problem.y0, strict=True)
 
     if extractor_kind == "asdex_bcoo":
         if not HAS_ASDEX: return None

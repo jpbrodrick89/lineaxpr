@@ -236,6 +236,102 @@ def test_ellpack_pad_rows_negative_truncates_bottom():
     np.testing.assert_array_equal(np.asarray(padded.todense()), expected)
 
 
+def test_ellpack_transpose_unbatched_identity():
+    # Permutation (0,) is a no-op on an unbatched BEllpack.
+    e = _simple_ellpack()
+    t = e.transpose((0,))
+    np.testing.assert_array_equal(
+        np.asarray(t.todense()), _ellpack_expected_dense()
+    )
+
+
+def test_ellpack_transpose_batched_batch_only_permutation():
+    # Two-batch-dim BEllpack, swap the two batch axes. Out axis stays last.
+    B0, B1, O, N = 2, 3, 4, 5
+    cols = np.array([0, 2, 3, 1])
+    values = jnp.arange(B0 * B1 * O, dtype=jnp.float64).reshape(B0, B1, O) + 1.0
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B0, B1),
+    )
+    t = ep.transpose((1, 0, 2))
+    assert t.shape == (B1, B0, O, N)
+    expected = np.transpose(np.asarray(ep.todense()), (1, 0, 2, 3))
+    np.testing.assert_array_equal(np.asarray(t.todense()), expected)
+
+
+def test_ellpack_transpose_batched_out_to_batch_swap():
+    # HADAMALS-shaped: swap (batch, out) with permutation=(1, 0).
+    B, O, N = 3, 4, 5
+    cols = np.array([0, 2, 3, 1])
+    values = jnp.arange(B * O, dtype=jnp.float64).reshape(B, O) + 1.0
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    t = ep.transpose((1, 0))
+    assert t.shape == (O, B, N)
+    expected = np.transpose(np.asarray(ep.todense()), (1, 0, 2))
+    np.testing.assert_array_equal(np.asarray(t.todense()), expected)
+
+
+def test_ellpack_transpose_compressed_row_range():
+    # Transpose when start_row > 0 / end_row < out_size — padding kicks in.
+    B, O, N = 2, 5, 4
+    # Active rows [1, 4); rows 0 and 4 should be zero.
+    cols = np.array([0, 1, 2])  # (nrows=3,) shared across batches
+    values = jnp.arange(B * 3, dtype=jnp.float64).reshape(B, 3) + 1.0
+    ep = BEllpack(
+        start_row=1, end_row=4,
+        in_cols=(cols,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    t = ep.transpose((1, 0))
+    assert t.shape == (O, B, N)
+    expected = np.transpose(np.asarray(ep.todense()), (1, 0, 2))
+    np.testing.assert_array_equal(np.asarray(t.todense()), expected)
+
+
+def test_ellpack_transpose_k2_out_swap():
+    # k>=2 with out→batch swap; values shape (*batch, nrows, k).
+    B, O, N = 2, 3, 6
+    cols0 = np.array([0, 1, 2])
+    cols1 = np.array([3, 4, 5])
+    values = jnp.arange(B * O * 2, dtype=jnp.float64).reshape(B, O, 2) + 1.0
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols0, cols1), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    t = ep.transpose((1, 0))
+    assert t.shape == (O, B, N)
+    expected = np.transpose(np.asarray(ep.todense()), (1, 0, 2))
+    np.testing.assert_array_equal(np.asarray(t.todense()), expected)
+
+
+def test_ellpack_transpose_per_batch_cols_out_swap():
+    # Per-batch in_cols shape (*batch, nrows) → swap out with batch.
+    B, O, N = 2, 3, 5
+    cols_per_batch = np.array([[0, 1, 2], [2, 3, 4]])
+    values = jnp.ones((B, O), dtype=jnp.float64) * jnp.asarray([[1.0], [10.0]])
+    ep = BEllpack(
+        start_row=0, end_row=O,
+        in_cols=(cols_per_batch,), values=values,
+        out_size=O, in_size=N,
+        batch_shape=(B,),
+    )
+    t = ep.transpose((1, 0))
+    assert t.shape == (O, B, N)
+    expected = np.transpose(np.asarray(ep.todense()), (1, 0, 2))
+    np.testing.assert_array_equal(np.asarray(t.todense()), expected)
+
+
 def test_ellpack_minus_one_sentinel_masks_slot():
     e = BEllpack(
         start_row=0, end_row=3,

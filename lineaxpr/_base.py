@@ -398,6 +398,118 @@ class BEllpack:
                        new_out_size, self.in_size,
                        batch_shape=self.batch_shape)
 
+    def transpose(self, permutation):
+        """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.
+
+        The returned BEllpack is structurally equivalent to
+        `jnp.transpose(self.todense(), permutation + (ndim-1,))` but
+        without densifying.
+        """
+        nb = self.n_batch
+        permutation = tuple(int(p) for p in permutation)
+        assert len(permutation) == nb + 1
+        old_sizes = self.batch_shape + (self.out_size,)
+        new_sizes = tuple(old_sizes[p] for p in permutation)
+        new_batch_shape = new_sizes[:-1]
+        new_out_size = new_sizes[-1]
+
+        # Fast path: out axis stays last — permute batch axes only,
+        # preserving the compressed row range.
+        if permutation[-1] == nb:
+            batch_perm = permutation[:-1]
+            if self.k == 1:
+                val_perm = batch_perm + (nb,)
+            else:
+                val_perm = batch_perm + (nb, nb + 1)
+            new_values = jnp.transpose(self.values, val_perm)
+            new_in_cols = tuple(
+                _transpose_col_batch(c, batch_perm) for c in self.in_cols
+            )
+            return BEllpack(self.start_row, self.end_row, new_in_cols,
+                           new_values, new_out_size, self.in_size,
+                           batch_shape=new_batch_shape)
+
+        # General case: out axis moves. Pad the compressed row axis to
+        # full out_size, then apply the full permutation to values and
+        # each resolved col band. New row range is [0, new_out_size).
+        out_size = self.out_size
+        pad_before = self.start_row
+        pad_after = out_size - self.end_row
+        if self.k == 1:
+            val_pad = [(0, 0)] * nb + [(pad_before, pad_after)]
+            values_full = jnp.pad(self.values, val_pad)
+            new_values = jnp.transpose(values_full, permutation)
+        else:
+            val_pad = [(0, 0)] * nb + [(pad_before, pad_after), (0, 0)]
+            values_full = jnp.pad(self.values, val_pad)
+            new_values = jnp.transpose(values_full, permutation + (nb + 1,))
+
+        new_in_cols = tuple(
+            _transpose_col_full(c, self.batch_shape, self.start_row,
+                                self.end_row, out_size, permutation)
+            for c in self.in_cols
+        )
+        return BEllpack(0, new_out_size, new_in_cols, new_values,
+                       new_out_size, self.in_size,
+                       batch_shape=new_batch_shape)
+
+
+def _transpose_col_batch(col, batch_perm):
+    """Permute only the batch axes of a ColArr. Slice / shared-1D cols
+    depend only on the row axis and are unaffected."""
+    if isinstance(col, slice):
+        return col
+    if col.ndim == 1:
+        return col
+    nb = col.ndim - 1
+    axes = tuple(batch_perm) + (nb,)
+    if isinstance(col, np.ndarray):
+        return np.transpose(col, axes)
+    return jnp.transpose(col, axes)
+
+
+def _transpose_col_full(col, batch_shape, start_row, end_row, out_size,
+                        permutation):
+    """Resolve a ColArr to `(*batch_shape, out_size)` with -1 sentinels
+    outside `[start_row, end_row)`, then apply `permutation` across the
+    combined `(*batch, out)` axes.
+    """
+    nb = len(batch_shape)
+    nrows = end_row - start_row
+    pad_before = start_row
+    pad_after = out_size - end_row
+    if isinstance(col, slice):
+        start = 0 if col.start is None else col.start
+        full = np.arange(start, start + nrows)
+        if pad_before or pad_after:
+            full = np.pad(full, (pad_before, pad_after), constant_values=-1)
+        if nb:
+            full = np.broadcast_to(full, batch_shape + (out_size,))
+        return np.transpose(full, permutation)
+    if col.ndim == 1:
+        # Shared across batches. Pad row axis first, then broadcast.
+        if pad_before or pad_after:
+            if isinstance(col, np.ndarray):
+                col = np.pad(col, (pad_before, pad_after), constant_values=-1)
+            else:
+                col = jnp.pad(col, (pad_before, pad_after),
+                              constant_values=-1)
+        if nb:
+            if isinstance(col, np.ndarray):
+                col = np.broadcast_to(col, batch_shape + (out_size,))
+            else:
+                col = jnp.broadcast_to(col, batch_shape + (out_size,))
+        if isinstance(col, np.ndarray):
+            return np.transpose(col, permutation)
+        return jnp.transpose(col, permutation)
+    # Per-batch `(*batch, nrows)` cols — pad row axis, then permute.
+    pad_spec = [(0, 0)] * nb + [(pad_before, pad_after)]
+    if isinstance(col, np.ndarray):
+        padded = np.pad(col, pad_spec, constant_values=-1)
+        return np.transpose(padded, permutation)
+    padded = jnp.pad(col, pad_spec, constant_values=-1)
+    return jnp.transpose(padded, permutation)
+
 
 def _normalize_values(values, k: int, batch_shape=(), nrows=None):
     """Coerce a user-supplied `values` into the canonical hybrid layout.
@@ -697,6 +809,175 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
     )
     return sparse.BCOO((safe_vals.reshape(-1), indices), shape=flat_shape,
                        indices_sorted=False, unique_indices=False)
+
+
+def _ellpack_to_bcoo_keep_batch(e: "BEllpack") -> sparse.BCOO:
+    """Variant of `_ellpack_to_bcoo_batched` that preserves `n_batch`.
+    Emits a batched `sparse.BCOO` of shape
+    `(*batch_shape, out_size, in_size)` with `n_batch = len(batch_shape)`.
+
+    Unlike `_ellpack_to_bcoo_batched` (which flattens to 2D and prunes
+    sentinels exactly), this keeps the batch rank so downstream rules
+    that reason about `(*output_shape, in_size)` still see the right
+    number of dimensions.
+
+    Sentinel pruning: batched BCOO requires uniform nse per batch, so
+    a slot can only be dropped when every batch has a sentinel there.
+    When every band has **shared 1D static cols** (the common case —
+    slice / arange / static `np.ndarray`), sentinel positions match
+    across batches and we prune uniformly to `nse = count(non_sentinel)`.
+    When any band has per-batch or traced cols, we fall back to keeping
+    all `nrows * k` slots per batch with sentinels masked as
+    `(col=0, value=0)`.
+
+    Used internally by `_add_rule`'s BCOO-concat fallback when any
+    operand is a batched BEllpack; the flat variant would silently
+    collapse the batch axis into a flat row axis and break downstream
+    transpose / reshape rules that key off operand rank.
+    """
+    if e.n_batch == 0:
+        return _ellpack_to_bcoo(e)
+    B = e.batch_shape
+    nrows = e.nrows
+    k = e.k
+    rows_1d = np.arange(e.start_row, e.end_row)
+
+    per_band = [_resolve_col(c, nrows) for c in e.in_cols]
+    all_static = all(isinstance(c, np.ndarray) for c in per_band)
+    # (debug hook removed; see git blame if you need to re-instrument)
+
+    if all_static:
+        # Broadcast each band's cols to `(*B, nrows)` and concatenate
+        # band-major into `(*B, nrows * k)`. Per-batch sentinel patterns
+        # are now visible at trace time.
+        per_band_full = [
+            np.broadcast_to(c, B + (nrows,)) if c.ndim == 1 else c
+            for c in per_band
+        ]
+        cols_bb = np.concatenate(per_band_full, axis=-1)  # (*B, nrows * k)
+        rows_bb = np.broadcast_to(
+            np.concatenate([rows_1d] * k) if k > 1 else rows_1d,
+            B + (nrows * k,),
+        )
+        sentinel_mask = cols_bb < 0
+        # Uniform-nse pruning: drop the **same number** of sentinels from
+        # every batch, equal to the minimum sentinel count across
+        # batches. Positions dropped within a batch are the first
+        # `min_sentinels` sentinel slots in band-major flat order.
+        # Remaining sentinels (in batches that had more than the
+        # minimum) stay as `(col=0, value=0)` masked entries. This
+        # preserves the batched-BCOO uniform-per-batch-nse invariant
+        # while recovering most of the prune savings the flat
+        # `_ellpack_to_bcoo_batched` gets for free.
+        sentinel_count_per_batch = sentinel_mask.reshape(
+            -1, nrows * k
+        ).sum(axis=-1)
+        min_sentinels = (int(sentinel_count_per_batch.min())
+                         if sentinel_count_per_batch.size else 0)
+        uniform_nse = nrows * k - min_sentinels
+        if min_sentinels == 0:
+            # No prune possible — every batch has at least one slot we
+            # can't drop uniformly.
+            safe_cols = np.where(sentinel_mask, 0, cols_bb)
+            # Values in band-major order to match `cols_bb`.
+            if k == 1:
+                vals_bb = e.values
+            else:
+                nb = len(B)
+                vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+                    B + (nrows * k,)
+                )
+            safe_vals = jnp.where(
+                jnp.asarray(sentinel_mask),
+                jnp.zeros((), e.dtype), vals_bb,
+            )
+            indices = jnp.stack(
+                [jnp.asarray(rows_bb), jnp.asarray(safe_cols)], axis=-1,
+            )
+            return sparse.BCOO(
+                (safe_vals, indices),
+                shape=B + (e.out_size, e.in_size),
+                indices_sorted=False, unique_indices=False,
+            )
+        # Build per-batch `keep` indices: stable argsort puts False (non-
+        # sentinels) before True (sentinels); take the first
+        # `uniform_nse` slots so every batch drops exactly
+        # `min_sentinels` sentinel positions.
+        order = np.argsort(sentinel_mask, axis=-1, kind="stable")
+        keep = order[..., :uniform_nse]  # (*B, uniform_nse)
+        cols_pruned = np.take_along_axis(cols_bb, keep, axis=-1)
+        rows_pruned = np.take_along_axis(rows_bb, keep, axis=-1)
+        # Residual sentinels (for batches that had more than the min)
+        # stay in `cols_pruned` as `-1`; mask them to `(col=0, value=0)`.
+        residual_mask = cols_pruned < 0
+        safe_cols_pruned = np.where(residual_mask, 0, cols_pruned)
+        if k == 1:
+            vals_bb = e.values
+        else:
+            nb = len(B)
+            vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+                B + (nrows * k,)
+            )
+        vals_pruned = jnp.take_along_axis(
+            vals_bb, jnp.asarray(keep), axis=-1,
+        )
+        safe_vals = jnp.where(
+            jnp.asarray(residual_mask),
+            jnp.zeros((), e.dtype), vals_pruned,
+        )
+        indices = jnp.stack(
+            [jnp.asarray(rows_pruned), jnp.asarray(safe_cols_pruned)],
+            axis=-1,
+        )
+        return sparse.BCOO(
+            (safe_vals, indices),
+            shape=B + (e.out_size, e.in_size),
+            indices_sorted=False, unique_indices=False,
+        )
+
+    # Traced-cols fallback: can't analyze sentinels at trace time —
+    # keep all `nrows * k` slots, mask sentinels to `(col=0, value=0)`.
+    rows_broad = np.broadcast_to(rows_1d, B + (nrows,))
+    nse = nrows * k
+
+    def resolve_to_batch(col):
+        if isinstance(col, np.ndarray):
+            if col.ndim == 1:
+                return jnp.asarray(np.broadcast_to(col, B + (nrows,)))
+            return jnp.asarray(col)
+        if col.ndim == 1:
+            return jnp.broadcast_to(col, B + (nrows,))
+        return col
+
+    if k == 1:
+        cols = resolve_to_batch(per_band[0])
+        mask = cols >= 0
+        safe_cols = jnp.where(mask, cols, 0)
+        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        rows_per_batch = jnp.asarray(rows_broad)
+        indices = jnp.stack([rows_per_batch, safe_cols], axis=-1)
+        data = safe_vals
+    else:
+        per_band_bcast = [resolve_to_batch(c) for c in per_band]
+        cols_stacked = jnp.stack(per_band_bcast, axis=-1)
+        rows_stacked = jnp.broadcast_to(
+            jnp.asarray(rows_broad)[..., None], cols_stacked.shape
+        )
+        mask = cols_stacked >= 0
+        safe_cols = jnp.where(mask, cols_stacked, 0)
+        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        indices = jnp.stack(
+            [rows_stacked.reshape(B + (nse,)),
+             safe_cols.reshape(B + (nse,))],
+            axis=-1,
+        )
+        data = safe_vals.reshape(B + (nse,))
+
+    return sparse.BCOO(
+        (data, indices),
+        shape=B + (e.out_size, e.in_size),
+        indices_sorted=False, unique_indices=False,
+    )
 
 
 def _diag_to_bcoo(d, n=None) -> sparse.BCOO:

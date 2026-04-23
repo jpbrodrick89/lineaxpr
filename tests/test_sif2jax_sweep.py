@@ -45,6 +45,21 @@ REL_TOL = 1e-6
 # regression instead of hiding it.
 #
 # Format: problem class name → short reason string.
+# Problems whose walk needs EAGER_CONSTANT_FOLDING=TRUE (the bench
+# container's default) to fold shape-derived closures into concrete
+# ints before our `_cond_rule` runs. In the unfolded regime (the
+# sweep's default — setting ECF globally in conftest OOMs on
+# FMINSURF-class problems where XLA constant-folds multi-GB
+# reduce-windows) the closure index stays a `DynamicJaxprTracer` and
+# `_cond_rule` bails with NotImplementedError. Listed problems are run
+# un-jitted so the closure stays concrete; jit coverage (and the
+# regression value it carries for CLPLATE / TORSION class bugs) is
+# preserved for the rest of the sweep.
+UNFOLDED_UNSUPPORTED: set[str] = {
+    "HADAMALS",  # lax.cond with shape-derived closure index
+}
+
+
 KNOWN_UNIMPLEMENTED: dict[str, str] = {
     # CURLY/SCURLY families use `conv_general_dilated` in their
     # objective (a sliding-window sum pattern). Keyed by bare class
@@ -85,6 +100,10 @@ SIZE_OVERRIDES: dict[str, dict] = {
     "INDEFM":    {"n": 500},    # default 100000
     "YATP1LS":   {"N": 20},     # default N=350; n = N*(N+2) = 440
     "YATP1CLS":  {"N": 20},
+    # Clamped plate: n = P*P. Default P=71 (n=5041); P=20 → n=400.
+    "CLPLATEA":  {"n": 400, "P": 20},
+    "CLPLATEB":  {"n": 400, "P": 20},
+    "CLPLATEC":  {"n": 400, "P": 20},
     # Torsion family: n = q*q. Default q=37 (n=5476); q=20 → n=400.
     "TORSION1":  {"q": 20}, "TORSION2":  {"q": 20},
     "TORSION3":  {"q": 20}, "TORSION4":  {"q": 20},
@@ -174,7 +193,17 @@ def test_sif2jax_correctness_and_nse(param):
     # NotImplementedError is NOT caught here — if a walk that previously
     # worked now raises, we want the test to FAIL (so a rule regression
     # shows up), not silently skip.
-    S = lineaxpr.bcoo_hessian(f)(y)
+    #
+    # JIT-wrapping is intentional: production callers jit-compile, and
+    # some regressions (e.g. rank-collapse in _add_rule's BCOO-concat
+    # path) only manifest under jit tracing because closure values
+    # become tracers. Un-jitted `bcoo_hessian` misses those. See
+    # JIT_UNSUPPORTED above for the handful of problems we have to
+    # run un-jitted.
+    if name in UNFOLDED_UNSUPPORTED:
+        S = lineaxpr.bcoo_hessian(f)(y)
+    else:
+        S = jax.jit(lineaxpr.bcoo_hessian(f))(y)
 
     # Correctness via random-vector matvec (avoids O(n²) memory).
     # Compare S @ v against hvp(v) where hvp is jax's linearized gradient.

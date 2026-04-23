@@ -77,27 +77,48 @@ import time
 COMPILE_TIMEOUT_S = float(os.environ.get("COMPILE_TIMEOUT_S", "30"))
 
 
-def _compile(fn, primal):
+def _compile(fn, primal, strict: bool = False):
+    """Compile and warm up `fn`; skip on compile / warmup timeout.
+
+    `strict=True` (used for lineaxpr extractors) lets walk-level
+    exceptions — e.g. `NotImplementedError` from a missing rule —
+    propagate so benchmark regressions don't silently vanish. The
+    previous behavior returned `None` for any failure, conflating
+    genuine walk bugs with "too-large" problems that the caller then
+    `pytest.skip`'d. Compile / warmup timeouts remain skips (legitimate
+    size-gate, not a bug).
+
+    `strict=False` (for external extractors — jax.hessian, asdex) keeps
+    the return-None-on-any-failure behavior because we don't own those
+    implementations and have no meaningful regression signal from them.
+    """
     try:
         t0 = time.perf_counter()
         compiled = fn.lower(primal).compile()
-        compile_s = time.perf_counter() - t0
-        if compile_s > COMPILE_TIMEOUT_S:
-            pytest.skip(
-                f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
-                f"({compile_s:.1f}s)"
-            )
+    except Exception:
+        if strict:
+            raise
+        return None
+    compile_s = time.perf_counter() - t0
+    if compile_s > COMPILE_TIMEOUT_S:
+        pytest.skip(
+            f"compile exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+            f"({compile_s:.1f}s)"
+        )
+    try:
         t0 = time.perf_counter()
         _block(compiled(primal))
-        warmup_s = time.perf_counter() - t0
-        if warmup_s > COMPILE_TIMEOUT_S:
-            pytest.skip(
-                f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
-                f"({warmup_s:.1f}s)"
-            )
-        return compiled
     except Exception:
+        if strict:
+            raise
         return None
+    warmup_s = time.perf_counter() - t0
+    if warmup_s > COMPILE_TIMEOUT_S:
+        pytest.skip(
+            f"warmup exceeded COMPILE_TIMEOUT_S={COMPILE_TIMEOUT_S}s "
+            f"({warmup_s:.1f}s)"
+        )
+    return compiled
 
 
 def _make(extractor_kind, problem):
@@ -126,14 +147,14 @@ def _make(extractor_kind, problem):
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y)
-        return _compile(fn, problem.y0)
+        return _compile(fn, problem.y0, strict=True)
 
     if extractor_kind == "bcoo":
         @jax.jit
         def fn(y):
             _, h = jax.linearize(jax.grad(f), y)
             return materialize(h, y, format="bcoo")
-        return _compile(fn, problem.y0)
+        return _compile(fn, problem.y0, strict=True)
 
     if extractor_kind == "asdex_bcoo":
         if not HAS_ASDEX: return None

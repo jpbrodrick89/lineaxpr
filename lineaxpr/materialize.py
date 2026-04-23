@@ -50,6 +50,7 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
+    _ellpack_to_bcoo_keep_batch,
     _resolve_col,
     _to_bcoo,
     _to_dense,
@@ -786,6 +787,50 @@ def _add_rule(invals, traced, n, **params):
                     else:
                         ep_vals.append(v)
                 return _add_rule(ep_vals, [True] * len(ep_vals), n)
+
+    # Batched-rank-preserving BCOO concat for operands that share a
+    # common non-empty batch structure. Fires when either (a) all
+    # operands are BEllpacks with the same non-empty `batch_shape` but
+    # are otherwise incompatible for the structural same-range widen
+    # (e.g. different row ranges from asymmetric pads), or (b) operands
+    # are a mix of batched BEllpacks and already-batched BCOOs
+    # (produced by a previous pass through this same path) with
+    # matching `(*batch, out, in)` shape.
+    #
+    # Preserves the operand rank `(*batch, out, in)` so downstream
+    # rules (notably `_transpose_rule`'s dense fallback) still see the
+    # right number of output axes. The flat-BCOO path below would
+    # collapse to `(prod_batch * out, in)` and break a later transpose
+    # with the original per-output-axis permutation. Regression repro:
+    # CLPLATE / TORSION classes under jit (surfaced by the 0c
+    # structural transpose keeping a batched BE alive where the dense
+    # fallback previously flattened the rank away). Without the mixed
+    # {BE, batched-BCOO} branch, DRCAV1LQ/2LQ regressed from BCOO
+    # (nse=670761) to dense after the first batched-BCOO emission
+    # collided with the next BE add_any.
+    if kinds <= {BEllpack, sparse.BCOO}:
+        be_operands = [v for v in vals if isinstance(v, BEllpack)]
+        bcoo_operands = [v for v in vals if isinstance(v, sparse.BCOO)]
+        be_batch_shapes = {v.batch_shape for v in be_operands}
+        if be_operands and len(be_batch_shapes) == 1:
+            batch = next(iter(be_batch_shapes))
+            if batch:
+                out_size = be_operands[0].out_size
+                in_size = be_operands[0].in_size
+                expected_shape = batch + (out_size, in_size)
+                be_match = all(v.out_size == out_size
+                               and v.in_size == in_size for v in be_operands)
+                bcoo_match = all(
+                    b.n_batch == len(batch) and b.shape == expected_shape
+                    for b in bcoo_operands
+                )
+                if be_match and bcoo_match:
+                    converted = [
+                        _ellpack_to_bcoo_keep_batch(v)
+                        if isinstance(v, BEllpack) else v
+                        for v in vals
+                    ]
+                    return _bcoo_concat(converted, shape=expected_shape)
 
     # Any combination of {ConstantDiagonal, Diagonal, BEllpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
@@ -2230,10 +2275,12 @@ def _transpose_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    permutation = params["permutation"]
+    permutation = tuple(params["permutation"])
+    if isinstance(op, BEllpack):
+        return op.transpose(permutation)
     dense = _to_dense(op, n)
     # Permutation applies to output axes only; preserve trailing input axis.
-    return lax.transpose(dense, tuple(permutation) + (len(permutation),))
+    return lax.transpose(dense, permutation + (len(permutation),))
 
 materialize_rules[lax.transpose_p] = _transpose_rule
 
