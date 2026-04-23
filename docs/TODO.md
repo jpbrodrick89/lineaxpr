@@ -104,6 +104,26 @@ and current to identify the specific XLA optimization gap. Low
 priority — single problem, ~25% slowdown on a 20ms baseline,
 massively outweighed by LUKSAN 11-15 wins (3-6×).
 
+### 0e. DMN15103LS residual regression (+8% after ac3c7a6)
+
+**Context**: the `_mul_rule` batch-expand + `_reduce_sum_rule`
+smart-densify combo (ac3c7a6) recovered DMN15102LS (13% improvement
+isolated vs 094627a) but DMN15103LS still shows +8% isolated
+(51 → 55 ms). Sibling problem; same objective structure as DMN15102
+but different `n_peaks` and `n_data`.
+
+Likely cause: smart-densify threshold `k >= in_size` is a binary gate.
+DMN15103 has different shape ratios that may hit the BE path slightly
+past the threshold (e.g., k just below in_size so stays BE) or the
+batch-expand produces a shape where a downstream op doesn't densify
+as expected.
+
+**Proposal**: instrument DMN15103 the way we did DMN15102 (form
+transition log); see where the extra 4ms goes. Possibly needs a
+tighter threshold (densify at `k >= in_size * 0.8`?) or densify at
+an additional rule emission point. Low priority — 4ms regression
+dwarfed by wider session gains.
+
 ### 0d. Implement structural 2D point-gather / scatter-add
 
 **Context**: `jnp.diagonal` emits a 2-branch cond (platform
