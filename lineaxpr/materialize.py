@@ -389,6 +389,83 @@ def _bellpack_unbatch(bep):
     return tuple(result)
 
 
+def _broadcast_common_batch(batch_shapes):
+    """Return the broadcast shape of a list of batch_shape tuples, or
+    None if they're not broadcast-compatible.
+
+    Standard numpy-style right-aligned broadcast: dims of 1 expand to
+    match larger; mismatched non-1 dims fail. Mirrors the semantics of
+    the `_mul_rule` batch-expand path (ac3c7a6).
+    """
+    if not batch_shapes:
+        return ()
+    max_ndim = max(len(s) for s in batch_shapes)
+    padded = [(1,) * (max_ndim - len(s)) + s for s in batch_shapes]
+    out = []
+    for axis in range(max_ndim):
+        dims = [p[axis] for p in padded]
+        non1 = {d for d in dims if d != 1}
+        if len(non1) > 1:
+            return None  # conflicting non-1 dims
+        out.append(max(dims))
+    return tuple(out)
+
+
+def _broadcast_be_to_batch(be, target_batch_shape):
+    """Expand a BEllpack to a larger broadcast-compatible batch_shape.
+
+    Preserves cols/values sparsity pattern — just broadcasts along
+    size-1 batch axes. Same mechanic as `_mul_rule`'s batch-expand
+    (ac3c7a6): `mul(BE, dense)` is sparsity-preserving, so replicating
+    the pattern over a new batch axis stays structural.
+
+    Returns None if broadcast isn't cleanly expressible (e.g. batched
+    cols with non-broadcast-compatible shape) — caller falls back.
+    """
+    if be.batch_shape == target_batch_shape:
+        return be
+    # Pad BE's batch_shape with leading 1s to match target's ndim.
+    src_ndim = len(be.batch_shape)
+    tgt_ndim = len(target_batch_shape)
+    if src_ndim > tgt_ndim:
+        return None
+    pad_ndim = tgt_ndim - src_ndim
+    # Values: broadcast leading (batch) axes to target. Trailing axes
+    # (nrows, [k]) unchanged.
+    val_pad_shape = (1,) * pad_ndim + be.values.shape
+    val_target_shape = target_batch_shape + be.values.shape[src_ndim:]
+    new_values = jnp.broadcast_to(
+        be.values.reshape(val_pad_shape), val_target_shape
+    )
+    # Cols: 1D shared cols pass through unchanged. N-D cols need
+    # broadcasting — supported only when all batch axes were size-1.
+    new_in_cols = []
+    for c in be.in_cols:
+        if isinstance(c, slice):
+            new_in_cols.append(c)
+        elif isinstance(c, np.ndarray):
+            if c.ndim == 1:
+                new_in_cols.append(c)  # shared across batch
+            elif c.ndim == src_ndim + 1:
+                # Per-batch cols: broadcast along new batch axes.
+                pad = (1,) * pad_ndim + c.shape
+                new_in_cols.append(
+                    np.broadcast_to(c.reshape(pad),
+                                    target_batch_shape + c.shape[-1:]).copy()
+                )
+            else:
+                return None
+        else:
+            # Traced cols — skip for now to keep the change small.
+            return None
+    return BEllpack(
+        start_row=be.start_row, end_row=be.end_row,
+        in_cols=tuple(new_in_cols), values=new_values,
+        out_size=be.out_size, in_size=be.in_size,
+        batch_shape=target_batch_shape,
+    )
+
+
 def _densify_if_wider_than_dense(op, n):
     """Densify a BEllpack whose k ≥ in_size — no storage win over dense.
 
@@ -545,7 +622,29 @@ def _add_rule(invals, traced, n, **params):
     # axis). O(1) bookkeeping, no per-row value copy. Mismatched ranges
     # or batch_shapes promote to BCOO below.
     if kinds == {BEllpack}:
+        # Batch-broadcast path: when BE operands share everything except
+        # batch_shape AND batch shapes are numpy-broadcast-compatible
+        # (e.g. `(1,)` vs `(4643,)`), expand size-1 axes to the common
+        # shape and recurse. Mirrors `_mul_rule`'s batch-expand — same
+        # sparsity-preservation rationale. Unblocks DMN15103LS etc.
+        # where upstream produces BE with batch=(1,) broadcasting
+        # against BE with batch=(4643,).
         first = vals[0]
+        same_non_batch = all(
+            v.start_row == first.start_row
+            and v.end_row == first.end_row
+            and v.out_size == first.out_size
+            and v.in_size == first.in_size
+            for v in vals[1:]
+        )
+        if same_non_batch and not all(v.batch_shape == first.batch_shape
+                                      for v in vals[1:]):
+            target_batch = _broadcast_common_batch([v.batch_shape for v in vals])
+            if target_batch is not None:
+                broadcast_vals = [_broadcast_be_to_batch(v, target_batch)
+                                  for v in vals]
+                if all(bv is not None for bv in broadcast_vals):
+                    return _add_rule(broadcast_vals, traced, n)
         same_range = all(
             v.start_row == first.start_row
             and v.end_row == first.end_row
