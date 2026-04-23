@@ -35,6 +35,31 @@ false positives — always isolate-verify before believing. See
 CLAUDE.md "Sweep vs isolated min". EIGEN\*, DMN15102, LUKSAN16LS have
 all been false positives this session.
 
+## Current losses to `asdex_bcoo` (sweep 57c3093)
+
+Problems where `bcoo_hessian` is meaningfully slower than `asdex_bcoo`
+(>1.1× ratio, >5µs absolute). Check before committing new work.
+
+| Problem    |    n | ratio |   bcoo | asdex | presumed cause                                 |
+| ---------- | ---: | ----: | -----: | ----: | ---------------------------------------------- |
+| BROYDN7D   | 5000 |  128× | 26.7ms | 210µs | dense fallback — 7-diag stencil densifies      |
+| BDQRTIC    | 5000 |   40× |  6.3ms | 157µs | dense fallback; `D` quartic → wide-k BE        |
+| LUKSAN16LS |  100 |  4.8× |   91µs |  19µs | effectively-dense Hessian; BE overhead         |
+| GENHUMPS   | 5000 |  2.7× |  536µs | 202µs | dense fallback in HVP chain                    |
+| NONMSQRT   | 4900 |  2.1× |  649µs | 308µs | k=71 emit path — partially structural but slow |
+| DQDRTIC    | 5000 |  1.9× |   16µs |   8µs | small absolute; call-overhead dominance        |
+| BROYDN3DLS | 5000 |  1.8× |  149µs |  81µs | similar stencil-densify as BROYDN7D            |
+| SBRYBND    | 5000 |  1.8× |  1.6ms | 894µs | banded system walker produces wide-k BE        |
+| LIARWHD    | 5000 |  1.4× |   49µs |  35µs | closed mostly (2026-04-22); residual small     |
+| LUKSAN17LS |  100 |  1.3× |   50µs |  38µs | partial structural coverage                    |
+| ARWHEAD    | 5000 |  1.3× |   53µs |  40µs | small absolute                                 |
+
+Dominant patterns: (1) 5-diagonal / 7-diagonal stencil densification
+(BROYDN7D/BDQRTIC/BROYDN3DLS — likely the 0c transpose / 0d 2D-gather
+territory), (2) wide-k BE emission where smart-densify could be more
+aggressive (SBRYBND, NONMSQRT), (3) small-n call-overhead where
+coloring might win (LUKSAN16LS, DQDRTIC, 0f covers this).
+
 ## Priority 0 — open
 
 ### 0c. Structural `_transpose_rule` for BEllpack
@@ -133,6 +158,20 @@ constructor kwarg per class would unlock all of them.
 NCVXQP / bounded-quad families. Mechanical — each class's `n`
 property returns a hardcoded int; change to `n: int = <current>` field.
 
+### 0i. True `scan` structural support (promoted from Priority-4)
+
+**Context**: some CUTEst problems emit `lax.scan` in their linearized
+HVP. Currently the walker raises NotImplementedError on scan, which
+surfaces as walk errors in the sweep. Short-circuit (`n < 16` →
+`vmap(linear_fn)(eye)`) hides most cases but not all.
+
+**Proposal**: add a `_scan_rule` that either (a) unrolls the scan body
+into a single-iter walk and post-multiplies, or (b) lifts to a
+batched BE over the scan length. Needs prototyping.
+
+**Why priority-0**: real user problems hit this; sif2jax growth
+increases exposure. User moved this from Priority-4 (2026-04-23).
+
 ## Priority 1 — structural improvements
 
 ### 1. Deferred `Sum` LinOp for order-independent add-chain bucketing
@@ -195,7 +234,105 @@ native output.
   current CLI. Consider a single-shot `--all-filters` variant for
   batch-generating all 4 variants.
 
-## Priority 2 — densifying rules remaining audit
+## Priority 2 — JAX idiom alignment
+
+### 6. `safe_map` / `safe_zip` from `jax._src.util`
+
+Replace raw `zip()` calls to catch length mismatches early.
+
+**Why not `strict=True`**: unknown. Candidate reasons — `safe_map` /
+`safe_zip` may predate Python 3.10's `strict=True` (added then); JAX
+internals widely use the `jax._src.util` helpers and matching the
+style keeps diffs vs upstream small; or `safe_zip` may provide a
+better error message ("lengths: x vs y") than strict-zip's
+`ValueError`. No strong reason to prefer one over the other — if
+you're touching a zip call, either is fine; don't churn existing
+code unless fixing a real bug.
+
+### 8a. jax-style kwargs on jacfwd/jacrev/hessian
+
+Match `jax.jacfwd` / `jax.jacrev` / `jax.hessian`'s full signature:
+
+- `argnums: int | Sequence[int]` — differentiate w.r.t. multiple args
+- `has_aux: bool` — allow `f` to return `(output, aux)`; aux passes
+  through untouched
+- `holomorphic: bool` — complex-valued inputs/outputs
+- `allow_int: bool` — allow integer inputs (result identically zero)
+
+Today our wrappers hard-code `argnums=0`, single-output, float, no aux.
+Low priority until a user hits one; the building block (`materialize`
+on a traced linear_fn) doesn't care.
+
+### 8b. Multi-input / multi-output + vmap composition
+
+Currently `sparsify(linear_fn)(seed)` rejects multi-input and
+multi-output linear fns, and the walk hasn't been tested against
+`jax.vmap`-composed callers. Either extend the walk to flatten
+multi-output → 1D → walk → reshape, OR document as a hard limit.
+Also: verify `vmap(hessian(f))(batched_y)` works (should — walk runs
+once at trace time, vmap batches the compiled result).
+
+### 9. `custom_jvp_call_p` rule
+
+Audit sif2jax for `@jax.custom_jvp` usage; add a rule that `lift_jvp`s
+the custom-JVP'd function and re-runs through our walk. Confirmed
+2026-04-20: sif2jax had 0 `custom_jvp` calls then, so this is not
+blocking. Revisit if a user reports it or a new problem family hits it.
+
+### 10. Primitive-coverage gaps (PALMER family, BQP1VAR)
+
+**Historical context**: --full sweep at commit `4562b8f` found 18
+`bcoo_jacobian` compile failures in PALMER1A/1C/1D, PALMER2A/2C/2E,
+PALMER3A/3C/3E, PALMER4C/4E, PALMER6C/6E, PALMER7C/7E, PALMER8C/8E
+and BQP1VAR (n=1 degenerate shape).
+
+**Status check needed** (2026-04-23): PALMER\* problems appear in the
+current sweep (PALMER3C, PALMER4C, PALMER6C, PALMER8C in regression
+lists — they're passing correctness). Check whether the current
+manifest has PALMER entries — if yes, coverage is addressed. If no,
+the n<16 short-circuit may be hiding them (all PALMERs are n≤15).
+BQP1VAR (n=1) similarly hidden by short-circuit. Verify by setting
+`_SMALL_N_VMAP_THRESHOLD=0` and running PALMER3C + BQP1VAR; if they
+fail, the missing primitive is named in the error.
+
+## Priority 3 — memory / hygiene
+
+### 11. Last-use analysis in `_walk_jaxpr`
+
+`env` retains every intermediate LinOp until walk ends. For long
+jaxprs with dense fallbacks, retained dense tensors can OOM. Compute
+`last_use` per var, `del env[v]` after its last read. No current
+reports of OOM; pre-emptive hygiene.
+
+### 12. Per-rule unit tests
+
+**Status check needed** (2026-04-23): `tests/test_ops.py` covers
+LinOp methods (unit); `tests/test_materialize.py` is hand-rolled
+end-to-end; `tests/test_sparsify.py` covers transform-level.
+No dedicated per-rule test file exists — but end-to-end tests are
+fairly granular. Verdict: partially addressed. Worth revisiting only
+if a rule refactor causes a cross-problem regression that would have
+been caught by isolated rule tests.
+
+## Priority 4 — deferred / low ROI
+
+### 15. Cross-eqn pattern matching for prod-tree (HS110)
+
+HS110's `(∏x)^k` HVP fragments into many small Ellpacks that our walk
+processes one-by-one. asdex also doesn't fix this. Analytical form is
+`α · uuᵀ + diag(...)`. Detecting this from the jaxpr structure would
+need multi-eqn lookahead — substantial new machinery. Currently
+handled acceptably by the `n<16` short-circuit. Wait for a large-n
+prod-tree problem to justify.
+
+### 16. Symmetric output option
+
+`materialize(fn, primal, symmetric=True)` that computes lower triangle
+and mirrors. ~30% dense-path savings. No BCOO win. Requires detecting
+or asserting symmetry — for Hessians it's guaranteed, but adds a new
+API surface. Low priority.
+
+## Priority 5 — densifying rules remaining audit
 
 Per `RESEARCH_NOTES.md` §10 audit of rules that unconditionally
 densify where a structural alternative is plausible:
