@@ -81,32 +81,14 @@ every problem's final reshape correctly unbatches). Manifest diff:
 none (DRCAV etc. stay at their existing nse since the batched BCOO
 gets flattened by the walker, not by conversion).
 
-### 0k. `_cond_rule` tracer-index support
+### 0k. ~~`_cond_rule` tracer-index support~~ **DONE**
 
-**Current** (2026-04-23, commit ac1a462): `_cond_rule` requires the
-branch index to be compile-time-concrete — `int(np.asarray(index_val))`
-on the closure value. Works un-jitted (closure values are concrete
-Python ints), works jitted **under `EAGER_CONSTANT_FOLDING=TRUE`** (ECF
-folds shape-derived index expressions eagerly), fails jitted in the
-unfolded regime because the closure becomes a `DynamicJaxprTracer`.
-
-**Surfaced by**: HADAMALS under the jit-wrapped sweep without ECF
-(`_run_full_chunked.sh --linux` chunk, commit ac1a462: 2 failures in
-`benchmarks/test_full.py` — materialize + bcoo_jacobian). Also caught by
-`tests/test_sif2jax_sweep.py` but worked around there via
-`UNFOLDED_UNSUPPORTED={HADAMALS}` which runs it un-jitted.
-
-**Fix**: extend `_cond_rule` to treat tracer indices whose aval is a
-compile-time-concrete scalar the same as a closure int. Approaches:
-(a) wrap the `int(np.asarray(...))` in `jax.ensure_compile_time_eval()`
-to force evaluation; (b) inspect the aval for a concrete value via
-`jax.core.get_aval(idx)` and fall back to the walker if it isn't one;
-(c) accept a traced index and emit structural output from each branch
-concurrently, then `select`-compose at the LinOp level (more invasive).
-
-**Payoff**: removes the `UNFOLDED_UNSUPPORTED` exception list; HADAMALS
-runs jitted in the unfolded sweep; strict-mode bench stops flagging it.
-Self-contained — no dependency on 0c/0d/0j.
+Turned out the HADAMALS cond is a `lax.platform_dependent`, whose
+branches are semantically equivalent by contract. The eqn carries
+`branches_platforms` — we detect it and pick the `None` (default)
+branch as a fallback when concrete indexing fails. Zero densification.
+Also dropped the redundant `int(np.asarray(...))` in favour of direct
+tuple indexing via `__index__`. `UNFOLDED_UNSUPPORTED` is now empty.
 
 ### 0d. Structural 2D point-gather / scatter-add
 

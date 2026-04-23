@@ -45,19 +45,18 @@ REL_TOL = 1e-6
 # regression instead of hiding it.
 #
 # Format: problem class name → short reason string.
-# Problems whose walk needs EAGER_CONSTANT_FOLDING=TRUE (the bench
-# container's default) to fold shape-derived closures into concrete
-# ints before our `_cond_rule` runs. In the unfolded regime (the
-# sweep's default — setting ECF globally in conftest OOMs on
-# FMINSURF-class problems where XLA constant-folds multi-GB
-# reduce-windows) the closure index stays a `DynamicJaxprTracer` and
-# `_cond_rule` bails with NotImplementedError. Listed problems are run
-# un-jitted so the closure stays concrete; jit coverage (and the
-# regression value it carries for CLPLATE / TORSION class bugs) is
-# preserved for the rest of the sweep.
-UNFOLDED_UNSUPPORTED: set[str] = {
-    "HADAMALS",  # lax.cond with shape-derived closure index
-}
+# Problems whose walk fails under outer jit in the unfolded regime
+# (no `EAGER_CONSTANT_FOLDING=TRUE`). Listed problems are run
+# un-jitted; jit coverage (and the regression value it carries for
+# CLPLATE / TORSION class bugs) is preserved for the rest of the
+# sweep.
+#
+# Empty since 0k (commit TBD) — `_cond_rule` now recognises
+# `lax.platform_dependent` via the `branches_platforms` param and
+# picks the default branch structurally, so HADAMALS's
+# `jnp.diagonal` → mosaic/default dispatch no longer blocks the
+# walker under un-ECF jit.
+UNFOLDED_UNSUPPORTED: set[str] = set()
 
 
 KNOWN_UNIMPLEMENTED: dict[str, str] = {

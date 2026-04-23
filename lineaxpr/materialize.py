@@ -2061,29 +2061,62 @@ def _split_rule(invals, traced, n, **params):
 materialize_rules[lax.split_p] = _split_rule
 
 def _cond_rule(invals, traced, n, **params):
-    """`lax.cond` with a closure (static) branch index.
+    """`lax.cond` with a compile-time-decidable branch choice.
 
-    HADAMALS and similar linearize-through-jnp.diagonal patterns emit
-    a 2-branch `cond` whose selector is a compile-time scalar that
-    picks between a dense fallback and a gather path. When the index
-    is a closure we can pick the active branch and recurse — same as
-    `_jit_rule` but branch-indexed. Traced-index `cond` (genuine
-    control flow) stays unimplemented.
+    Two senses of "traced" coexist here and are orthogonal:
+      * `traced[0]` (walker-level): does the index depend on the
+        walker's seed input? `True` means the branch choice is part
+        of the structural chain — genuinely data-dependent control
+        flow we don't support (non-linear).
+      * `isinstance(invals[0], Tracer)` (JAX-level): is the VALUE a
+        `DynamicJaxprTracer`? Under outer `jax.jit`, every closure
+        `jnp.ndarray` gets lifted into the traced graph, so even
+        walker-static closures can be tracers at the value level.
+
+    Two structural (no-densify) patterns we handle:
+
+    1. **Closure-concrete index**: un-jitted walks, or jitted walks
+       under `EAGER_CONSTANT_FOLDING=TRUE`. `int(invals[0])` succeeds
+       (0-d int arrays support `__index__`); we pick the branch.
+
+    2. **`lax.platform_dependent`**: emits a `cond` whose index is
+       `platform_index_p`, which stays an abstract tracer under outer
+       jit without ECF. By the `platform_dependent` contract all
+       branches are semantically equivalent — the actual platform is
+       decided at lowering time. The eqn carries `branches_platforms`;
+       we detect that and pick the `None` (default) branch. Covers
+       the `jnp.diagonal` mosaic-vs-default dispatch HADAMALS hits
+       under un-ECF jit.
+
+    Neither case requires densification.
     """
-    index_traced = traced[0]
-    if index_traced:
+    if traced[0]:
         raise NotImplementedError(
-            "cond with traced index (genuine control flow) not yet supported"
-        )
-    index_val = invals[0]
-    try:
-        idx = int(np.asarray(index_val))
-    except Exception:
-        raise NotImplementedError(
-            f"cond with non-int index form {type(index_val).__name__}"
+            "cond with walker-traced index (genuine control flow)"
         )
     branches = params["branches"]
-    chosen = branches[idx]
+    try:
+        # Tuple-indexing uses `__index__`; 0-d int arrays / np scalars
+        # / Python ints all support it. Under concrete conditions
+        # (un-jit, or jit + ECF) this picks the right branch directly —
+        # including the `platform_dependent` case, where
+        # `platform_index_p` evaluates eagerly to the current
+        # platform's branch index.
+        chosen = branches[invals[0]]
+    except jax.errors.TracerIntegerConversionError as e:
+        # Tracer index (outer jit, no ECF). If this is a
+        # `platform_dependent` cond, all branches are semantically
+        # equivalent per its contract — pick the default (`None`
+        # platform) branch. Otherwise we can't decide without
+        # densifying.
+        bp = params.get("branches_platforms")
+        if bp is None:
+            raise NotImplementedError(
+                f"cond with tracer index ({type(invals[0]).__name__}) "
+                f"and no `branches_platforms` hint — can't pick a branch "
+                f"without densifying both"
+            ) from e
+        chosen = branches[next((i for i, pl in enumerate(bp) if pl is None), 0)]
     inner = chosen.jaxpr
     operand_invals = invals[1:]
     operand_traced = traced[1:]
