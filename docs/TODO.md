@@ -93,6 +93,33 @@ short-circuit — attributable to BCOO pytree return overhead at the
 jit-dispatch boundary. Non-compile-amortisable. Possibly a case to
 just document rather than fix.
 
+### 0h. `_add_rule` batch-broadcast side-effects on tridiag-class problems
+
+**Context**: the batch-broadcast path in `_add_rule` (4ff0881, mirrors
+`_mul_rule`'s batch-expand) gave DMN15103LS −18% (52→43ms) but
+introduced real isolated regressions on tridiagonal-structure problems
+vs a743104:
+
+| Problem    | a743104 | 57c3093 | Δ    |
+| ---------- | ------- | ------- | ---- |
+| DIXMAANB   | 32.8 µs | 39.3 µs | +20% |
+| DIXMAANL   | 32.6 µs | 40.0 µs | +23% |
+| BDEXP      | 68.0 µs | 80.8 µs | +19% |
+| LUKSAN17LS | 50.6 µs | 55.5 µs | +10% |
+| ARGTRIGLS  | 87.4 µs | 94.1 µs | +8%  |
+
+All are small absolute (~5-12µs) but a consistent direction. Geomean
+still improves (bcoo/jax: 1.30 → 1.35) because DMN/EIGEN/LUKSAN11-15
+wins dominate. Still worth tracking down — batch-broadcast might be
+firing for operands where the old non-matching-batch-shape fallback
+was faster.
+
+**Investigate**: instrument `_add_rule` to log when batch-broadcast
+fires; check what shapes DIXMAANB passes. If the path fires on
+already-matching batch shapes (shouldn't, per check), that's a bug.
+If it fires on genuinely-mismatched shapes that were previously
+densifying cleanly, gate more tightly.
+
 ### 0g. Extend SIZE_OVERRIDES upstream in sif2jax
 
 **Context**: 45 problems still skip the sweep on size with no
