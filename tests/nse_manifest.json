@@ -102,6 +102,11 @@
       "nse": 24990,
       "group": "unconstrained"
     },
+    "CYCLIC3LS": {
+      "n": 502,
+      "nse": 8020,
+      "group": "unconstrained"
+    },
     "DIAGIQE": {
       "n": 1000,
       "nse": 1000,

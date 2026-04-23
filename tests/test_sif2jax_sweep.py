@@ -46,13 +46,18 @@ REL_TOL = 1e-6
 #
 # Format: problem class name → short reason string.
 KNOWN_UNIMPLEMENTED: dict[str, str] = {
-    # CURLY family uses `conv_general_dilated` in their objective (a
-    # sliding-window sum pattern). Keyed by bare class name — their
-    # default-n variants are too big (would skip on size), but the
-    # size-override variants exercise the unimplemented primitive.
-    "CURLY10": "conv_general_dilated primitive unimplemented",
-    "CURLY20": "conv_general_dilated primitive unimplemented",
-    "CURLY30": "conv_general_dilated primitive unimplemented",
+    # CURLY/SCURLY families use `conv_general_dilated` in their
+    # objective (a sliding-window sum pattern). Keyed by bare class
+    # name — their default-n variants are too big (would skip on size),
+    # but the size-override variants exercise the unimplemented
+    # primitive. SCURLY is the CURLY sister family using the same
+    # convolution pattern.
+    "CURLY10":  "conv_general_dilated primitive unimplemented",
+    "CURLY20":  "conv_general_dilated primitive unimplemented",
+    "CURLY30":  "conv_general_dilated primitive unimplemented",
+    "SCURLY10": "conv_general_dilated primitive unimplemented",
+    "SCURLY20": "conv_general_dilated primitive unimplemented",
+    "SCURLY30": "conv_general_dilated primitive unimplemented",
 }
 
 # Constructor kwargs for smaller variants of problems whose default size
@@ -67,24 +72,37 @@ KNOWN_UNIMPLEMENTED: dict[str, str] = {
 # is wrong, the instantiation raises `TypeError` at collection time
 # and we fall back to skipping via the MAX_N gate.
 SIZE_OVERRIDES: dict[str, dict] = {
-    # Class : kwargs for constructor (must be a valid smaller variant)
-    "BOX":       {"n": 500},
-    "COSINE":    {"n": 500},
-    "CURLY10":   {"n": 500, "k": 10},
+    # Class : kwargs for constructor (must be a valid smaller variant).
+    # Default sizes in comments; formulas for n in terms of kwargs
+    # shown where non-trivial.
+    "BOX":       {"n": 1000},   # default 10000; suggested list: 10, 100, 1000, 100000
+    "COSINE":    {"n": 100},    # default 10000; suggested list: 10, 100, 10000
+    "CURLY10":   {"n": 500, "k": 10},   # default n=10000
     "CURLY20":   {"n": 500, "k": 20},
     "CURLY30":   {"n": 500, "k": 30},
-    "DIXON3DQ":  {"n": 500},
-    "POWER":     {"n": 500},
-    "INDEFM":    {"n": 500},
-    "YATP1LS":   {"N": 20},   # n = N*(N+2) = 440
+    "DIXON3DQ":  {"n": 500},    # default 10000
+    "POWER":     {"n": 500},    # default 10000
+    "INDEFM":    {"n": 500},    # default 100000
+    "YATP1LS":   {"N": 20},     # default N=350; n = N*(N+2) = 440
     "YATP1CLS":  {"N": 20},
-    # Torsion family: n = q*q
+    # Torsion family: n = q*q. Default q=37 (n=5476); q=20 → n=400.
     "TORSION1":  {"q": 20}, "TORSION2":  {"q": 20},
     "TORSION3":  {"q": 20}, "TORSION4":  {"q": 20},
     "TORSION5":  {"q": 20}, "TORSION6":  {"q": 20},
     "TORSIONA":  {"q": 20}, "TORSIONB":  {"q": 20},
     "TORSIONC":  {"q": 20}, "TORSIOND":  {"q": 20},
     "TORSIONE":  {"q": 20}, "TORSIONF":  {"q": 20},
+    # Surface-mesh: n = p*p. Default p=75 (n=5625); p=20 → n=400.
+    "FMINSURF":  {"p": 20},
+    "FMINSRF2":  {"p": 20},
+    # Strided-curly (sister family to CURLY10/20/30).
+    "SCURLY10":  {"n": 500, "k": 10},  # default n=10000
+    "SCURLY20":  {"n": 500, "k": 20},
+    "SCURLY30":  {"n": 500, "k": 30},
+    # Cyclooctane: n = 3*p - 4. Default p=10000; p=20 → n=56.
+    "CYCLOOCFLS": {"p": 20},
+    # Cyclic cubic: n = n_param + 2. Default 100002; 502 for testing.
+    "CYCLIC3LS": {"n_param": 500},
 }
 
 _MANIFEST_PATH = Path(__file__).parent / "nse_manifest.json"
