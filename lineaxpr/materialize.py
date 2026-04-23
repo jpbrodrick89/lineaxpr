@@ -1836,6 +1836,49 @@ def _split_rule(invals, traced, n, **params):
 
 materialize_rules[lax.split_p] = _split_rule
 
+def _cond_rule(invals, traced, n, **params):
+    """`lax.cond` with a closure (static) branch index.
+
+    HADAMALS and similar linearize-through-jnp.diagonal patterns emit
+    a 2-branch `cond` whose selector is a compile-time scalar that
+    picks between a dense fallback and a gather path. When the index
+    is a closure we can pick the active branch and recurse — same as
+    `_jit_rule` but branch-indexed. Traced-index `cond` (genuine
+    control flow) stays unimplemented.
+    """
+    index_traced = traced[0]
+    if index_traced:
+        raise NotImplementedError(
+            "cond with traced index (genuine control flow) not yet supported"
+        )
+    index_val = invals[0]
+    try:
+        idx = int(np.asarray(index_val))
+    except Exception:
+        raise NotImplementedError(
+            f"cond with non-int index form {type(index_val).__name__}"
+        )
+    branches = params["branches"]
+    chosen = branches[idx]
+    inner = chosen.jaxpr
+    operand_invals = invals[1:]
+    operand_traced = traced[1:]
+    inner_env: dict = {v: (False, c) for v, c in zip(inner.constvars, chosen.consts)}
+    for inner_invar, outer_val, was_traced in zip(
+        inner.invars, operand_invals, operand_traced
+    ):
+        inner_env[inner_invar] = (was_traced, outer_val)
+    _walk_jaxpr(inner, inner_env, n)
+    return [inner_env[outvar][1] for outvar in inner.outvars]
+
+
+try:
+    from jax._src.lax.control_flow.conditionals import cond_p
+    materialize_rules[cond_p] = _cond_rule
+except ImportError:
+    pass
+
+
 def _jit_rule(invals, traced, n, **params):
     """Recurse into the inner jaxpr of a `jit` (pjit) call."""
     inner_cj = params["jaxpr"]  # ClosedJaxpr
