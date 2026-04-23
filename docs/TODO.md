@@ -56,6 +56,33 @@ matmul path. Benefits any problem with transposed-reshape patterns.
 HADAMALS itself is small (n=20, 1.3MB dense fits in L2) so the
 direct win is modest; larger-dim transpose chains would benefit more.
 
+### 0d-pre. `_add_rule`: BE + dense via sparse scatter-add (not BE.todense)
+
+**Context**: 094627a sweep (2026-04-23) flagged DMN15102LS as
+regressed 1.25× (+4.5 ms) vs baseline. Bisect attributed it to
+commit 93e8c3f (step 2, reshape emit BE instead of BCOO).
+
+Walk instrumentation: baseline had 6× dense+dense add_any (already
+dense by the time add_any runs). Current has 6× BE+dense → dense
+via `_add_rule`'s fallback, all at shape (4643, 33, 66) or
+(1, 33, 66) — unfolds BE's 153 K nonzeros into 10 M-element zeros
+via `_todense_batched` per call.
+
+DMN's Hessian is effectively dense, so the final result is correct
+either way — step 2 just moved the densification location, and the
+current BE→dense path is slower than baseline's early-densify path.
+
+**Proposal**: in `_add_rule`, when one operand is a batched BEllpack
+and the other is dense (ArrayImpl) of matching shape, avoid
+`BE._todense_batched()`. Either:
+(a) Convert BE → BCOO (structural, cheap) then BCOO + dense via
+scatter-add on indices. XLA-optimized path.
+(b) Direct scatter-add: `dense.at[batch_idx, row, in_col].add(BE.values)`
+using the BE's static cols. Skip BCOO intermediate.
+
+Either keeps the final result dense but avoids the full 10M-zero
+scatter. Expected to recover DMN15102LS ~1.25× regression.
+
 ### 0d. Implement structural 2D point-gather / scatter-add
 
 **Context**: `jnp.diagonal` emits a 2-branch cond (platform
