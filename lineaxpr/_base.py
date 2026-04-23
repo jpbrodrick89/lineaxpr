@@ -526,44 +526,41 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
         return sparse.BCOO((vals_safe, indices), shape=e.shape)
 
-    # k>=2 path — values is (nrows, k). Vectorized: stack cols across
-    # bands via `np.stack(per_band_cols, axis=-1)` → (nrows, k), flatten
-    # row-major to match `e.values.reshape(-1)` order. No per-band
-    # Python loop over the `values` array (per CLAUDE.md "never loop
-    # over arrays"). Mirrors the K-loop fusion in `BEllpack.todense`
-    # (commit 2e1da5a).
+    # k>=2 path — values is (nrows, k).
     per_band_cols = [_resolve_col(c, nrows) for c in e.in_cols]
     any_traced_cols = any(not isinstance(c, np.ndarray) for c in per_band_cols)
     if not any_traced_cols:
-        cols_2d = np.stack(per_band_cols, axis=-1)        # (nrows, k)
-        rows_2d = np.broadcast_to(rows_1d[:, None], (nrows, k))
-        rows_flat = rows_2d.reshape(-1)
-        cols_flat = cols_2d.reshape(-1)
-        vals_flat = e.values.reshape(-1)                  # (nrows*k,)
-        mask = cols_flat >= 0
-        if mask.all():
-            indices = np.stack([rows_flat, cols_flat], axis=1)
-            return sparse.BCOO((vals_flat, indices), shape=e.shape)
-        keep = np.nonzero(mask)[0]
-        indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
-        return sparse.BCOO((jnp.take(vals_flat, keep), indices),
-                           shape=e.shape)
-    # Traced cols in some band — stack cols (mixing np + jnp allowed
-    # via jnp.asarray); keep same vectorized structure.
-    cols_stack = jnp.stack(
-        [jnp.asarray(c) for c in per_band_cols], axis=-1
-    )                                                      # (nrows, k)
-    rows_stack = jnp.broadcast_to(
-        jnp.asarray(rows_1d)[:, None], (nrows, k)
-    )
-    rows_flat = rows_stack.reshape(-1)
-    cols_flat = cols_stack.reshape(-1)
-    vals_flat = e.values.reshape(-1)
-    mask = cols_flat >= 0
-    cols_safe = jnp.where(mask, cols_flat, 0)
-    vals_safe = jnp.where(mask, vals_flat, jnp.zeros((), e.dtype))
-    indices = jnp.stack([rows_flat, cols_safe], axis=1)
-    return sparse.BCOO((vals_safe, indices), shape=e.shape)
+        kept_rows, kept_cols, kept_vals = [], [], []
+        for b in range(k):
+            cols_b = per_band_cols[b]
+            if (cols_b >= 0).all():
+                kept_rows.append(rows_1d)
+                kept_cols.append(cols_b)
+                kept_vals.append(e.values[:, b])
+            else:
+                keep = np.nonzero(cols_b >= 0)[0]
+                kept_rows.append(rows_1d[keep])
+                kept_cols.append(cols_b[keep])
+                kept_vals.append(jnp.take(e.values[:, b], keep))
+        rows_flat = np.concatenate(kept_rows)
+        cols_flat = np.concatenate(kept_cols)
+        indices = np.stack([rows_flat, cols_flat], axis=1)
+        vals_flat = jnp.concatenate(kept_vals)
+        return sparse.BCOO((vals_flat, indices), shape=e.shape)
+    # Traced cols in some band — mask values band-by-band.
+    rows_parts, cols_parts, vals_parts = [], [], []
+    for b in range(k):
+        cols_j = jnp.asarray(per_band_cols[b])
+        mask = cols_j >= 0
+        rows_parts.append(jnp.asarray(rows_1d))
+        cols_parts.append(jnp.where(mask, cols_j, 0))
+        vals_parts.append(jnp.where(mask, e.values[:, b],
+                                    jnp.zeros((), e.dtype)))
+    rows_flat = jnp.concatenate(rows_parts)
+    cols_flat = jnp.concatenate(cols_parts)
+    vals_flat = jnp.concatenate(vals_parts)
+    indices = jnp.stack([rows_flat, cols_flat], axis=1)
+    return sparse.BCOO((vals_flat, indices), shape=e.shape)
 
 
 def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
