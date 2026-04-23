@@ -2,6 +2,66 @@
 
 Empirically-grounded; see `RESEARCH_NOTES.md` for the reasoning.
 
+## Handoff notes from 2026-04-23 session (fa37563)
+
+**Landed this session** (on top of `a96520a`):
+
+- `_mul_rule` batch-expand for BE with size-1 batch axes (ac3c7a6)
+- `_reduce_sum_rule` + `_add_rule` smart-densify via
+  `_densify_if_wider_than_dense` helper (k ≥ in_size → dense).
+  Prevents BE from carrying effectively-dense state through the walk.
+- `_bcoo_concat` np.concatenate for static indices (9bc5625) — avoids
+  XLA iota-decompression trap.
+- `_ellpack_to_bcoo` k-based gate for traced-cols branch (e82ab33).
+- `_cond_rule` for static-selector cond (eedb8f3).
+- 2D point-gather / scatter-add dense fallback (bc46c45) — unblocks
+  HADAMALS.
+- `_split_rule` batched-BE axis=n_batch (4f50c8a).
+- Test infra: SIZE_OVERRIDES (22 → 28 problems), KNOWN_UNIMPLEMENTED,
+  drop-skip-on-NotImplementedError, `assert nse <= n*n` invariant.
+- Plot filter: `--problem-filter unconstrained` for publication plots.
+
+**Ongoing investigations / partially-covered areas**:
+
+- **DMN15103LS**: +8% isolated regression (0e). Root in `_add_rule`
+  lacking batch-broadcast analog of `_mul_rule`. Adding one risks
+  DMN15102-style k-growth; needs careful smart-densify interaction.
+- **147 tiny-n tail problems (n ≤ 16)** are slower than `jax.hessian`
+  by ~1µs fixed. Our short-circuit at `materialize.py:_SMALL_N_VMAP_THRESHOLD=16`
+  still uses `linearize + vmap`, whereas `jax.hessian` uses
+  `jacfwd(jacrev)` directly. Simple fix: bypass linearize and call
+  `jax.hessian` for n < threshold. May relax threshold higher once a
+  more finely-tuned approach lands.
+- **bcoo_hessian has ~2-3µs floor** vs `hessian` at very small n.
+  Isolated: QING bcoo < mat (sweep noise); GOULDQP1/CHNROSNB/NASH
+  show real 2-3µs floor attributable to BCOO pytree return overhead
+  (not compile-amortisable — it's at jit-dispatch boundary).
+
+**Sweep invariants to maintain**:
+
+- `KNOWN_UNIMPLEMENTED` (tests/test_sif2jax_sweep.py) lists primitives
+  our walker doesn't support. Currently: CURLY/SCURLY families
+  (conv_general_dilated). Keep tightly scoped — don't add entries for
+  bugs.
+- `assert S.nse <= n*n` is a structural invariant, not a manifest check.
+  If it fires, it indicates smart-densify missed a case.
+- `SIZE_OVERRIDES` must use kwargs matching the class constructor —
+  stale entries fail loudly (no try/except).
+
+**Sweep contamination awareness**: EIGEN\*, DMN15102, LUKSAN16LS showed
+up as regressions in sweeps but isolated-verified clean. CLAUDE.md's
+"isolate-verify before believing sweep regressions" rule is load-
+bearing. On macOS-native, cross-problem contamination can reach 5×;
+in container, 1.3-2×.
+
+**Key files**:
+
+- `lineaxpr/materialize.py` — rules + public API (2560 lines)
+- `lineaxpr/_base.py` — LinOp classes (~750 lines)
+- `tests/test_sif2jax_sweep.py` — sweep test + SIZE_OVERRIDES
+- `tests/nse_manifest.json` — 94 BCOO-output problems' nse baselines
+- `benchmarks/plots.py` — `--problem-filter` for publication
+
 ## Priority 0 — next up
 
 ### 0a. ~~Ensure unimplemented rules lead to test failures, not skips~~ — DONE (f564c63)
