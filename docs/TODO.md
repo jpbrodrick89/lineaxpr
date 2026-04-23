@@ -4,31 +4,28 @@ Empirically-grounded; see `RESEARCH_NOTES.md` for the reasoning.
 
 ## Priority 0 — next up
 
-### 0a. Ensure unimplemented rules lead to test failures, not skips
+### 0a. ~~Ensure unimplemented rules lead to test failures, not skips~~ — DONE (f564c63)
 
-**Context**: `tests/test_sif2jax_sweep.py` currently catches
-`NotImplementedError` from the walk and silently skips the problem.
-That hides regressions when a previously-working problem starts
-hitting an unsupported primitive path after a rule change.
+Dropped the `try/except NotImplementedError: pytest.skip` around the
+walk in `tests/test_sif2jax_sweep.py`. Added `KNOWN_UNIMPLEMENTED`
+dict for explicit documentation of any problems that hit unsupported
+primitives (empty now; HADAMALS covered by cond + 2D-gather in
+bc46c45).
 
-**Proposal**: drop the try/except around `lineaxpr.bcoo_hessian(f)(y)`
-in the sweep test. `NotImplementedError` should fail the test.
-Problems that are known-broken (missing primitive we haven't
-implemented) get explicit `pytest.mark.skip` entries with a reason,
-so the skip surface is intentional and visible.
+### 0b. ~~Expand correctness coverage by running large problems at smaller sizes~~ — DONE (f564c63)
 
-### 0b. Expand correctness coverage by running large problems at smaller sizes
+Added `SIZE_OVERRIDES` dict in the sweep test. 22 smaller-n variants
+run correctness coverage (but not nse-manifest check, since that's
+keyed by default-n). Covers: BOX, COSINE, CURLY10/20/30, DIXON3DQ,
+INDEFM, POWER, YATP1LS/CLS, TORSION1-6/A-F. Easy to extend: add
+entries to `SIZE_OVERRIDES` when new size-parameterized problems
+appear.
 
-**Context**: 77 of 78 current skips are `n > MAX_N=5000`. Most
-problems accept constructor size parameters (e.g.
-`CURLY10(n=10000, k=10)`, `YATP1LS(N=350)`, `TORSION1(q=37)`). We
-could instantiate smaller variants for correctness coverage.
-
-**Proposal**: add a `SIZE_OVERRIDES` dict mapping class names to
-kwargs for smaller constructors. Collect both the default problem
-(for nse manifest + correctness when `n ≤ MAX_N`) and a smaller
-variant (just for correctness when default is too big). Keep the
-original skip for problems without a known size-parameter path.
+Remaining skips that aren't currently overrideable: most CVXQP/NCVXQP
+variants (only y0_iD as init-arg), CYCLIC3LS/CYCLOOCFLS/CYCLOOCTLS,
+DEGDIAG/DEGTRID/DEGTRID2, FMINSURF/FMINSRF2, 10FOLDTRLS, SCURLY\*\_0/\_1
+(size fixed in class), A0Nxx/A0Exx. Add overrides as their
+constructor conventions are verified.
 
 ### 0c. Fix densification in `_transpose_rule`
 
