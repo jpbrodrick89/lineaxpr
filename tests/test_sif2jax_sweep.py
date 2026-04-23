@@ -46,8 +46,14 @@ REL_TOL = 1e-6
 #
 # Format: problem class name → short reason string.
 KNOWN_UNIMPLEMENTED: dict[str, str] = {
-    # (none currently — HADAMALS was covered by the cond + 2D-gather
-    # rules in bc46c45. Populate as new problems hit new primitives.)
+    # CURLY family uses `conv_general_dilated` in their objective (a
+    # sliding-window sum pattern). Their default-n variants are above
+    # MAX_N so they skip on size, but the SIZE_OVERRIDES 500-n variants
+    # hit the unimplemented primitive. File keyed by `[override]` suffix
+    # to match the pytest id.
+    "CURLY10[override]": "conv_general_dilated primitive unimplemented",
+    "CURLY20[override]": "conv_general_dilated primitive unimplemented",
+    "CURLY30[override]": "conv_general_dilated primitive unimplemented",
 }
 
 # Constructor kwargs for smaller variants of problems whose default size
@@ -156,8 +162,12 @@ def test_sif2jax_correctness_and_nse(param):
 
     n = int(y.shape[0])
 
-    if name in KNOWN_UNIMPLEMENTED:
-        pytest.skip(f"known-unimplemented: {KNOWN_UNIMPLEMENTED[name]}")
+    # Check both the bare class name and the full pytest id (which is
+    # `{name}[override]` for size-override variants). This lets us mark
+    # primitives as unimplemented at either granularity.
+    for key in (pid, name):
+        if key in KNOWN_UNIMPLEMENTED:
+            pytest.skip(f"known-unimplemented: {KNOWN_UNIMPLEMENTED[key]}")
 
     def f(z):
         return p.objective(z, p.args)
@@ -178,6 +188,20 @@ def test_sif2jax_correctness_and_nse(param):
     assert rel_err < REL_TOL, (
         f"{name}: Sv vs hvp(v) rel_err={rel_err:.2e} > {REL_TOL:.0e}"
     )
+
+    # Structural invariant: BCOO output's nse must not exceed the dense
+    # Hessian element count (n*n). The `_densify_if_wider_than_dense`
+    # guard (ac3c7a6, a743104) is supposed to catch wide-k BE emissions
+    # at the source; if this assertion fires, smart-densify missed a
+    # case OR `_bcoo_concat` accumulated enough duplicate entries that
+    # the final stored count exceeds dense. Either way a walker-level
+    # bug worth investigating.
+    if isinstance(S, sparse.BCOO):
+        dense_count = n * n
+        assert S.nse <= dense_count, (
+            f"{pid}: nse={S.nse} > n*n={dense_count} (n={n}). "
+            f"smart-densify should have caught this."
+        )
 
     # nse regression (only meaningful when S is a BCOO — dense returns
     # skip the check). Also skip for size-overridden variants — the
