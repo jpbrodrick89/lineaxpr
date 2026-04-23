@@ -18,8 +18,8 @@
       "group": "unconstrained"
     },
     "BOX": {
-      "n": 500,
-      "nse": 4500,
+      "n": 1000,
+      "nse": 9000,
       "group": "unconstrained"
     },
     "BROYDN3DLS": {
@@ -93,8 +93,8 @@
       "group": "quadratic"
     },
     "COSINE": {
-      "n": 500,
-      "nse": 1996,
+      "n": 100,
+      "nse": 396,
       "group": "unconstrained"
     },
     "CRAGGLVY": {
