@@ -2440,6 +2440,43 @@ def _select_n_rule(invals, traced, n, **params):
                 new_values, first.out_size, first.in_size,
             )
 
+    # Multi-traced BCOO / BE (mismatched cols): mask each traced case by
+    # its own `pred[row] == case_idx` predicate and concat the results as
+    # a BCOO. Non-traced cases contribute zero to the linear-in-input
+    # part, so we drop them. BE operands are promoted via `_to_bcoo` +
+    # row-mask. Used by BROYDN7D (2×BCOO select_n over 5000-row state —
+    # the dense fallback would emit a 25M-element matrix).
+    # Gate: only fire when at least one operand is already BCOO AND
+    # the aval has rank 1 (simple row-select). Pure CD/Diag cases
+    # should go through the existing dense fallback to preserve the
+    # bit-exact contract the `select_n(pred, d0, d1)` HLO provides.
+    any_bcoo = any(isinstance(c, sparse.BCOO)
+                   for c, t in zip(cases, case_traced) if t)
+    if (any_bcoo and pred.ndim == 1
+            and all(isinstance(c, (sparse.BCOO, BEllpack, Diagonal,
+                                   ConstantDiagonal))
+                    for c, t in zip(cases, case_traced) if t)):
+        pred_arr = jnp.asarray(pred)
+        masked_bcoos = []
+        for c_idx, (c, t) in enumerate(zip(cases, case_traced)):
+            if not t:
+                continue
+            bc = _to_bcoo(c, n)
+            if bc.n_batch != 0:
+                masked_bcoos = None
+                break
+            entry_rows = bc.indices[:, 0]
+            mask = pred_arr[entry_rows] == c_idx
+            new_data = jnp.where(mask, bc.data,
+                                 jnp.zeros((), bc.data.dtype))
+            masked_bcoos.append(sparse.BCOO(
+                (new_data, bc.indices), shape=bc.shape,
+            ))
+        if masked_bcoos and len(masked_bcoos) == 1:
+            return masked_bcoos[0]
+        if masked_bcoos:
+            return _bcoo_concat(masked_bcoos, shape=masked_bcoos[0].shape)
+
     # Densify each case to shape (*var_shape, n). Non-traced cases contribute
     # zero to the linear-in-input part (their dependence on the traced input
     # is zero), so we represent them as a zero tensor of the right shape.
