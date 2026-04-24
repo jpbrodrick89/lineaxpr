@@ -35,6 +35,7 @@ from __future__ import annotations
 import functools
 import operator
 import os
+import string
 from typing import Callable
 
 import jax
@@ -50,6 +51,7 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
+    _ellpack_to_bcoo,
     _ellpack_to_bcoo_batched,
     _resolve_col,
     _to_bcoo,
@@ -931,77 +933,61 @@ materialize_rules[lax.sub_p] = _sub_rule
 def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
                            traced_is_first: bool):
     """Structural `BEllpack ⊗ closure_matrix` contract. Returns `None`
-    when a structural result would be no smaller than dense (gate
-    `k_old * A >= in_size`) or for contract patterns we don't yet
-    handle structurally (earlier-batch-axis contracts).
+    when dense would be no larger (gate `k_old * A >= in_size`), or
+    when the contract is on an earlier-batch axis (unsupported — would
+    require reshuffling every per-band col tensor).
 
-    New BE: aval_shape with `c_be` removed and `B` (M's other dim)
-    appended → `batch_shape = aval_without_c_be[:-1]`, `out_size = B`,
-    `k_new = k_old * A`. Per-band col is the `c_be`-slice of the old
-    cols, broadcast over the new out axis (col independent of B_idx).
-    Values via a single einsum (see `_dot_einsum_eq` below).
-
-    Band enumeration (β, a) → flat index `β * A + a` matches the
-    einsum's output order `(..., J=B, K=old_k, contract=A)`.
-
-    `traced_is_first=False` (closure ⊗ BE): `lax.dot_general` output
-    aval is `(remaining_M, remaining_BE)` rather than canonical
-    `(remaining_BE, remaining_M)` — we swap the remaining-M axis to
-    the front via `BEllpack.transpose`.
+    Band enumeration (β, a) flattens to `β * A + a`; the einsum output
+    order `(remaining, J, [K], contract)` is chosen so a trailing
+    reshape produces that layout directly.
     """
     n_batch = be.n_batch
     aval_shape = (*be.batch_shape, be.out_size)
-    k_old = be.k
-    in_size = be.in_size
-    assert c_M in (0, 1)
-
-    # Only the trailing-batch and out axis contracts are handled; earlier
-    # batch axes would need reshuffling every per-band col tensor.
+    k_old, in_size = be.k, be.in_size
     if not (n_batch - 1 <= c_be <= n_batch):
         return None
     A = aval_shape[c_be]
-    if A != M.shape[c_M]:
-        return None
-    if k_old * A >= in_size:  # storage-gate: dense is ≤ same size
+    if A != M.shape[c_M] or k_old * A >= in_size:
         return None
 
     B = M.shape[1 - c_M]
     M_AB = M if c_M == 0 else M.T
-
-    # New aval = aval with `c_be` removed, then B appended.
     new_aval = aval_shape[:c_be] + aval_shape[c_be + 1:] + (B,)
     new_batch, new_out = new_aval[:-1], new_aval[-1]
 
-    # Per-band cols: slice along axis `c_be`, then broadcast the new
-    # out axis. Works uniformly for np and jnp cols via `.take`.
-    new_in_cols = [
+    new_in_cols = tuple(
         _bcast(c_full.take(a, axis=c_be)[..., None], new_aval)
         for c_full in (_resolve_full(c, be.nrows, be.batch_shape)
                        for c in be.in_cols)
         for a in range(A)
-    ]
+    )
 
-    # Values: single einsum with per-aval-axis letters. Output order
-    # `(remaining_letters, J=B, [K=k_old], contract_letter=A)` then
-    # flatten trailing (K, A) to `k_new = k_old * A`.
-    new_vals = jnp.einsum(_dot_einsum_eq(len(aval_shape), c_be, k_old > 1),
-                          be.values, M_AB)
+    # einsum: one letter per aval axis, K for optional k, J for M's
+    # free axis. Trailing (K, contract) reshape gives the β*A+a layout.
+    letters = string.ascii_lowercase[:len(aval_shape)]
+    assert len(letters) == len(aval_shape), "aval rank exceeds letter pool"
+    ctr = letters[c_be]
+    remaining = letters[:c_be] + letters[c_be + 1:]
+    k_let = "K" if k_old > 1 else ""
+    eq = f"{letters}{k_let},{ctr}J->{remaining}J{k_let}{ctr}"
+    new_vals = jnp.einsum(eq, be.values, M_AB)
     if k_old > 1:
         new_vals = new_vals.reshape(new_aval + (k_old * A,))
 
     out_be = BEllpack(
         start_row=0, end_row=new_out,
-        in_cols=tuple(new_in_cols), values=new_vals,
+        in_cols=new_in_cols, values=new_vals,
         out_size=new_out, in_size=in_size, batch_shape=new_batch,
     )
     if not traced_is_first:
-        # Expected aval is (B, *remaining_BE); swap to match.
+        # dot_general(closure, BE) aval is (*remaining_M, *remaining_BE);
+        # BE's out axis is structurally last so we permute batch↔out.
+        # Cheap: reorders the in_cols tuple + one values transpose.
         out_be = out_be.transpose((n_batch,) + tuple(range(n_batch)))
     return out_be
 
 
 def _bcast(arr, shape):
-    """Broadcast to `shape`, preserving np-view / jnp-HLO discipline."""
     return (np if isinstance(arr, np.ndarray) else jnp).broadcast_to(arr, shape)
 
 
@@ -1012,23 +998,6 @@ def _resolve_full(c, nrows, batch_shape):
     if c.ndim == 1:
         return _bcast(c, batch_shape + (nrows,))
     return c
-
-
-def _dot_einsum_eq(aval_len: int, c_be: int, has_k: bool) -> str:
-    """Build the einsum equation for `_be_dot_closure_matrix`'s values.
-
-    Labels: one letter per aval axis (from 'abcdefg'), `K` for the
-    optional k axis, `J` for M's non-contracted axis. Output order
-    puts remaining aval first, then J, then K (if present), then the
-    contracted letter — so reshaping the trailing two (K, contract)
-    gives band index `β * A + a`.
-    """
-    letters = "abcdefg"[:aval_len]
-    assert len(letters) == aval_len, "aval_len too large for letter pool"
-    ctr = letters[c_be]
-    remaining = letters[:c_be] + letters[c_be + 1:]
-    k_let = "K" if has_k else ""
-    return f"{letters}{k_let},{ctr}J->{remaining}J{k_let}{ctr}"
 
 
 def _dot_general_rule(invals, traced, n, **params):
@@ -1054,23 +1023,15 @@ def _dot_general_rule(invals, traced, n, **params):
             return ConstantDiagonal(traced_op.n, M * traced_op.value)
         return M * traced_op
     if len(c_tr) == 0 and len(c_M) == 0:
-        # Non-scalar empty-contract = outer product.
-        # Output shape: traced_shape + M.shape (or M.shape + traced_shape).
-        # LinOp dense: A_out[..., n] where A_out[*out_shape] is the outer.
-        # For traced A of shape (*t_shape, n), closure M of shape (*m_shape):
-        #   result[i, j, :] = M[j] * A[i, :]   if traced_is_first
-        #   result[j, i, :] = M[j] * A[i, :]   if traced_is_second
+        # Outer product. BE's trailing `n` axis stays last.
         dense = _to_dense(traced_op, n)
+        t_rank, m_rank = len(traced_shape), M.ndim
         if traced_is_first:
-            # dense: (*t_shape, n), M: (*m_shape). Want (*t_shape, *m_shape, n).
-            M_idx = (None,) * len(traced_shape) + (slice(None),) * M.ndim + (None,)
-            d_idx = (slice(None),) * len(traced_shape) + (None,) * M.ndim + (slice(None),)
-            return M[M_idx] * dense[d_idx]
-        else:
-            # Output: (*m_shape, *t_shape, n) = M[i, ...] * A[j, :]
-            d_idx = (None,) * M.ndim + (slice(None),) * len(traced_shape) + (slice(None),)
-            M_idx = (slice(None),) * M.ndim + (None,) * len(traced_shape) + (None,)
-            return M[M_idx] * dense[d_idx]
+            # (*t, n) × (*m,) → (*t, *m, n)
+            d = dense.reshape(traced_shape + (1,) * m_rank + dense.shape[-1:])
+            return d * M[..., None]
+        # (*m,) × (*t, n) → (*m, *t, n)
+        return M.reshape(M.shape + (1,) * (t_rank + 1)) * dense
 
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
@@ -1094,17 +1055,12 @@ def _dot_general_rule(invals, traced, n, **params):
     dense = _to_dense(traced_op, n)
     if traced_is_first:
         out = lax.dot_general(
-            dense, M, (((tuple(c_tr), tuple(c_M))), ((), ()))
+            dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))
         )
-        n_rem_tr = len(traced_shape) - len(c_tr)
-        M_rank = M.ndim
-        perm = (
-            list(range(n_rem_tr))
-            + list(range(n_rem_tr + 1, n_rem_tr + 1 + (M_rank - len(c_M))))
-            + [n_rem_tr]
-        )
-        return lax.transpose(out, perm)
-    return lax.dot_general(M, dense, (((tuple(c_M), tuple(c_tr))), ((), ())))
+        # dense's trailing `n` axis is never contracted; dot_general's
+        # output places it at `len(traced_shape) - len(c_tr)`. Move to end.
+        return jnp.moveaxis(out, len(traced_shape) - len(c_tr), -1)
+    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr)), ((), ())))
 
 materialize_rules[lax.dot_general_p] = _dot_general_rule
 
@@ -2134,8 +2090,53 @@ def _split_rule(invals, traced, n, **params):
             start = end
         return out
     # Structural path: split along output axis 0 (the "out_size" dim).
-    # Promote (Constant)Diagonal/BEllpack → BCOO and split each chunk by
-    # masking entries whose row falls outside its range.
+    # For an unbatched BEllpack with static cols we slice the BE
+    # per-chunk (row range + per-band-col row-slice) and emit one
+    # proper BCOO per chunk. Going through `_to_bcoo` on the full BE
+    # and then masking out-of-range rows to `(row=0, value=0)` would
+    # leave zero-valued entries clogging row 0 of every chunk — those
+    # count as BCOO nse and manufacture "duplicates" at row 0 that
+    # propagate through every downstream add/concat (observed as
+    # COATING's 4.5× final nse bloat).
+    if (axis == 0 and isinstance(operand, BEllpack)
+            and operand.n_batch == 0
+            and all(isinstance(c, np.ndarray) or isinstance(c, slice)
+                    for c in operand.in_cols)):
+        out = []
+        start = 0
+        for sz in sizes:
+            sz_i = int(sz)
+            end = start + sz_i
+            # Row range [start, end) intersected with BE's own
+            # [start_row, end_row). Slice cols/values along the row axis.
+            be_start = max(operand.start_row - start, 0)
+            be_end = min(operand.end_row - start, sz_i)
+            if be_end <= be_start:
+                out.append(sparse.BCOO(
+                    (jnp.zeros((0,), operand.values.dtype),
+                     np.zeros((0, 2), np.int32)),
+                    shape=(sz_i, operand.in_size),
+                ))
+                start = end
+                continue
+            row_lo = max(start, operand.start_row) - operand.start_row
+            row_hi = min(end, operand.end_row) - operand.start_row
+            new_in_cols = []
+            for c in operand.in_cols:
+                if isinstance(c, slice):
+                    c = _resolve_col(c, operand.nrows)
+                new_in_cols.append(c[row_lo:row_hi])
+            if operand.k == 1:
+                new_values = operand.values[row_lo:row_hi]
+            else:
+                new_values = operand.values[row_lo:row_hi, :]
+            chunk_be = BEllpack(
+                be_start, be_end, tuple(new_in_cols), new_values,
+                sz_i, operand.in_size,
+            )
+            out.append(_ellpack_to_bcoo(chunk_be))
+            start = end
+        return out
     if axis == 0 and isinstance(operand, (ConstantDiagonal, Diagonal,
                                           BEllpack, sparse.BCOO)):
         bcoo = _to_bcoo(operand, n)
@@ -2145,8 +2146,6 @@ def _split_rule(invals, traced, n, **params):
         for sz in sizes:
             end = start + int(sz)
             in_range = (rows >= start) & (rows < end)
-            # Shift rows into [0, sz) range for entries in this chunk;
-            # entries outside get row=0 but data=0 so they're harmless.
             new_rows = jnp.where(in_range, rows - start, 0)
             new_data = jnp.where(in_range, bcoo.data,
                                  jnp.zeros((), bcoo.data.dtype))
