@@ -2,9 +2,19 @@
   "_format_version": 1,
   "_note": "nse (number of stored entries) regression manifest for bcoo_jacobian over sif2jax CUTEst problems. Increases fail tests. Decreases require a manifest bump \u2014 run `uv run python -m tests.update_nse_manifest` to regenerate.",
   "problems": {
+    "AKIVA": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
     "ARWHEAD": {
       "n": 5000,
       "nse": 14998,
+      "group": "unconstrained"
+    },
+    "BARD": {
+      "n": 3,
+      "nse": 9,
       "group": "unconstrained"
     },
     "BDEXP": {
@@ -14,17 +24,67 @@
     },
     "BDQRTIC": {
       "n": 5000,
-      "nse": 174864,
+      "nse": 104920,
       "group": "unconstrained"
+    },
+    "BENNETT5LS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "BIGGS5": {
+      "n": 6,
+      "nse": 36,
+      "group": "bounded"
+    },
+    "BIGGS6": {
+      "n": 6,
+      "nse": 36,
+      "group": "unconstrained"
+    },
+    "BIGGSC4": {
+      "n": 4,
+      "nse": 4,
+      "group": "quadratic"
     },
     "BOX": {
       "n": 1000,
       "nse": 9000,
       "group": "unconstrained"
     },
+    "BOX2": {
+      "n": 3,
+      "nse": 9,
+      "group": "bounded"
+    },
+    "BOX3": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "BOXBODLS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "BQP1VAR": {
+      "n": 1,
+      "nse": 1,
+      "group": "quadratic"
+    },
+    "BROWNDEN": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
     "BROYDN3DLS": {
       "n": 5000,
-      "nse": 99988,
+      "nse": 59988,
+      "group": "unconstrained"
+    },
+    "BROYDN7D": {
+      "n": 5000,
+      "nse": 259968,
       "group": "unconstrained"
     },
     "CHAINWOO": {
@@ -40,6 +100,16 @@
     "CHNRSNBM": {
       "n": 50,
       "nse": 196,
+      "group": "unconstrained"
+    },
+    "CHWIRUT1LS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "CHWIRUT2LS": {
+      "n": 3,
+      "nse": 9,
       "group": "unconstrained"
     },
     "CMPC1": {
@@ -92,6 +162,11 @@
       "nse": 772,
       "group": "quadratic"
     },
+    "COATING": {
+      "n": 134,
+      "nse": 2300,
+      "group": "unconstrained"
+    },
     "COSINE": {
       "n": 100,
       "nse": 396,
@@ -104,8 +179,43 @@
     },
     "CYCLIC3LS": {
       "n": 502,
-      "nse": 8020,
+      "nse": 4508,
       "group": "unconstrained"
+    },
+    "DANIWOODLS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "DENSCHNE": {
+      "n": 3,
+      "nse": 3,
+      "group": "unconstrained"
+    },
+    "DEVGLA1": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
+    "DEVGLA1B": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "DEVGLA2": {
+      "n": 5,
+      "nse": 25,
+      "group": "unconstrained"
+    },
+    "DEVGLA2B": {
+      "n": 5,
+      "nse": 25,
+      "group": "bounded"
+    },
+    "DIAGIQB": {
+      "n": 10,
+      "nse": 10,
+      "group": "bounded"
     },
     "DIAGIQE": {
       "n": 1000,
@@ -254,8 +364,18 @@
     },
     "EG2": {
       "n": 1000,
-      "nse": 2999,
+      "nse": 2998,
       "group": "unconstrained"
+    },
+    "EGGCRATE": {
+      "n": 2,
+      "nse": 2,
+      "group": "unconstrained"
+    },
+    "EGGCRATEB": {
+      "n": 2,
+      "nse": 2,
+      "group": "bounded"
     },
     "ENGVAL1": {
       "n": 5000,
@@ -267,6 +387,21 @@
       "nse": 196,
       "group": "unconstrained"
     },
+    "EXP2": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "EXP2B": {
+      "n": 2,
+      "nse": 4,
+      "group": "bounded"
+    },
+    "EXPFIT": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
     "EXPLIN": {
       "n": 1200,
       "nse": 400,
@@ -275,6 +410,11 @@
     "EXPLIN2": {
       "n": 1200,
       "nse": 400,
+      "group": "bounded"
+    },
+    "FBRAINLS": {
+      "n": 2,
+      "nse": 4,
       "group": "bounded"
     },
     "FLETBV3M": {
@@ -302,6 +442,26 @@
       "nse": 19996,
       "group": "unconstrained"
     },
+    "GAUSS1LS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "GAUSS2LS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "GAUSS3LS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "GAUSSIAN": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
     "GENHUMPS": {
       "n": 5000,
       "nse": 19996,
@@ -317,10 +477,125 @@
       "nse": 15,
       "group": "quadratic"
     },
+    "GROWTHLS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "HAHN1LS": {
+      "n": 7,
+      "nse": 49,
+      "group": "unconstrained"
+    },
+    "HATFLDA": {
+      "n": 4,
+      "nse": 13,
+      "group": "bounded"
+    },
+    "HATFLDB": {
+      "n": 4,
+      "nse": 13,
+      "group": "bounded"
+    },
     "HATFLDC": {
       "n": 25,
       "nse": 140,
       "group": "bounded"
+    },
+    "HATFLDD": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "HATFLDE": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "HATFLDFL": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "HATFLDFLS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "HATFLDH": {
+      "n": 4,
+      "nse": 4,
+      "group": "quadratic"
+    },
+    "HEART6LS": {
+      "n": 6,
+      "nse": 36,
+      "group": "unconstrained"
+    },
+    "HEART8LS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "HIMMELBH": {
+      "n": 2,
+      "nse": 2,
+      "group": "unconstrained"
+    },
+    "HS25": {
+      "n": 3,
+      "nse": 9,
+      "group": "bounded"
+    },
+    "HS38": {
+      "n": 4,
+      "nse": 10,
+      "group": "bounded"
+    },
+    "HS4": {
+      "n": 2,
+      "nse": 1,
+      "group": "bounded"
+    },
+    "HS44NEW": {
+      "n": 4,
+      "nse": 8,
+      "group": "quadratic"
+    },
+    "HS45": {
+      "n": 5,
+      "nse": 20,
+      "group": "bounded"
+    },
+    "HS76": {
+      "n": 4,
+      "nse": 8,
+      "group": "quadratic"
+    },
+    "HS88": {
+      "n": 2,
+      "nse": 2,
+      "group": "quadratic"
+    },
+    "HS89": {
+      "n": 3,
+      "nse": 3,
+      "group": "quadratic"
+    },
+    "HS90": {
+      "n": 4,
+      "nse": 4,
+      "group": "quadratic"
+    },
+    "HS91": {
+      "n": 5,
+      "nse": 5,
+      "group": "quadratic"
+    },
+    "HS92": {
+      "n": 6,
+      "nse": 6,
+      "group": "quadratic"
     },
     "INDEF": {
       "n": 5000,
@@ -332,14 +607,79 @@
       "nse": 2994,
       "group": "unconstrained"
     },
+    "JENSMP": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "JUDGE": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "JUDGEB": {
+      "n": 2,
+      "nse": 4,
+      "group": "bounded"
+    },
+    "KIRBY2LS": {
+      "n": 5,
+      "nse": 25,
+      "group": "unconstrained"
+    },
+    "KOEBHELB": {
+      "n": 3,
+      "nse": 9,
+      "group": "bounded"
+    },
+    "KOWOSB": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
+    "LANCZOS1LS": {
+      "n": 6,
+      "nse": 36,
+      "group": "unconstrained"
+    },
+    "LANCZOS2LS": {
+      "n": 6,
+      "nse": 36,
+      "group": "unconstrained"
+    },
     "LEVYMONT": {
       "n": 100,
       "nse": 497,
       "group": "bounded"
     },
+    "LEVYMONT10": {
+      "n": 10,
+      "nse": 47,
+      "group": "bounded"
+    },
+    "LEVYMONT8": {
+      "n": 5,
+      "nse": 22,
+      "group": "bounded"
+    },
+    "LEVYMONT9": {
+      "n": 8,
+      "nse": 37,
+      "group": "bounded"
+    },
     "LIARWHD": {
       "n": 5000,
       "nse": 15000,
+      "group": "unconstrained"
+    },
+    "LSC1LS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "LSC2LS": {
+      "n": 3,
+      "nse": 9,
       "group": "unconstrained"
     },
     "LUKSAN11LS": {
@@ -372,10 +712,60 @@
       "nse": 1692,
       "group": "unconstrained"
     },
+    "MGH09LS": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
+    "MGH10LS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "MGH10SLS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "MGH17LS": {
+      "n": 5,
+      "nse": 25,
+      "group": "unconstrained"
+    },
+    "MGH17SLS": {
+      "n": 5,
+      "nse": 25,
+      "group": "unconstrained"
+    },
+    "MISRA1ALS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "MISRA1BLS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "MISRA1CLS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
+    "MISRA1DLS": {
+      "n": 2,
+      "nse": 4,
+      "group": "unconstrained"
+    },
     "NASH": {
       "n": 72,
       "nse": 96,
       "group": "quadratic"
+    },
+    "NELSONLS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
     },
     "NONCVXU2": {
       "n": 5000,
@@ -397,10 +787,85 @@
       "nse": 347900,
       "group": "unconstrained"
     },
+    "OSBORNEA": {
+      "n": 5,
+      "nse": 25,
+      "group": "unconstrained"
+    },
+    "OSBORNEB": {
+      "n": 11,
+      "nse": 121,
+      "group": "unconstrained"
+    },
+    "PALMER1": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER2": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER2B": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER3": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER3B": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER4": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER4B": {
+      "n": 4,
+      "nse": 16,
+      "group": "bounded"
+    },
+    "PALMER5B": {
+      "n": 9,
+      "nse": 81,
+      "group": "bounded"
+    },
+    "PALMER5C": {
+      "n": 6,
+      "nse": 36,
+      "group": "unconstrained"
+    },
+    "PALMER5D": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
+    "PALMER6A": {
+      "n": 6,
+      "nse": 36,
+      "group": "bounded"
+    },
+    "PALMER8A": {
+      "n": 6,
+      "nse": 36,
+      "group": "bounded"
+    },
     "QING": {
       "n": 100,
       "nse": 100,
       "group": "unconstrained"
+    },
+    "QINGB": {
+      "n": 5,
+      "nse": 5,
+      "group": "bounded"
     },
     "QUARTC": {
       "n": 5000,
@@ -412,10 +877,25 @@
       "nse": 5000,
       "group": "bounded"
     },
+    "RAT42LS": {
+      "n": 3,
+      "nse": 9,
+      "group": "unconstrained"
+    },
+    "RAT43LS": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
+    },
     "RAYBENDL": {
       "n": 2050,
       "nse": 16384,
       "group": "bounded"
+    },
+    "ROSZMAN1LS": {
+      "n": 4,
+      "nse": 16,
+      "group": "unconstrained"
     },
     "SBRYBND": {
       "n": 5000,
@@ -424,7 +904,7 @@
     },
     "SPARSINE": {
       "n": 5000,
-      "nse": 185000,
+      "nse": 164316,
       "group": "unconstrained"
     },
     "SROSENBR": {
@@ -462,6 +942,26 @@
       "nse": 44982,
       "group": "unconstrained"
     },
+    "VESUVIALS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "VESUVIOLS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "VESUVIOULS": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
+    "VIBRBEAM": {
+      "n": 8,
+      "nse": 64,
+      "group": "unconstrained"
+    },
     "WOODS": {
       "n": 4000,
       "nse": 10000,
@@ -471,6 +971,11 @@
       "n": 2002,
       "nse": 2002,
       "group": "quadratic"
+    },
+    "YATP1LS": {
+      "n": 440,
+      "nse": 18080,
+      "group": "unconstrained"
     }
   }
 }
