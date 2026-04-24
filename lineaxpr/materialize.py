@@ -53,6 +53,7 @@ from ._base import (
     Identity,
     _ellpack_to_bcoo_batched,
     _resolve_col,
+    _slice_col,
     _to_bcoo,
     _to_dense,
     _traced_shape,
@@ -572,6 +573,14 @@ def _tile_1row_bellpack(ep, target_rows):
     )
 
 
+def _slice_be_rows(ep, lo, hi):
+    """Slice an unbatched BEllpack to absolute row range [lo, hi)."""
+    r0, r1 = lo - ep.start_row, hi - ep.start_row
+    new_in_cols = tuple(_slice_col(c, r0, r1) for c in ep.in_cols)
+    return BEllpack(lo, hi, new_in_cols, ep.values[r0:r1],
+                    ep.out_size, ep.in_size)
+
+
 def _add_rule(invals, traced, n, **params):
     """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
     the least-specific form needed. Dispatch is on the set of input kinds."""
@@ -802,6 +811,56 @@ def _add_rule(invals, traced, n, **params):
                     tuple(new_in_cols), new_values,
                     first.out_size, first.in_size,
                 ), n)
+
+        # Overlap merge for exactly two unbatched BEllpacks with non-trivial
+        # overlapping (non-same, non-disjoint) row ranges. Slices both to the
+        # overlap, applies recursive add (partial-match dedup fires for cross-
+        # band matches), then row-disjoint-unions head/overlap/tail after
+        # k-padding with -1 sentinel columns (filtered by _ellpack_to_bcoo).
+        # Only fires when dedup reduces k in the overlap; falls through to
+        # BCOO concat otherwise. Targets BROYDN3DLS / LEVYMONT class.
+        if len(vals) == 2 and all(v.batch_shape == () for v in vals):
+            ep1, ep2 = vals[0], vals[1]
+            if ep1.out_size == ep2.out_size and ep1.in_size == ep2.in_size:
+                lo = max(ep1.start_row, ep2.start_row)
+                hi = min(ep1.end_row, ep2.end_row)
+                if lo < hi:  # non-trivial overlap (same-range already handled)
+                    ov1 = _slice_be_rows(ep1, lo, hi)
+                    ov2 = _slice_be_rows(ep2, lo, hi)
+                    merged_ov = _add_rule([ov1, ov2], [True, True], n)
+                    if (isinstance(merged_ov, BEllpack)
+                            and merged_ov.k < ov1.k + ov2.k):
+                        pieces = []
+                        if ep1.start_row < lo:
+                            pieces.append(_slice_be_rows(ep1, ep1.start_row, lo))
+                        if ep2.start_row < lo:
+                            pieces.append(_slice_be_rows(ep2, ep2.start_row, lo))
+                        pieces.append(merged_ov)
+                        if ep1.end_row > hi:
+                            pieces.append(_slice_be_rows(ep1, hi, ep1.end_row))
+                        if ep2.end_row > hi:
+                            pieces.append(_slice_be_rows(ep2, hi, ep2.end_row))
+                        k_max = max(p.k for p in pieces)
+                        padded = []
+                        for p in pieces:
+                            if p.k < k_max:
+                                extra_k = k_max - p.k
+                                extra_cols = tuple(
+                                    np.full(p.nrows, -1, dtype=np.intp)
+                                    for _ in range(extra_k)
+                                )
+                                extra_vals = jnp.zeros(
+                                    (p.nrows, extra_k), dtype=p.values.dtype)
+                                base = (p.values[:, None]
+                                        if p.values.ndim == 1 else p.values)
+                                padded.append(BEllpack(
+                                    p.start_row, p.end_row,
+                                    p.in_cols + extra_cols,
+                                    jnp.concatenate([base, extra_vals], axis=1),
+                                    p.out_size, p.in_size))
+                            else:
+                                padded.append(p)
+                        return _add_rule(padded, [True] * len(padded), n)
 
     # Mix of {ConstantDiagonal, Diagonal, BEllpack} at matching (n, n) shape:
     # promote diagonals to BEllpack bands over the full row range and
