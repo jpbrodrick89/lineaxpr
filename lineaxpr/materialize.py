@@ -1829,16 +1829,20 @@ def _bellpack_row_sum(ep):
                 values=summed.reshape(1, n_groups),
                 out_size=1, in_size=in_size,
             )
-    result = jnp.zeros((in_size,), ep.dtype)
-    for b in range(k):
-        cols_b = per_band_cols[b]
-        vals_b = ep.values if k == 1 else ep.values[..., b]
-        cols_j = jnp.asarray(cols_b)
-        mask = cols_j >= 0
-        safe_cols = jnp.where(mask, cols_j, 0)
-        safe_vals = jnp.where(mask, vals_b, jnp.zeros((), ep.dtype))
-        result = result.at[safe_cols].add(safe_vals)
-    return result
+    # Tracer-cols fallback: flatten all bands at once. Values `(nrows,)`
+    # for k=1 stay as-is; `(nrows, k)` for k>=2 goes band-major via
+    # `.T.reshape(-1)`. Cols stack via jnp (some may be tracers). One
+    # scatter into the result. Replaces the previous per-band Python
+    # loop that emitted k scatter-add ops.
+    cols_stacked = jnp.concatenate(
+        [jnp.asarray(c) for c in per_band_cols], axis=0
+    )
+    vals_stacked = (ep.values if k == 1
+                    else ep.values.T.reshape(-1))
+    mask = cols_stacked >= 0
+    safe_cols = jnp.where(mask, cols_stacked, 0)
+    safe_vals = jnp.where(mask, vals_stacked, jnp.zeros((), ep.dtype))
+    return jnp.zeros((in_size,), ep.dtype).at[safe_cols].add(safe_vals)
 
 
 def _reduce_sum_rule(invals, traced, n, **params):
