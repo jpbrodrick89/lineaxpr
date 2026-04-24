@@ -362,18 +362,33 @@ def _col_batch_slice(col, batch_idx):
 
 
 def _bellpack_unbatch(bep):
-    """Split a BEllpack with n_batch == 1 into a tuple of unbatched Ellpacks.
+    """Split a BEllpack with n_batch >= 1 into a tuple of unbatched Ellpacks.
 
-    Each slice shares `(start_row, end_row, out_size, in_size)` and differs
-    in per-batch `in_cols` and `values` rows.
+    For n_batch == 1 the split is direct. For n_batch > 1 we flatten the
+    batch axes first: values `(*batch, nrows, k) -> (prod_batch, nrows, k)`;
+    N-D cols `(*batch, nrows, ...)` similarly collapse. 1-D shared cols
+    and slices stay as-is. Each emitted slice shares
+    `(start_row, end_row, out_size, in_size)`.
     """
     assert bep.n_batch >= 1, "use only when n_batch > 0"
-    # Flatten batch_shape to a single leading axis of size B.
+    if bep.n_batch > 1:
+        prod_B = int(np.prod(bep.batch_shape))
+        # Flatten batch axes of values.
+        trailing = bep.values.shape[bep.n_batch:]
+        flat_values = bep.values.reshape((prod_B,) + trailing)
+        flat_cols = []
+        for c in bep.in_cols:
+            if isinstance(c, slice) or (hasattr(c, "ndim") and c.ndim == 1):
+                flat_cols.append(c)
+            else:
+                flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))
+        bep = BEllpack(
+            start_row=bep.start_row, end_row=bep.end_row,
+            in_cols=tuple(flat_cols), values=flat_values,
+            out_size=bep.out_size, in_size=bep.in_size,
+            batch_shape=(prod_B,),
+        )
     B = bep.batch_shape[0]
-    # For n_batch > 1 we'd need to iterate over the product; leave as TODO.
-    assert bep.n_batch == 1, (
-        f"_bellpack_unbatch only supports n_batch=1 currently, got {bep.n_batch}"
-    )
     result = []
     for b in range(B):
         in_cols_b = tuple(_col_batch_slice(c, b) for c in bep.in_cols)
@@ -1636,6 +1651,41 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             out_size=op.out_size, in_size=op.in_size,
             batch_shape=new_batch,
         )
+    # Prepend leading batch axes to an already-batched BE.
+    # `broadcast_dimensions` is a contiguous tail mapping the input's
+    # (batch, out) axes to the output's (batch, out) axes, with new
+    # axes prepended. Values get broadcast-tiled along the new leading
+    # dims; N-D cols (if any) get the same broadcast along those axes.
+    # Used by LUKSAN16LS's step 22: BE(batch=(4,), out=49) broadcast
+    # to aval (3, 4, 49), keeping the chain structural past step 14.
+    input_rank = op.n_batch + 1 if isinstance(op, BEllpack) else None
+    if (isinstance(op, BEllpack)
+            and input_rank is not None
+            and len(broadcast_dimensions) == input_rank
+            and len(shape) > input_rank
+            and broadcast_dimensions == tuple(
+                range(len(shape) - input_rank, len(shape)))
+            and shape[-1] == op.out_size):
+        prepend = tuple(shape[:len(shape) - input_rank])
+        new_batch = prepend + op.batch_shape
+        new_values = jnp.broadcast_to(op.values, prepend + op.values.shape)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice) or c.ndim == 1:
+                new_in_cols.append(c)
+                continue
+            # N-D cols: broadcast along the new leading axes.
+            target = prepend + c.shape
+            if isinstance(c, np.ndarray):
+                new_in_cols.append(np.broadcast_to(c, target))
+            else:
+                new_in_cols.append(jnp.broadcast_to(c, target))
+        return BEllpack(
+            start_row=op.start_row, end_row=op.end_row,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=op.out_size, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
     # Trailing-singleton (the `jnp.stack` pattern in LUKSAN11–16):
     # unbatched BEllpack aval-(n,) broadcast to aval-(n, 1, ..., 1). The
     # original rows become separate batches; the trailing size-1 axis
@@ -1807,6 +1857,49 @@ def _reduce_sum_rule(invals, traced, n, **params):
             if len(slices) == 1:
                 return slices[0]
             return _add_rule(list(slices), [True] * len(slices), n)
+        # Partial batch-axis reduction: `axes` is a strict subset of
+        # the batch axes. Safe to stay structural when every band's
+        # cols are shared across the reduced axes (1-D shared cols, or
+        # N-D cols with size-1 along those axes). Sum values along
+        # those axes; shrink batch_shape accordingly. Used by
+        # LUKSAN16LS: a `broadcast_in_dim`-tiled BE feeds a
+        # reduce_sum(axes=(0,)) with n_batch=2 — previously densified
+        # at this step, triggering 22 dense ops downstream.
+        if (axes_t and axes_t[-1] < op.n_batch
+                and len(axes_t) < op.n_batch):
+            reduced = set(axes_t)
+            safe = True
+            for c in op.in_cols:
+                if isinstance(c, slice):
+                    continue
+                if c.ndim == 1:
+                    continue
+                # 2D+ cols: must be size-1 along every reduced axis.
+                for a in axes_t:
+                    if a < c.ndim and c.shape[a] != 1:
+                        safe = False
+                        break
+                if not safe:
+                    break
+            if safe:
+                new_values = op.values.sum(axis=axes_t)
+                new_in_cols = []
+                for c in op.in_cols:
+                    if isinstance(c, slice) or c.ndim == 1:
+                        new_in_cols.append(c)
+                    else:
+                        # Drop the size-1 reduced axes.
+                        new_in_cols.append(c.squeeze(axis=axes_t))
+                new_batch = tuple(
+                    s for i, s in enumerate(op.batch_shape)
+                    if i not in reduced
+                )
+                return BEllpack(
+                    op.start_row, op.end_row,
+                    tuple(new_in_cols), new_values,
+                    op.out_size, op.in_size,
+                    batch_shape=new_batch,
+                )
         # Out-axis-only reduction on a single-batch-axis BEllpack:
         # `axes == (n_batch,)` sums the out_size rows within each batch,
         # yielding an unbatched `(batch, in_size)` operator whose row-b
