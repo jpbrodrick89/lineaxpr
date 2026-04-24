@@ -72,6 +72,12 @@ KNOWN_UNIMPLEMENTED: dict[str, str] = {
     "SCURLY10": "conv_general_dilated primitive unimplemented",
     "SCURLY20": "conv_general_dilated primitive unimplemented",
     "SCURLY30": "conv_general_dilated primitive unimplemented",
+    # PALMER* problems use `jnp.polyval`, which lowers to `lax.scan` —
+    # no structural rule for scan yet. Previously masked by the
+    # `_SMALL_N_VMAP_THRESHOLD` shortcut (all PALMER variants have
+    # n ≤ 8); now surfaced since the shortcut is removed.
+    **{f"PALMER{k}{v}": "scan primitive (from polyval) unimplemented"
+       for k in "12345678" for v in ("A", "B", "C", "D", "E")},
 }
 
 # Constructor kwargs for smaller variants of problems whose default size

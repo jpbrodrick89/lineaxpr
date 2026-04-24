@@ -1150,10 +1150,34 @@ def _slice_rule(invals, traced, n, **params):
             )
         if isinstance(operand, BEllpack):
             return operand.pad_rows(-s, -(operand.out_size - e))
+        # BCOO slice axis=0: drop out-of-range rows rather than mask to
+        # zero. The mask-to-zero variant leaves entries with row indices
+        # outside `[0, k)` in the output — downstream `_bcoo_scale_*`
+        # rules index with those rows and emit NaN / wrong values. When
+        # indices are a static np array (the common case for our BCOO
+        # construction), filter at trace time; otherwise drop via
+        # runtime gather. Mirrors the fix applied to `_split_rule` for
+        # the same reason.
+        indices_np = None
+        try:
+            indices_np = np.asarray(operand.indices)
+        except (jax.errors.TracerArrayConversionError, TypeError):
+            pass
+        if isinstance(indices_np, np.ndarray):
+            rows_np = indices_np[:, 0]
+            keep = np.nonzero((rows_np >= s) & (rows_np < e))[0]
+            new_indices = np.stack(
+                [rows_np[keep] - s, indices_np[keep, 1]], axis=1
+            )
+            new_data = jnp.take(operand.data, jnp.asarray(keep))
+            return sparse.BCOO(
+                (new_data, new_indices), shape=(k, operand.shape[1]),
+            )
         rows = operand.indices[:, 0]
-        mask = (rows >= s) & (rows < e)
-        new_data = operand.data * mask
-        new_rows = rows - s
+        in_range = (rows >= s) & (rows < e)
+        new_rows = jnp.where(in_range, rows - s, 0)
+        new_data = jnp.where(in_range, operand.data,
+                             jnp.zeros((), operand.data.dtype))
         new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
         return sparse.BCOO((new_data, new_indices), shape=(k, operand.shape[1]))
 
@@ -1317,6 +1341,20 @@ def _squeeze_rule(invals, traced, n, **params):
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         if not dimensions:
             return op
+        # n=1 special case: a Diagonal/ConstantDiagonal of size 1 is
+        # semantically a scalar times 1×1 identity. Squeezing dim (0,)
+        # collapses the single out row to a scalar-aval linear form;
+        # return a BEllpack(out_size=1) row-vector whose single band
+        # has col 0 and the scalar value. Matches the same form
+        # produced by the `_squeeze_rule` BEllpack path below.
+        if op.n == 1 and dimensions == (0,):
+            val = (jnp.asarray(op.value).reshape(1)
+                   if isinstance(op, ConstantDiagonal) else op.values)
+            return BEllpack(
+                start_row=0, end_row=1,
+                in_cols=(np.asarray([0]),), values=val,
+                out_size=1, in_size=1,
+            )
         raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
     if isinstance(op, BEllpack) and op.n_batch == 0 and dimensions == (0,) \
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1:
@@ -1779,6 +1817,17 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             batch_shape=new_batch,
         )
     dense = _to_dense(op, n)
+    # Dense-operand normalisation: when a prior rule has already
+    # densified a 1-row LinOp (aval ndim 0, represented with a leading
+    # size-1 axis), `dense` carries an extra axis beyond what the
+    # broadcast_in_dim semantics expect. Squeeze leading size-1 axes
+    # so `dense.ndim == len(broadcast_dimensions) + 1` (one for the
+    # trailing input-coord axis). Example trigger: BEALE n=2 after
+    # `_to_dense` on a 1-row BEllpack produces `(1, n)` then hits
+    # `broadcast_in_dim(shape=(1,), dims=())` for scalar-aval input.
+    expected_ndim = len(broadcast_dimensions) + 1
+    while dense.ndim > expected_ndim and dense.shape[0] == 1:
+        dense = dense[0]
     # Map each output axis to the corresponding input axis (or broadcast it).
     out_dims = tuple(broadcast_dimensions) + (len(shape),)  # add input axis
     return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
@@ -2439,6 +2488,18 @@ except ImportError:
     pass
 
 
+def _squeeze_leading_ones(arr, k):
+    """Squeeze `k` leading size-1 axes from `arr`. Used to align
+    densified LinOp case shapes in `_select_n_rule` (1-row BEs
+    densify to `(1, n)` but represent the same aval as a scalar-aval
+    LinOp densifying to `(n,)`)."""
+    for _ in range(k):
+        if arr.ndim == 0 or arr.shape[0] != 1:
+            break
+        arr = arr[0]
+    return arr
+
+
 def _select_n_rule(invals, traced, n, **params):
     """`select_n(pred, *cases)` for constant `pred`. Predicates derived from
     traced inputs would imply a data-dependent branch, which is non-linear and
@@ -2485,12 +2546,16 @@ def _select_n_rule(invals, traced, n, **params):
         # pred has the BE's aval shape `(*batch_shape, out_size)`;
         # slice the last axis to the active row range. mask is
         # `(*batch_shape, nrows)`, broadcasting over the trailing k
-        # axis for k>=2 values.
+        # axis for k>=2 values. Scalar pred (aval=()) applies
+        # uniformly — skip the slice.
         pred_arr = jnp.asarray(pred)
-        pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
-        mask = (pred_slice == t_idx)
-        if t_case.k >= 2:
-            mask = mask[..., None]
+        if pred_arr.ndim == 0:
+            mask = (pred_arr == t_idx)
+        else:
+            pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
+            mask = (pred_slice == t_idx)
+            if t_case.k >= 2:
+                mask = mask[..., None]
         new_values = jnp.where(mask, t_case.values,
                                jnp.zeros((), t_case.dtype))
         return BEllpack(
@@ -2519,11 +2584,14 @@ def _select_n_rule(invals, traced, n, **params):
         )
         if same_cols:
             pred_arr = jnp.asarray(pred)
-            pred_slice = pred_arr[first.start_row:first.end_row]
-            if first.values.ndim > 1:
-                pred_b = pred_slice[:, None]
+            if pred_arr.ndim == 0:
+                # Scalar pred applies uniformly across rows (HELIX /
+                # PFIT* at n=3). No slicing or row-axis broadcast
+                # needed; values broadcast against scalar naturally.
+                pred_b = pred_arr
             else:
-                pred_b = pred_slice
+                pred_slice = pred_arr[first.start_row:first.end_row]
+                pred_b = pred_slice[:, None] if first.values.ndim > 1 else pred_slice
             # select_n with bool pred: cases[0] when pred is False, cases[1] when True
             # (matching lax.select_n semantics for 2-case).
             if len(cases) == 2:
@@ -2585,6 +2653,17 @@ def _select_n_rule(invals, traced, n, **params):
             arr = jnp.asarray(c)
             zero_shape = arr.shape + (n,)
             case_dense.append(jnp.zeros(zero_shape, dtype=arr.dtype))
+    # Normalise densified cases to the lowest aval-rank by squeezing
+    # leading size-1 axes. A 1-row BEllpack (aval ndim 0) densifies to
+    # `(1, n)`; a scalar-aval LinOp densifies to `(n,)`. Without this
+    # align, `lax.select_n` rejects mismatched case shapes (HELIX n=3
+    # repro: one case `(1, 3)` vs another `(3,)`).
+    min_ndim = min(d.ndim for d in case_dense)
+    case_dense = [
+        d if d.ndim == min_ndim
+        else _squeeze_leading_ones(d, d.ndim - min_ndim)
+        for d in case_dense
+    ]
 
     pred_arr = jnp.asarray(pred)
     # pred has shape (*var_shape,); broadcast it to (*var_shape, n) so each
@@ -2930,7 +3009,10 @@ def sparsify(linear_fn):
 
 
 _SMALL_N_VMAP_THRESHOLD = 16
-"""Below this n, vmap(linear_fn)(eye) emits less HLO than the structural walk
+"""Deprecated: shortcut removed — all problems exercise the structural
+walk. Threshold retained as a sentinel so the `lineaxpr` re-export stays
+valid; no live code path uses it. Formerly: below this n,
+`vmap(linear_fn)(eye)` emits less HLO than the structural walk
 on most problems. Above it the walk's structure exploitation dominates."""
 
 
@@ -2986,21 +3068,28 @@ def materialize(linear_fn, primal, format: str = "dense"):
           walk preserves structural sparsity, otherwise a dense ndarray
           (dense fallbacks surface to the caller unchanged).
 
-    For tiny inputs (n < `_SMALL_N_VMAP_THRESHOLD`) the structural walk
-    emits more HLO than `vmap(linear_fn)(eye)` — the short-circuit is
-    always dense; users asking for `"bcoo"` at tiny n still get dense
-    output (by design; densification at small n is the right call).
     """
     if format not in _VALID_FORMATS:
         raise ValueError(f"format must be one of {_VALID_FORMATS}, got {format!r}")
     n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
-    if n < _SMALL_N_VMAP_THRESHOLD:
-        return jax.vmap(linear_fn)(jnp.eye(n, dtype=primal.dtype)).T
     seed = Identity(n, dtype=primal.dtype)
     linop = sparsify(linear_fn)(seed)
     if format == "dense":
         return to_dense(linop)
-    return to_bcoo(linop)
+    bcoo = to_bcoo(linop)
+    # Smart-densify at output: if the emitted BCOO has more entries
+    # than the dense matrix would hold (nse > prod(shape)), the walk
+    # accumulated enough duplicates that storage is now worse than
+    # dense. Return dense instead. DUAL-class problems (small n,
+    # highly-connected) hit this when `_bcoo_concat` stacks many
+    # overlapping BCOO operands without deduping.
+    if isinstance(bcoo, sparse.BCOO):
+        total = 1
+        for s in bcoo.shape:
+            total *= int(s)
+        if bcoo.nse > total:
+            return bcoo.todense()
+    return bcoo
 
 
 # -------------------------- jax-like public API --------------------------
