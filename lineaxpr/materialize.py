@@ -1808,7 +1808,6 @@ def _reduce_sum_rule(invals, traced, n, **params):
             # C-order flatten of `values.shape = (*batch, nrows=O, k=K)`
             # to `(B, O*K)`.
             new_in_cols = []
-            ok = True
             for r in range(O):
                 for b in range(K):
                     c = op.in_cols[b]
@@ -1822,11 +1821,11 @@ def _reduce_sum_rule(invals, traced, n, **params):
                     elif isinstance(c, np.ndarray) and c.ndim == 2:
                         new_in_cols.append(c[:, r])
                     else:
-                        ok = False
-                        break
-                if not ok:
-                    break
-            if ok:
+                        # jnp tracer cols — 1D shared or (*batch, nrows).
+                        c_full = c if c.ndim >= 2 else jnp.broadcast_to(
+                            c, op.batch_shape + (op.nrows,))
+                        new_in_cols.append(c_full[:, r])
+            if True:
                 if K == 1:
                     # (B, O) already in natural r-major order, k=O.
                     new_values = op.values
@@ -2320,21 +2319,22 @@ def _select_n_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (new_data, t_case.indices), shape=t_case.shape
             )
-    if (sum(case_traced) == 1
-            and isinstance(t_case, BEllpack)
-            and t_case.n_batch == 0):
+    if sum(case_traced) == 1 and isinstance(t_case, BEllpack):
+        # pred has the BE's aval shape `(*batch_shape, out_size)`;
+        # slice the last axis to the active row range. mask is
+        # `(*batch_shape, nrows)`, broadcasting over the trailing k
+        # axis for k>=2 values.
         pred_arr = jnp.asarray(pred)
-        pred_slice = pred_arr[t_case.start_row:t_case.end_row]
+        pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
         mask = (pred_slice == t_idx)
-        if t_case.values.ndim > 1:
-            mask_b = mask[:, None]
-        else:
-            mask_b = mask
-        new_values = jnp.where(mask_b, t_case.values,
+        if t_case.k >= 2:
+            mask = mask[..., None]
+        new_values = jnp.where(mask, t_case.values,
                                jnp.zeros((), t_case.dtype))
         return BEllpack(
             t_case.start_row, t_case.end_row, t_case.in_cols,
             new_values, t_case.out_size, t_case.in_size,
+            batch_shape=t_case.batch_shape,
         )
 
     # Structural fast path: all cases are BEllpack with matching
@@ -2453,6 +2453,50 @@ def _gather_rule(invals, traced, n, **params):
         and dnums.start_index_map == (0, 1)
         and params["slice_sizes"] == (1, 1)
     ):
+        # Structural 2D point-gather on batched BEllpack (0d): each
+        # gather index `(r, c)` picks the k entries stored at
+        # `operand[r, c]` across all bands. Shapes: operand aval
+        # `(R, C)` with nrows = C, per-band cols resolved to `(R, C)`,
+        # values `(R, C[, k])`. Output LinOp batch_shape = leading
+        # axes of `start_indices`, out_size = last leading axis,
+        # `k = k_old`. Leaves the walk sparse where the dense fallback
+        # would densify at `k_old * N` entries.
+        if (isinstance(operand, BEllpack)
+                and operand.n_batch == 1
+                and operand.start_row == 0
+                and operand.end_row == operand.out_size
+                and start_indices.ndim >= 2):
+            leading = start_indices.shape[:-1]
+            new_batch = leading[:-1]
+            new_out = leading[-1]
+            # Fancy indexing with `row_flat`/`col_flat` needs jnp on
+            # both sides when indices are outer-jit tracers. Cols that
+            # were static np.ndarrays become jnp tracers after this —
+            # downstream just treats them as traced cols.
+            idx_static = isinstance(start_indices, np.ndarray)
+            if idx_static:
+                row_flat = start_indices[..., 0].reshape(-1)
+                col_flat = start_indices[..., 1].reshape(-1)
+            else:
+                row_flat = jnp.asarray(start_indices[..., 0]).reshape(-1)
+                col_flat = jnp.asarray(start_indices[..., 1]).reshape(-1)
+            new_in_cols = []
+            for c in operand.in_cols:
+                c_full = _resolve_full(c, operand.nrows, operand.batch_shape)
+                if not idx_static and isinstance(c_full, np.ndarray):
+                    c_full = jnp.asarray(c_full)
+                new_in_cols.append(c_full[row_flat, col_flat].reshape(leading))
+            vals = operand.values[row_flat, col_flat]
+            if operand.k == 1:
+                vals = vals.reshape(leading)
+            else:
+                vals = vals.reshape(leading + (operand.k,))
+            return BEllpack(
+                start_row=0, end_row=new_out,
+                in_cols=tuple(new_in_cols), values=vals,
+                out_size=new_out, in_size=operand.in_size,
+                batch_shape=new_batch,
+            )
         dense = _to_dense(operand, n)
         # dense has shape `(*operand_primal_shape, n)` where the last
         # axis is the input axis; gather collapses the first two.
