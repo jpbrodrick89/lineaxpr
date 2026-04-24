@@ -17,8 +17,6 @@ from pathlib import Path
 
 import jax
 
-from lineaxpr import materialize
-
 
 jax.config.update("jax_enable_x64", True)
 
@@ -76,8 +74,8 @@ def main():
             return p.objective(z, p.args)
 
         try:
-            _, hvp = jax.linearize(jax.grad(f), y)
-            S = materialize(hvp, y, format="bcoo")
+            import lineaxpr as _lx
+            S = jax.jit(_lx.bcoo_hessian(f))(y)
         except Exception as e:
             skipped_error += 1
             print(f"  skip {name}: {type(e).__name__}: {str(e)[:60]}")

@@ -549,7 +549,7 @@
     },
     "SPARSINE": {
       "n": 5000,
-      "nse": 164316,
+      "nse": 185000,
       "group": "unconstrained"
     },
     "SROSENBR": {

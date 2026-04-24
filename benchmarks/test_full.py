@@ -9,7 +9,7 @@ Two size tiers:
 
 # pyright: reportMissingImports=false, reportAttributeAccessIssue=false
 import os
-
+import sys
 
 import jax
 import pytest
@@ -26,6 +26,13 @@ try:
     HAS_ASDEX = True
 except ImportError:
     HAS_ASDEX = False
+
+# Import the shared known-unimplemented registry from the sweep tests so that
+# problems like PALMER* and CURLY* are skipped here with the same reason
+# strings. Appended to sys.path so the tests/ directory is importable even
+# when the benchmark is run from outside the project root.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
+from test_sif2jax_sweep import KNOWN_UNIMPLEMENTED  # noqa: E402
 
 # Thresholds empirically derived (see threshold probe in docs/RESEARCH_NOTES.md
 # or re-run with `uv run python benchmarks/probe_thresholds.py`):
@@ -141,6 +148,10 @@ def _make(extractor_kind, problem):
         def fn(y): return jax.hessian(f)(y)
         with config.eager_constant_folding(True):
             return _compile(fn, problem.y0)
+
+    if extractor_kind in ("mat", "bcoo"):
+        if problem.name in KNOWN_UNIMPLEMENTED:
+            pytest.skip(f"known-unimplemented: {KNOWN_UNIMPLEMENTED[problem.name]}")
 
     if extractor_kind == "mat":
         @jax.jit
