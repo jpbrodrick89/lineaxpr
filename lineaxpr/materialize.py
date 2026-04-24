@@ -51,7 +51,6 @@ from ._base import (
     Diagonal,
     BEllpack,
     Identity,
-    _ellpack_to_bcoo,
     _ellpack_to_bcoo_batched,
     _resolve_col,
     _to_bcoo,
@@ -748,6 +747,46 @@ def _add_rule(invals, traced, n, **params):
                 new_in_cols, new_values,
                 first.out_size, first.in_size,
                 batch_shape=first.batch_shape), n)
+
+        # Row-disjoint union: all-BE with same k / out_size / in_size /
+        # batch_shape=(), row ranges pairwise non-overlapping and union
+        # contiguous. Produced by `reduce_sum → pad` chains (COATING-
+        # class) — each operand is a sparse row-vector at a different
+        # position. Concatenate per-row values and cols along the row
+        # axis to emit one BE spanning the union range without a BCOO
+        # promote per operand.
+        if (first.batch_shape == ()
+                and all(v.batch_shape == () and v.out_size == first.out_size
+                        and v.in_size == first.in_size and v.k == first.k
+                        for v in vals)):
+            sorted_vals = sorted(vals, key=lambda v: v.start_row)
+            abut = all(
+                sorted_vals[i].end_row == sorted_vals[i + 1].start_row
+                for i in range(len(sorted_vals) - 1)
+            )
+            if abut:
+                k_new = first.k
+                if k_new == 1:
+                    parts = [v.values if v.values.ndim == 1 else v.values[:, 0]
+                             for v in sorted_vals]
+                    new_values = jnp.concatenate(parts, axis=0)
+                else:
+                    parts = [v.values for v in sorted_vals]
+                    new_values = jnp.concatenate(parts, axis=0)
+                new_in_cols = []
+                for b in range(k_new):
+                    band_rows = [_resolve_col(v.in_cols[b], v.nrows)
+                                 for v in sorted_vals]
+                    if all(isinstance(c, np.ndarray) for c in band_rows):
+                        new_in_cols.append(np.concatenate(band_rows, axis=0))
+                    else:
+                        new_in_cols.append(jnp.concatenate(
+                            [jnp.asarray(c) for c in band_rows], axis=0))
+                return _densify_if_wider_than_dense(BEllpack(
+                    sorted_vals[0].start_row, sorted_vals[-1].end_row,
+                    tuple(new_in_cols), new_values,
+                    first.out_size, first.in_size,
+                ), n)
 
     # Mix of {ConstantDiagonal, Diagonal, BEllpack} at matching (n, n) shape:
     # promote diagonals to BEllpack bands over the full row range and
@@ -1697,19 +1736,52 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
 materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
 
 def _bellpack_row_sum(ep):
-    """Sum the rows of an unbatched BEllpack, returning a 1D (in_size,)
-    array of per-column totals. O(nrows · k) scatter-adds — no dense
-    (out_size, in_size) materialisation.
+    """Sum the rows of an unbatched BEllpack. When static cols let us
+    compute the set of touched columns at trace time AND the result is
+    structurally sparse (distinct cols < in_size), emit a BEllpack
+    row-vector `(1, in_size)` whose bands hold the per-col sums —
+    preserving sparsity through downstream broadcast_in_dim / pad /
+    add_any chains. Otherwise fall back to a dense `(in_size,)` array.
 
-    Used as `_reduce_sum_rule(ep, axes=(0,))`'s structural path: the
-    row-sum is the row-vector coefficients of the resulting scalar-LinOp.
+    Used as `_reduce_sum_rule(ep, axes=(0,))`'s structural path.
     """
     assert ep.n_batch == 0
     nrows = ep.nrows
     k = ep.k
-    result = jnp.zeros((ep.in_size,), ep.dtype)
+    in_size = ep.in_size
+    per_band_cols = [_resolve_col(c, nrows) for c in ep.in_cols]
+    if all(isinstance(c, np.ndarray) for c in per_band_cols):
+        cols_flat = np.concatenate(per_band_cols)
+        valid = cols_flat >= 0
+        cols_valid = cols_flat[valid]
+        uniq_cols, inverse = np.unique(cols_valid, return_inverse=True)
+        n_groups = uniq_cols.shape[0]
+        if 0 < n_groups < in_size:
+            vals_flat = ep.values if k == 1 else ep.values.T.reshape(-1)
+            keep = np.nonzero(valid)[0]
+            if keep.shape[0] < cols_flat.shape[0]:
+                vals_keep = jnp.take(vals_flat, jnp.asarray(keep))
+            else:
+                vals_keep = vals_flat
+            summed = jnp.zeros((n_groups,), ep.dtype).at[
+                jnp.asarray(inverse)].add(vals_keep)
+            if n_groups == 1:
+                return BEllpack(
+                    start_row=0, end_row=1,
+                    in_cols=(np.asarray([uniq_cols[0]], dtype=uniq_cols.dtype),),
+                    values=summed.reshape(1),
+                    out_size=1, in_size=in_size,
+                )
+            return BEllpack(
+                start_row=0, end_row=1,
+                in_cols=tuple(np.asarray([c], dtype=uniq_cols.dtype)
+                              for c in uniq_cols),
+                values=summed.reshape(1, n_groups),
+                out_size=1, in_size=in_size,
+            )
+    result = jnp.zeros((in_size,), ep.dtype)
     for b in range(k):
-        cols_b = _resolve_col(ep.in_cols[b], nrows)
+        cols_b = per_band_cols[b]
         vals_b = ep.values if k == 1 else ep.values[..., b]
         cols_j = jnp.asarray(cols_b)
         mask = cols_j >= 0
@@ -2134,7 +2206,7 @@ def _split_rule(invals, traced, n, **params):
                 be_start, be_end, tuple(new_in_cols), new_values,
                 sz_i, operand.in_size,
             )
-            out.append(_ellpack_to_bcoo(chunk_be))
+            out.append(chunk_be)
             start = end
         return out
     if axis == 0 and isinstance(operand, (ConstantDiagonal, Diagonal,
