@@ -245,30 +245,24 @@ def _mul_rule(invals, traced, n, **params):
                 batch_shape=new_batch,
             )
     # Out-size-broadcast path: scale expands a size-1 out axis to
-    # `scale.shape[-1]`. Triggered by the NONMSQRT-class pattern where
-    # an aval-(B, 1) BEllpack (from `bid`-trailing-singleton + slice /
-    # reduce_sum chain) multiplies by a (B, S) closure — the primal
-    # broadcasts to (B, S) and each of the S new rows is a scaled copy
-    # of the traced op's single row. Stays structural: new BEllpack
-    # batch_shape=batch, out_size=S, k unchanged; values are one
-    # broadcast-mul (no per-band loop); cols broadcast statically
-    # across the new out axis.
+    # `scale.shape[-1]`. Triggered by the NONMSQRT / EIGENALS-class
+    # pattern where an aval-(B, 1) BEllpack (from `bid`-trailing-
+    # singleton + slice / reduce_sum chain) multiplies by a (B, S)
+    # closure — the primal broadcasts to (B, S) and each of the S new
+    # rows is a scaled copy of the traced op's single row. Stays
+    # structural: new BEllpack `batch_shape=batch, out_size=S`, k
+    # unchanged; for k=1 the value mul is a direct scale*values with
+    # no axis insertion; for k>=2 we insert `[..., None]` to broadcast
+    # over the band axis; cols broadcast statically across new out.
     #
-    # Gated on `traced.k >= 2` as a proxy for "dense alternative is
-    # expensive enough that sparse emit pays off". A K=1 traced BE
-    # typically just arrived from `bid(row-vector)` or similar and the
-    # downstream op is often `add_any(..., dense_closure)` which
-    # densifies the mul result anyway — making the structural emit
-    # pure overhead. K>=2 indicates the walk has already accumulated
-    # bands (mul/add/concat), correlating with a larger dense
-    # alternative where the scatter-into-zeros + dense-add path
-    # beats XLA's fused broadcast-mul+add on small tensors. Measured
-    # on EIGENALS/BLS/CLS (n=2550, dense ~6.4M fits in L3): without
-    # gate, ~30ms regression vs master (97ms → 126ms) from the
-    # extra structural-BE-then-densify work. NONMSQRT (k=70, dense
-    # ~24M > L3) retains its 2.5× win under the gate.
+    # Previously gated on `traced.k >= 2` after an EIGENALS regression
+    # measurement (~30ms, 97→126ms). That gate was set before
+    # 0c/0d/0l — downstream rules densified a k=1 broadcast-expand BE
+    # almost immediately via `add_any(..., dense_closure)`. With 0d's
+    # structural select_n / gather paths now consuming the output
+    # without densifying, the earlier regression no longer applies.
     if (isinstance(traced_op, BEllpack)
-            and traced_op.k >= 2
+            and traced_op.k >= 1
             and traced_op.out_size == 1
             and traced_op.start_row == 0 and traced_op.end_row == 1
             and hasattr(scale, "shape")
