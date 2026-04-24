@@ -284,6 +284,14 @@ def filter_problems(
     return {p: v for p, v in data.items() if types.get(p) == tag}
 
 
+def filter_by_n(
+    data: dict[str, tuple[float, int]],
+    min_n: int,
+) -> dict[str, tuple[float, int]]:
+    """Keep only problems with dimensionality > min_n."""
+    return {p: v for p, v in data.items() if v[1] > min_n}
+
+
 # -------------------------- plot helpers ---------------------------------
 
 
@@ -468,42 +476,55 @@ def main():
     filter_suffix = f"_{args.problem_filter}" if args.problem_filter else ""
     stem = args.name or f"{counter}_{commit}_{args.tag}{filter_suffix}"
 
-    # Status summary to stderr.
-    for m, t in runs.items():
-        print(f"  {m:25s}: n_problems={len(t)}")
-    print(f"  baseline {baseline_method:20s}: n_problems={len(baseline_times)}")
-
     kinds = (["abs", "ratio", "scatter"] if args.kind == "all" else [args.kind])
-    title_filter = (f" [{args.problem_filter}]"
-                    if args.problem_filter else "")
 
-    for kind in kinds:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        if kind == "abs":
-            plot_inverse_cdf_abs(ax, runs)
-            ax.set_title(f"{counter} · Hessian extraction{title_filter} — absolute runtime (sorted), commit {commit}")
-            path = Path(args.out_dir) / f"{stem}_abs.png"
-        elif kind == "ratio":
-            if not baseline_times:
-                print(f"  skip ratio plot: no data for baseline {baseline_method!r}")
-                plt.close(fig)
-                continue
-            plot_inverse_cdf_ratio(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"{counter} · Hessian extraction{title_filter} — runtime / {baseline_label} "
-                         f"(sorted), commit {commit}")
-            path = Path(args.out_dir) / f"{stem}_ratio_vs_{baseline_method}.png"
-        elif kind == "scatter":
-            if not baseline_times:
-                print(f"  skip scatter plot: no data for baseline {baseline_method!r}")
-                plt.close(fig)
-                continue
-            plot_scatter(ax, runs, baseline_times, baseline_label)
-            ax.set_title(f"{counter} · Hessian extraction{title_filter} — {baseline_label} vs method, commit {commit}")
-            path = Path(args.out_dir) / f"{stem}_scatter_vs_{baseline_method}.png"
-        fig.tight_layout()
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        plt.close(fig)
-        print(f"  wrote {path}")
+    # Two passes: full set, then "large" (n > 16) to drop toy-dim problems
+    # that hide large-n structure under setup/dispatch overhead.
+    passes: list[tuple[str, str]] = [("", ""), ("_large", " [n>16]")]
+
+    for size_suffix, size_title in passes:
+        if size_suffix:
+            runs_p = {m: filter_by_n(d, 16) for m, d in runs.items()}
+            baseline_p = filter_by_n(baseline_times, 16)
+        else:
+            runs_p = runs
+            baseline_p = baseline_times
+
+        print(f"pass {size_suffix or '(all)'}:")
+        for m, t in runs_p.items():
+            print(f"  {m:25s}: n_problems={len(t)}")
+        print(f"  baseline {baseline_method:20s}: n_problems={len(baseline_p)}")
+
+        title_filter = (f" [{args.problem_filter}]"
+                        if args.problem_filter else "") + size_title
+
+        for kind in kinds:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            if kind == "abs":
+                plot_inverse_cdf_abs(ax, runs_p)
+                ax.set_title(f"{counter} · Hessian extraction{title_filter} — absolute runtime (sorted), commit {commit}")
+                path = Path(args.out_dir) / f"{stem}{size_suffix}_abs.png"
+            elif kind == "ratio":
+                if not baseline_p:
+                    print(f"  skip ratio plot: no data for baseline {baseline_method!r}")
+                    plt.close(fig)
+                    continue
+                plot_inverse_cdf_ratio(ax, runs_p, baseline_p, baseline_label)
+                ax.set_title(f"{counter} · Hessian extraction{title_filter} — runtime / {baseline_label} "
+                             f"(sorted), commit {commit}")
+                path = Path(args.out_dir) / f"{stem}{size_suffix}_ratio_vs_{baseline_method}.png"
+            elif kind == "scatter":
+                if not baseline_p:
+                    print(f"  skip scatter plot: no data for baseline {baseline_method!r}")
+                    plt.close(fig)
+                    continue
+                plot_scatter(ax, runs_p, baseline_p, baseline_label)
+                ax.set_title(f"{counter} · Hessian extraction{title_filter} — {baseline_label} vs method, commit {commit}")
+                path = Path(args.out_dir) / f"{stem}{size_suffix}_scatter_vs_{baseline_method}.png"
+            fig.tight_layout()
+            fig.savefig(path, dpi=150, bbox_inches="tight")
+            plt.close(fig)
+            print(f"  wrote {path}")
 
 
 if __name__ == "__main__":
