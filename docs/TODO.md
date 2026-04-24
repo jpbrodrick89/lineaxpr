@@ -90,6 +90,31 @@ branch as a fallback when concrete indexing fails. Zero densification.
 Also dropped the redundant `int(np.asarray(...))` in favour of direct
 tuple indexing via `__index__`. `UNFOLDED_UNSUPPORTED` is now empty.
 
+### 0l. ~~Structural `_dot_general_rule` for BEllpack × closure-matrix~~ **DONE**
+
+Landed (commit TBD). `_be_dot_closure_matrix` handles out-axis and
+trailing-batch-axis contracts; respects `traced_is_first` (transposes
+canonical output for closure-first operand). Upfront gate
+`k_old * A >= in_size` returns `None` (→ dense fallback) when the
+structural form would be no smaller than dense.
+
+Isolated perf (clean serial runs, min-of-5 × 10 iter):
+
+| Problem  | fold Δ | unfold Δ |
+| -------- | -----: | -------: |
+| HADAMALS |   -17% |      +8% |
+| EIGENA2  |   -19% |     -24% |
+| EIGENALS |   -44% |     -38% |
+| EIGENBLS |   -44% |     -40% |
+| EIGENCLS |   -42% |     -43% |
+| MSQRTALS |   -53% |     -52% |
+| MSQRTBLS |   -51% |     -52% |
+
+The EIGEN/MSQRT family benefits most — their `Q.T @ Q`-style pattern
+hits two `BE × closure_matrix` dots per iteration. Wins persist in
+both folded and unfolded. HADAMALS unfolded +8% is within noise band
+(n=400 is tiny). No correctness regressions (323 pass / 0 fail).
+
 ### 0d. Structural 2D point-gather / scatter-add
 
 **Current**: `_gather_rule` + `_scatter_add_rule` have dense fallback

@@ -934,6 +934,143 @@ def _sub_rule(invals, traced, n, **params):
 
 materialize_rules[lax.sub_p] = _sub_rule
 
+def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
+                           traced_is_first: bool):
+    """Structural contract of a BEllpack with a 2D closure matrix.
+
+    BE represents the LinOp tensor `(*batch_shape, out_size, in_size)`.
+    `c_be` indexes the contracted axis in the aval space
+    `(*batch_shape, out_size)` (∈ [0, n_batch + 1)). `c_M` ∈ {0, 1}.
+
+    Two cases handled structurally:
+      - `c_be == n_batch`: contract BE's out-axis. new BEllpack has
+        `batch_shape` unchanged, `out_size = M's other dim`, and
+        `k_new = k_old * A` where `A` is the contracted dim size.
+      - `c_be == n_batch - 1`: contract BE's trailing batch axis.
+        new `batch_shape = (*old_batch[:-1], out_size_old)`,
+        `out_size = M's other dim`, `k_new = k_old * A`.
+
+    Earlier-batch-axis contracts (c_be < n_batch - 1) and the gate
+    below return `None`, letting the caller fall through to dense.
+
+    **Gate: `k_new >= in_size` → return None** (densify via caller).
+    The structural form stores `batch * out_new * k_new` entries vs
+    dense `batch * out_new * in_size`; when `k_new >= in_size` the
+    storage is no smaller than dense AND downstream ops pay extra
+    per-band bookkeeping, so dense is strictly better. Threshold can
+    be tightened later if empirical evidence shows we should densify
+    at a lower k_new:in_size ratio (e.g. `k_new >= in_size // 4`)
+    once downstream structural rules (0d gather/scatter-add) land.
+
+    `traced_is_first`:
+      * True (BE ⊗ closure): `lax.dot_general` output aval is
+        `(remaining_BE_aval, remaining_M)`; our canonical build matches.
+      * False (closure ⊗ BE): expected aval is
+        `(remaining_M, remaining_BE_aval)` — we transpose the
+        canonical output via `BEllpack.transpose` to swap the
+        remaining-M axis to the front.
+    """
+    n_batch = be.n_batch
+    out_size = be.out_size
+    in_size = be.in_size
+    k_old = be.k
+    aval_shape = (*be.batch_shape, out_size)
+    assert 0 <= c_be <= n_batch
+    assert c_M in (0, 1)
+
+    # Earlier batch-axis contract — not yet handled structurally.
+    if c_be < n_batch - 1:
+        return None
+
+    A = aval_shape[c_be]
+    if A != M.shape[c_M]:
+        return None  # shouldn't happen after jaxpr validation
+    # Densification gate (see docstring).
+    if k_old * A >= in_size:
+        return None
+
+    B = M.shape[1 - c_M]
+    M_AB = M if c_M == 0 else M.T
+
+    # Resolve cols per band to shape `(*batch, nrows)` jnp/np.
+    nrows = be.nrows
+    per_band_full = []
+    for c in be.in_cols:
+        if isinstance(c, slice):
+            c = _resolve_col(c, nrows)
+        if isinstance(c, np.ndarray):
+            if c.ndim == 1:
+                c = np.broadcast_to(c, be.batch_shape + (nrows,))
+        else:
+            if c.ndim == 1:
+                c = jnp.broadcast_to(c, be.batch_shape + (nrows,))
+        per_band_full.append(c)
+
+    if c_be == n_batch:
+        # ---------- contract out-axis ----------
+        new_in_cols = []
+        for c_full in per_band_full:
+            xp = np if isinstance(c_full, np.ndarray) else jnp
+            for a in range(A):
+                col_a = c_full[..., a]
+                new_in_cols.append(
+                    xp.broadcast_to(col_a[..., None], be.batch_shape + (B,))
+                )
+        if k_old == 1:
+            new_vals = jnp.einsum("...a,aj->...ja", be.values, M_AB)
+        else:
+            new_vals = jnp.einsum("...ab,aj->...jba", be.values, M_AB)
+            new_vals = new_vals.reshape(be.batch_shape + (B, k_old * A))
+        out_be = BEllpack(
+            start_row=0, end_row=B,
+            in_cols=tuple(new_in_cols), values=new_vals,
+            out_size=B, in_size=in_size, batch_shape=be.batch_shape,
+        )
+    else:
+        # ---------- contract trailing batch axis (c_be == n_batch - 1) ----------
+        new_batch = be.batch_shape[:-1] + (out_size,)
+        new_out = B
+        new_in_cols = []
+        for c_full in per_band_full:
+            xp = np if isinstance(c_full, np.ndarray) else jnp
+            for a in range(A):
+                idx = (slice(None),) * (n_batch - 1) + (a, slice(None))
+                col_a = c_full[idx]
+                col_bcast = xp.broadcast_to(
+                    col_a[..., None], new_batch + (new_out,)
+                )
+                new_in_cols.append(col_bcast)
+        batch_letters = "abcdefgh"[:n_batch]
+        pre = batch_letters[:-1]
+        ctr = batch_letters[-1]
+        nw = "j"
+        if k_old == 1:
+            new_vals = jnp.einsum(
+                f"{pre}{ctr}r,{ctr}{nw}->{pre}r{nw}{ctr}",
+                be.values, M_AB,
+            )
+        else:
+            new_vals = jnp.einsum(
+                f"{pre}{ctr}rk,{ctr}{nw}->{pre}r{nw}k{ctr}",
+                be.values, M_AB,
+            )
+            new_vals = new_vals.reshape(new_batch + (new_out, k_old * A))
+        out_be = BEllpack(
+            start_row=0, end_row=new_out,
+            in_cols=tuple(new_in_cols), values=new_vals,
+            out_size=new_out, in_size=in_size, batch_shape=new_batch,
+        )
+
+    # Canonical order is `(remaining_BE_aval, remaining_M)`. When the
+    # closure is the first operand, lax.dot_general produces
+    # `(remaining_M, remaining_BE_aval)` — restore via BE.transpose.
+    if not traced_is_first:
+        R_be = n_batch
+        perm = list(range(R_be, R_be + 1)) + list(range(R_be))
+        out_be = out_be.transpose(tuple(perm))
+    return out_be
+
+
 def _dot_general_rule(invals, traced, n, **params):
     x, y = invals
     tx, ty = traced
@@ -979,6 +1116,20 @@ def _dot_general_rule(invals, traced, n, **params):
         remaining = [a for a in range(M.ndim) if a not in c_M]
         tensor = lax.transpose(M, remaining + c_M)
         return traced_op.value * tensor
+
+    # Structural BEllpack × closure-matrix path (see
+    # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
+    # falls through to dense).
+    if (isinstance(traced_op, BEllpack)
+            and M.ndim == 2
+            and len(c_tr) == 1 and len(c_M) == 1
+            and traced_op.start_row == 0
+            and traced_op.end_row == traced_op.out_size):
+        be_result = _be_dot_closure_matrix(
+            traced_op, M, c_tr[0], c_M[0], traced_is_first,
+        )
+        if be_result is not None:
+            return be_result
 
     dense = _to_dense(traced_op, n)
     if traced_is_first:
