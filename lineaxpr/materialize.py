@@ -3114,17 +3114,16 @@ def materialize(linear_fn, primal, format: str = "dense"):
     if format == "dense":
         return to_dense(linop)
     bcoo = to_bcoo(linop)
-    # Smart-densify at output: if the emitted BCOO has more entries
-    # than the dense matrix would hold (nse > prod(shape)), the walk
-    # accumulated enough duplicates that storage is now worse than
-    # dense. Return dense instead. DUAL-class problems (small n,
-    # highly-connected) hit this when `_bcoo_concat` stacks many
-    # overlapping BCOO operands without deduping.
+    # Smart-densify at output: at `nse >= prod(shape)` the BCOO stores
+    # at least as many float values as dense AND carries 2·nse index
+    # ints on top — strictly worse than dense. DUAL-class problems
+    # (small n, highly-connected) hit this when `_bcoo_concat` stacks
+    # many overlapping BCOO operands without deduping.
     if isinstance(bcoo, sparse.BCOO):
         total = 1
         for s in bcoo.shape:
             total *= int(s)
-        if bcoo.nse > total:
+        if bcoo.nse >= total:
             return bcoo.todense()
     return bcoo
 
