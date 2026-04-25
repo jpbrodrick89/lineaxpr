@@ -3164,6 +3164,16 @@ def _scatter_add_rule(invals, traced, n, **params):
                     static_ok = False
                     break
                 nrows_b = ep.nrows
+                # Duplicate out_idx_b entries mean multiple source rows
+                # scatter-add into the same output row. The single-gather
+                # inv_map below would drop all but the last writer, so we
+                # fall back to the BCOO path which preserves duplicates and
+                # lets BCOO matvec sum them. (SPARSINE's k=2 perm
+                # `(2*i-1) % 5000` has gcd(2, 5000)=2 → each odd output
+                # row written twice.)
+                if np.unique(out_idx_b).shape[0] != out_idx_b.shape[0]:
+                    static_ok = False
+                    break
                 # Build inv_map at trace time: inv_map[r] = i iff out_idx_b[i]=r.
                 inv_map = np.full(out_size, -1, dtype=np.intp)
                 inv_map[out_idx_b] = np.arange(nrows_b, dtype=np.intp)
