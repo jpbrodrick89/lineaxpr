@@ -1755,6 +1755,31 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             cols = jnp.arange(n, dtype=jnp.int32)
             indices = jnp.stack([zeros_row, cols], axis=1)
             return sparse.BCOO((op, indices), shape=(1, n))
+    # Tile a 1-row BEllpack (aval-() linear form) to a N-row vector
+    # `(N,)` via empty broadcast_dimensions. Each output row carries the
+    # same sparse linear form as the input. Values broadcast along the
+    # new row axis; cols broadcast similarly (1D shape (1,) → (N,)).
+    # ~22 hits across the sweep on small problems with `bid → linear
+    # form → vector` chains.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and op.out_size == 1 and op.start_row == 0 and op.end_row == 1
+            and broadcast_dimensions == () and len(shape) == 1):
+        N = int(shape[0])
+        new_values = jnp.broadcast_to(op.values, (N,) + op.values.shape[1:])
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                resolved = _resolve_col(c, 1)
+                new_in_cols.append(np.broadcast_to(resolved, (N,)).copy())
+            elif isinstance(c, np.ndarray):
+                new_in_cols.append(np.broadcast_to(c, (N,)).copy())
+            else:
+                new_in_cols.append(jnp.broadcast_to(c, (N,)))
+        return BEllpack(
+            start_row=0, end_row=N,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=N, in_size=op.in_size,
+        )
     # Fallback normalisation: a BEllpack row-vector represents an aval-()
     # linear form. For other broadcast patterns the dense fallback
     # below expects the canonical (n,)-ndarray linear-form shape, so
