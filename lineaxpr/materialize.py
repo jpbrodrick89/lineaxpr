@@ -2933,45 +2933,60 @@ def _scatter_add_rule(invals, traced, n, **params):
         if updates.n_batch == 0:
             updates = _to_bcoo(updates, n)
         else:
-            # Batched: unbatch, remap each slice's rows, concat.
-            # When all indices are static numpy (the common case —
-            # BEllpack with closure-constant in_cols), dedup the
-            # cross-product of (k bands × n_scatter_targets) at trace
-            # time via np.unique, then sum traced values with a single
-            # static-indexed scatter. Cuts NSE by ~15-20% on problems
-            # with gather/scatter-add Hessians (e.g. SPARSINE).
+            # Batched: unbatch, remap each slice's rows via the static
+            # inverse-scatter map, then combine via _add_rule dedup.
+            # Gather-based: ep.values[inv_map] is a jnp gather with
+            # static indices into dynamic data — ECF-safe. The previous
+            # zeros.at[inverse].add(data) scatter was ECF-toxic when
+            # the output size was large (unique count ~150K for SPARSINE)
+            # because XLA constant-folded the scatter at compile time.
+            # The gather approach also avoids BCOO entirely when all
+            # batch slices have static out_idx and static in_cols; the
+            # resulting BEllpack stays sparse through downstream rules.
             slices = _bellpack_unbatch(updates)
-            all_indices_np = []
-            all_data = []
+            be_pieces = []
             static_ok = True
             for b_idx, ep in enumerate(slices):
-                bc = _to_bcoo(ep, n)
                 try:
-                    idx_np = np.asarray(bc.indices)
+                    out_idx_b = np.asarray(out_idx[b_idx])
                 except (jax.errors.TracerArrayConversionError, TypeError):
                     static_ok = False
                     break
-                old_rows = idx_np[:, 0]
-                new_rows = np.asarray(out_idx[b_idx])[old_rows]
-                all_indices_np.append(
-                    np.stack([new_rows, idx_np[:, 1]], axis=1)
-                )
-                all_data.append(bc.data)
+                nrows_b = ep.nrows
+                # Build inv_map at trace time: inv_map[r] = i iff out_idx_b[i]=r.
+                inv_map = np.full(out_size, -1, dtype=np.intp)
+                inv_map[out_idx_b] = np.arange(nrows_b, dtype=np.intp)
+                clipped = np.clip(inv_map, 0, nrows_b - 1)
+                has_input = inv_map >= 0
+                try:
+                    new_in_cols = []
+                    for col in ep.in_cols:
+                        col_np = _resolve_col(col, nrows_b)
+                        if not isinstance(col_np, np.ndarray):
+                            col_np = np.asarray(col_np)
+                        new_in_cols.append(
+                            np.where(has_input, col_np[clipped], np.intp(-1))
+                            .astype(np.intp)
+                        )
+                except (jax.errors.TracerArrayConversionError, TypeError):
+                    static_ok = False
+                    break
+                # Gather values: dynamic data indexed by static clipped.
+                if ep.k == 1:
+                    new_vals = ep.values[clipped]
+                    if not np.all(has_input):
+                        new_vals = jnp.where(has_input, new_vals, 0)
+                else:
+                    new_vals = ep.values[clipped]
+                    if not np.all(has_input):
+                        new_vals = jnp.where(has_input[:, None], new_vals, 0)
+                be_pieces.append(BEllpack(
+                    0, out_size, tuple(new_in_cols), new_vals,
+                    out_size, ep.in_size,
+                ))
             if static_ok:
-                cat_indices = np.concatenate(all_indices_np, axis=0)
-                cat_data = jnp.concatenate(all_data, axis=0)
-                unique_indices, inverse = np.unique(
-                    cat_indices, axis=0, return_inverse=True
-                )
-                merged_data = (
-                    jnp.zeros(len(unique_indices), cat_data.dtype)
-                    .at[inverse].add(cat_data)
-                )
-                return sparse.BCOO(
-                    (merged_data, unique_indices),
-                    shape=(out_size, updates.in_size),
-                )
-            # Traced indices fallback: original concat path.
+                return _add_rule(be_pieces, [True] * len(be_pieces), n)
+            # Traced indices fallback: original concat-as-BCOO path.
             bcoo_pieces = []
             for b_idx, ep in enumerate(slices):
                 bc = _to_bcoo(ep, n)
