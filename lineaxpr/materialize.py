@@ -1491,7 +1491,35 @@ def _rev_rule(invals, traced, n, **params):
         if dimensions == (0,):
             return Diagonal(op.values[::-1])
         return op
-    # BCOO / dense: densify and reverse.
+    # BEllpack unbatched, reverse out axis: flip values + per-band cols
+    # along the row axis; remap `[start_row, end_row)` to mirror around
+    # `out_size`. Metadata + one jnp.flip per dim — no densify.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and dimensions == (0,)):
+        new_start = op.out_size - op.end_row
+        new_end = op.out_size - op.start_row
+        new_values = jnp.flip(op.values, axis=0)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(_resolve_col(c, op.nrows)[::-1].copy())
+            elif isinstance(c, np.ndarray):
+                new_in_cols.append(c[::-1].copy())
+            else:
+                new_in_cols.append(jnp.flip(c, axis=0))
+        return BEllpack(
+            start_row=new_start, end_row=new_end,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=op.out_size, in_size=op.in_size,
+        )
+    # BCOO unbatched, reverse out axis: remap row indices to
+    # `shape[0] - 1 - row`. One jnp op on indices column 0.
+    if (isinstance(op, sparse.BCOO) and op.n_batch == 0
+            and dimensions == (0,)):
+        new_rows = (op.shape[0] - 1) - op.indices[:, 0]
+        new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
+        return sparse.BCOO((op.data, new_indices), shape=op.shape)
+    # Fallback.
     dense = _to_dense(op, n)
     return lax.rev(dense, dimensions)
 
