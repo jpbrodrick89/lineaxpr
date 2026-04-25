@@ -1659,6 +1659,43 @@ def _reshape_rule(invals, traced, n, **params):
             out_size=B_out, in_size=op.in_size,
             batch_shape=new_batch,
         )
+    # Leading-singleton reshape on unbatched BEllpack: target
+    # `(1, ..., 1, N)` from aval `(N,)` where `N == op.out_size`.
+    # Adds size-1 leading batch axes. Values reshape to add singleton
+    # axes; cols stay 1D shared. Used by LUKSAN16LS reshape from
+    # aval `(49,)` to `(1, 1, 49)`.
+    if (isinstance(op, BEllpack) and op.n_batch == 0
+            and len(new_sizes) >= 2
+            and new_sizes[-1] == op.out_size
+            and all(s == 1 for s in new_sizes[:-1])
+            and op.start_row == 0 and op.end_row == op.out_size):
+        new_batch = tuple(new_sizes[:-1])
+        prefix = (1,) * len(new_batch)
+        if op.k == 1:
+            new_values = op.values.reshape(prefix + (op.nrows,))
+        else:
+            new_values = op.values.reshape(prefix + (op.nrows, op.k))
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif isinstance(c, np.ndarray):
+                if c.ndim == 1:
+                    new_in_cols.append(c)  # 1D shared cols
+                else:
+                    new_in_cols.append(c.reshape(prefix + c.shape))
+            else:
+                ca = jnp.asarray(c)
+                if ca.ndim == 1:
+                    new_in_cols.append(ca)
+                else:
+                    new_in_cols.append(ca.reshape(prefix + ca.shape))
+        return BEllpack(
+            start_row=op.start_row, end_row=op.end_row,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=op.out_size, in_size=op.in_size,
+            batch_shape=new_batch,
+        )
     # Singleton-axis-insert on unbatched BEllpack: target
     # `(N, 1, ..., 1)` from aval `(N,)` where `N == op.out_size`. The
     # original rows become separate batches and the trailing size-1

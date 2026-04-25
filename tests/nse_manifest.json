@@ -487,6 +487,11 @@
       "nse": 1080,
       "group": "unconstrained"
     },
+    "LUKSAN16LS": {
+      "n": 100,
+      "nse": 1568,
+      "group": "unconstrained"
+    },
     "LUKSAN21LS": {
       "n": 100,
       "nse": 1692,
