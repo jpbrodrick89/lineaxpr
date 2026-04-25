@@ -2166,6 +2166,37 @@ def _reduce_sum_rule(invals, traced, n, **params):
     # BEllpack row-vector, _add_rule tiled it into a banded matrix).
     if tuple(axes) == (0,) and isinstance(op, BEllpack) and op.n_batch == 0:
         return _bellpack_row_sum(op)
+    # BCOO row-sum: when indices are static np, emit a structural BE
+    # row-vector if `n_unique_cols < in_size`. Avoids densifying the
+    # full (out_size, in_size) matrix. ~24 sweep hits.
+    if (tuple(axes) == (0,) and isinstance(op, sparse.BCOO)
+            and op.n_batch == 0):
+        try:
+            indices_np = np.asarray(op.indices)
+        except (jax.errors.TracerArrayConversionError, TypeError):
+            indices_np = None
+        if isinstance(indices_np, np.ndarray):
+            in_size = int(op.shape[1])
+            cols_np = indices_np[:, 1]
+            uniq, inverse = np.unique(cols_np, return_inverse=True)
+            n_groups = int(uniq.shape[0])
+            if 0 < n_groups < in_size:
+                summed = jnp.zeros((n_groups,), op.data.dtype).at[
+                    jnp.asarray(inverse)].add(op.data)
+                if n_groups == 1:
+                    return BEllpack(
+                        start_row=0, end_row=1,
+                        in_cols=(np.asarray([uniq[0]], dtype=uniq.dtype),),
+                        values=summed.reshape(1),
+                        out_size=1, in_size=in_size,
+                    )
+                return BEllpack(
+                    start_row=0, end_row=1,
+                    in_cols=tuple(np.asarray([c], dtype=uniq.dtype)
+                                  for c in uniq),
+                    values=summed.reshape(1, n_groups),
+                    out_size=1, in_size=in_size,
+                )
     # Fallback: densify + sum. Intentionally no shortcut for Diagonal /
     # ConstantDiagonal — those always densify to a (n,) linear form
     # anyway (1ᵀ diag(v) = v, dense) and returning `op.values` directly
