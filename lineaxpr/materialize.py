@@ -1121,14 +1121,13 @@ def _dot_general_rule(invals, traced, n, **params):
     if batch != ((), ()):
         raise NotImplementedError("dot_general with batch dims not yet handled")
 
-    if tx and not ty:
-        traced_op, c_tr, M, c_M = x, list(cx), y, list(cy)
-        traced_is_first = True
-    elif ty and not tx:
-        traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
-        traced_is_first = False
-    else:
+    if tx and ty:
         raise NotImplementedError("dot_general of two traced operands")
+    if tx:
+        traced_op, c_tr, M, c_M = x, list(cx), y, list(cy)
+    else:
+        traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
+    traced_is_first = tx
     traced_shape = _traced_shape(traced_op)
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
@@ -1138,13 +1137,12 @@ def _dot_general_rule(invals, traced, n, **params):
     if len(c_tr) == 0 and len(c_M) == 0:
         # Outer product. BE's trailing `n` axis stays last.
         dense = _to_dense(traced_op, n)
-        t_rank, m_rank = len(traced_shape), M.ndim
         if traced_is_first:
             # (*t, n) × (*m,) → (*t, *m, n)
-            d = dense.reshape(traced_shape + (1,) * m_rank + dense.shape[-1:])
+            d = dense.reshape(traced_shape + (1,) * M.ndim + dense.shape[-1:])
             return d * M[..., None]
         # (*m,) × (*t, n) → (*m, *t, n)
-        return M.reshape(M.shape + (1,) * (t_rank + 1)) * dense
+        return M.reshape(M.shape + (1,) * (len(traced_shape) + 1)) * dense
 
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
