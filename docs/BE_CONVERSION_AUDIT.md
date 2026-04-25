@@ -29,10 +29,11 @@ falls to dense for shapes we could in principle handle structurally.
 | `_pad_rule` multi-dim             | 1303          | ❌ edge       | multi-dim pad on non-batched BE                                                                                                |
 | `_squeeze_rule`                   | 1377          | ❌ edge       | only 1 BCOO dims=(0,) sweep hit; very low impact                                                                               |
 | `_rev_rule`                       | 1481          | ✅ structural | BE/BCOO unbatched dim 0: flip cols + values along row axis (BE) or remap row indices (BCOO). Dense fallback for other dims.    |
-| `_reshape_rule`                   | 1599          | ❌ edge       | only 1 LUKSAN16LS sweep hit                                                                                                    |
+| `_reshape_rule` leading singleton | ~1670         | ✅ structural | aval `(N,)` → `(1, ..., 1, N)` — adds size-1 leading batch axes (LUKSAN16LS, commit `e5bf59c`).                                |
 | `_broadcast_in_dim` linear-norm   | 1640          | specialised   | aval-() → (n,) 1D                                                                                                              |
 | `_broadcast_in_dim` BE-tile       | ~1748         | ✅ structural | 1-row BE → (N,) tile: broadcast values + cols along new row axis. ~22 sweep hits.                                              |
-| `_broadcast_in_dim` fallback      | 1781          | ❌ edge       | remaining unhandled patterns mostly Diagonal → (n,1)/(1,n) — 6 hits across 6 problems                                          |
+| `_broadcast_in_dim` Diag stretch  | ~1804         | ✅ structural | `Diagonal(n)` → `(*pre_singletons, n, *post_singletons)` (commit `2da443c`). Unblocks PENALTY3 (12× faster).                   |
+| `_broadcast_in_dim` fallback      | 1781          | ❌ edge       | residual unhandled shapes are rare; most 6-hit Diag patterns now structural                                                    |
 | `_reduce_sum_rule` densify        | 1989, 1994    | ✅ Rule 3     | `_densify_if_wider_than_dense` in out-axis path                                                                                |
 | `_reduce_sum_rule` BCOO row-sum   | ~2169         | ✅ structural | BCOO axes=(0,) static np indices: dedup cols → BE row-vector. ~24 sweep hits.                                                  |
 | `_reduce_sum_rule` Diag fallback  | 2177          | intentional   | `_to_dense + jnp.sum` lets XLA DCE the (n,n) intermediate. ~14 hits; comment cites ARGTRIGLS 2.25× regress if changed          |
