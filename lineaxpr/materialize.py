@@ -3164,45 +3164,45 @@ def _scatter_add_rule(invals, traced, n, **params):
                     static_ok = False
                     break
                 nrows_b = ep.nrows
-                # Duplicate out_idx_b entries mean multiple source rows
-                # scatter-add into the same output row. The single-gather
-                # inv_map below would drop all but the last writer, so we
-                # fall back to the BCOO path which preserves duplicates and
-                # lets BCOO matvec sum them. (SPARSINE's k=2 perm
-                # `(2*i-1) % 5000` has gcd(2, 5000)=2 → each odd output
-                # row written twice.)
-                if np.unique(out_idx_b).shape[0] != out_idx_b.shape[0]:
+                # Group source rows by output row at trace time. unique_out
+                # is sorted; counts[r] = number of source rows scattering to
+                # unique_out[r]. We emit a structural BE iff the active rows
+                # form a contiguous range AND the duplicate factor is uniform
+                # — otherwise sentinels would inflate nse beyond what the
+                # BCOO concat fallback gives. SPARSINE's k=2 slice maps to
+                # the odd outputs {1, 3, ..., 4999} (non-contiguous) → BCOO.
+                unique_out, inverse = np.unique(out_idx_b, return_inverse=True)
+                n_unique = unique_out.shape[0]
+                counts = np.bincount(inverse, minlength=n_unique)
+                contiguous = (
+                    n_unique > 0
+                    and int(unique_out[-1] - unique_out[0]) + 1 == n_unique
+                )
+                if not (contiguous and int(counts.min()) == int(counts.max())):
                     static_ok = False
                     break
-                # Build inv_map at trace time: inv_map[r] = i iff out_idx_b[i]=r.
-                inv_map = np.full(out_size, -1, dtype=np.intp)
-                inv_map[out_idx_b] = np.arange(nrows_b, dtype=np.intp)
-                clipped = np.clip(inv_map, 0, nrows_b - 1)
-                has_input = inv_map >= 0
+                dup = int(counts[0])
+                # order[r, d] = source row index for d-th writer to unique_out[r]
+                order = np.argsort(inverse, kind="stable").reshape(n_unique, dup)
                 try:
                     new_in_cols = []
-                    for col in ep.in_cols:
-                        col_np = _resolve_col(col, nrows_b)
-                        if not isinstance(col_np, np.ndarray):
-                            col_np = np.asarray(col_np)
-                        new_in_cols.append(
-                            np.where(has_input, col_np[clipped], np.intp(-1))
-                            .astype(np.intp)
-                        )
+                    for d in range(dup):
+                        src = order[:, d]
+                        for col in ep.in_cols:
+                            col_np = _resolve_col(col, nrows_b)
+                            if not isinstance(col_np, np.ndarray):
+                                col_np = np.asarray(col_np)
+                            new_in_cols.append(col_np[src].astype(np.intp))
                 except (jax.errors.TracerArrayConversionError, TypeError):
                     static_ok = False
                     break
-                # Gather values: dynamic data indexed by static clipped.
                 if ep.k == 1:
-                    new_vals = ep.values[clipped]
-                    if not np.all(has_input):
-                        new_vals = jnp.where(has_input, new_vals, 0)
+                    new_vals = ep.values[order]  # (n_unique, dup)
                 else:
-                    new_vals = ep.values[clipped]
-                    if not np.all(has_input):
-                        new_vals = jnp.where(has_input[:, None], new_vals, 0)
+                    new_vals = ep.values[order].reshape(n_unique, dup * ep.k)
+                start = int(unique_out[0])
                 be_pieces.append(BEllpack(
-                    0, out_size, tuple(new_in_cols), new_vals,
+                    start, start + n_unique, tuple(new_in_cols), new_vals,
                     out_size, ep.in_size,
                 ))
             if static_ok:
