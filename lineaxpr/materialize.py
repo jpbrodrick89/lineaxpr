@@ -1817,6 +1817,66 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             in_cols=tuple(new_in_cols), values=new_values,
             out_size=N, in_size=op.in_size,
         )
+    # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where
+    # `pre`/`post` only contain size-1 axes — i.e. inserts size-1
+    # batch / out dims around the existing aval axis. Promote to a
+    # batched BEllpack with `out_size = 1` (post=trailing-singletons)
+    # or `out_size = n` (post empty), batch_shape carrying any
+    # leading singletons. Six sweep hits split between
+    # `Diagonal → (n, 1)` and `Diagonal → (1, n)` patterns.
+    if (isinstance(op, (Diagonal, ConstantDiagonal))
+            and len(broadcast_dimensions) == 1
+            and shape[broadcast_dimensions[0]] == op.n
+            and all(s == 1 for i, s in enumerate(shape)
+                    if i != broadcast_dimensions[0])):
+        bcast_axis = broadcast_dimensions[0]
+        leading_singletons = tuple(shape[:bcast_axis])
+        trailing_singletons = tuple(shape[bcast_axis + 1:])
+        # Materialise diagonal values once.
+        if isinstance(op, ConstantDiagonal):
+            v = jnp.broadcast_to(jnp.asarray(op.value), (op.n,))
+        else:
+            v = op.values
+        # No trailing singletons: BE(batch=leading_singletons,
+        # out=n, in=n, k=1, cols=arange(n)).
+        if not trailing_singletons:
+            cols = (np.arange(op.n),)
+            # values shape: (*leading_singletons, n)
+            new_values = jnp.broadcast_to(
+                v.reshape((1,) * len(leading_singletons) + (op.n,)),
+                leading_singletons + (op.n,),
+            )
+            return BEllpack(
+                start_row=0, end_row=op.n,
+                in_cols=cols, values=new_values,
+                out_size=op.n, in_size=op.n,
+                batch_shape=leading_singletons,
+            )
+        # Trailing singletons present: each batch index i has a
+        # 1-row matrix with col i and value v[i]. Total batch shape
+        # = leading_singletons + (n,) + trailing_singletons[:-1];
+        # out_size = trailing_singletons[-1] (which must be 1, since
+        # all trailings are 1). Simplest: batch=(leading + (n,) +
+        # trailing[:-1]), out_size=1, k=1, per-batch cols.
+        # Cols (per-batch) = arange(n) along the n-axis.
+        cols_2d = np.arange(op.n).reshape(
+            (1,) * len(leading_singletons) + (op.n,)
+            + (1,) * (len(trailing_singletons) - 1)
+        )
+        new_batch = leading_singletons + (op.n,) + trailing_singletons[:-1]
+        cols_full = np.broadcast_to(cols_2d, new_batch).copy()
+        # values per batch — 1 entry. Shape: new_batch + (1,) for k=1.
+        new_values = jnp.broadcast_to(
+            v.reshape((1,) * len(leading_singletons) + (op.n,)
+                       + (1,) * (len(trailing_singletons) - 1)),
+            new_batch,
+        ).reshape(new_batch + (1,))
+        return BEllpack(
+            start_row=0, end_row=1,
+            in_cols=(cols_full[..., None],), values=new_values,
+            out_size=1, in_size=op.n,
+            batch_shape=new_batch,
+        )
     # Fallback normalisation: a BEllpack row-vector represents an aval-()
     # linear form. For other broadcast patterns the dense fallback
     # below expects the canonical (n,)-ndarray linear-form shape, so
