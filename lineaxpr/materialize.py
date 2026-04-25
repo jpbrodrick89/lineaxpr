@@ -2922,6 +2922,38 @@ def _gather_rule(invals, traced, n, **params):
             out_size=N, in_size=operand.n,
             batch_shape=batch_shape,
         )
+    # 1-D gather on an unbatched BEllpack: pick rows by `row_idx`,
+    # producing a BE with new out_size and the same `k`. Cols stay
+    # static when both `op.in_cols[b]` and `row_idx` are np.ndarray.
+    # Used by TOINTGOR's `M[indices]` pattern (top-10 loss).
+    if (isinstance(operand, BEllpack) and operand.n_batch == 0
+            and operand.start_row == 0
+            and operand.end_row == operand.out_size):
+        batch_shape = tuple(row_idx.shape[:-1])
+        N = row_idx.shape[-1]
+        idx_static = isinstance(row_idx, np.ndarray)
+        ridx_flat = row_idx.reshape(-1) if idx_static else jnp.asarray(
+            row_idx).reshape(-1)
+        new_in_cols = []
+        for c in operand.in_cols:
+            cr = _resolve_col(c, operand.nrows)
+            if idx_static and isinstance(cr, np.ndarray):
+                gathered = cr[ridx_flat].reshape(batch_shape + (N,))
+            else:
+                gathered = jnp.asarray(cr)[ridx_flat].reshape(
+                    batch_shape + (N,))
+            new_in_cols.append(gathered)
+        if operand.k == 1:
+            vals = operand.values[ridx_flat].reshape(batch_shape + (N,))
+        else:
+            vals = operand.values[ridx_flat].reshape(
+                batch_shape + (N, operand.k))
+        return BEllpack(
+            start_row=0, end_row=N,
+            in_cols=tuple(new_in_cols), values=vals,
+            out_size=N, in_size=operand.in_size,
+            batch_shape=batch_shape,
+        )
     if isinstance(operand, sparse.BCOO):
         raise NotImplementedError("gather on BCOO operand")
     # Dense fallback: gather rows of the dense linop.
