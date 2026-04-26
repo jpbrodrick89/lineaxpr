@@ -408,8 +408,8 @@ requires-dist = [
     { name = "pytest-benchmark", marker = "extra == 'test'" },
     { name = "pytest-timeout", marker = "extra == 'benchmark'" },
     { name = "pytest-timeout", marker = "extra == 'test'" },
-    { name = "sif2jax", marker = "extra == 'benchmark'" },
-    { name = "sif2jax", marker = "extra == 'test'" },
+    { name = "sif2jax", marker = "extra == 'benchmark'", git = "https://github.com/johannahaffner/sif2jax.git?rev=main" },
+    { name = "sif2jax", marker = "extra == 'test'", git = "https://github.com/johannahaffner/sif2jax.git?rev=main" },
 ]
 provides-extras = ["test", "benchmark"]
 
@@ -925,7 +925,7 @@ wheels = [
 [[package]]
 name = "sif2jax"
 version = "0.0.8"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://github.com/johannahaffner/sif2jax.git?rev=main#ac3d15e44cf61464fc263fa0f002a8188f81a580" }
 dependencies = [
     { name = "beartype" },
     { name = "equinox" },
@@ -935,10 +935,6 @@ dependencies = [
     { name = "pytest-benchmark" },
     { name = "typing-extensions" },
     { name = "wadler-lindig" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/5c/7ae523396bfd5d97f3dd66c282420f436aa8a10c1f60a15433849e4e4d99/sif2jax-0.0.8.tar.gz", hash = "sha256:5c3d6b39293fc98b17a08f71ad21c66d1e9c1d070499828eeacb7ea45528ed7b", size = 11328580, upload-time = "2026-01-09T07:55:24.788Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/10/a9/b10bed6fe33ee1bb61c0faf50fc8f7d843e9ee68bfcca8067cf9e9731061/sif2jax-0.0.8-py3-none-any.whl", hash = "sha256:1dca8a587334c566a2bef8ec8df79a806d9998d8ba66e875d782e8e94321fa96", size = 12745684, upload-time = "2026-01-09T07:55:17.821Z" },
 ]
 
 [[package]]

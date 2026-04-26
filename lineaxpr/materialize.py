@@ -3040,10 +3040,6 @@ def _gather_rule(invals, traced, n, **params):
     )
     if not (point_gather_collapsed or point_gather_kept):
         raise NotImplementedError(f"gather with unhandled dnums: {dnums}")
-    if point_gather_kept:
-        dense = _to_dense(operand, n)
-        row_idx = start_indices[..., 0]
-        return dense[row_idx][..., None, :]
     row_idx = start_indices[..., 0]
     # Build a BEllpack for (Constant)Diagonal operand. row_idx has shape
     # (*batch_shape, N) — 1D for the standard gather case, multi-dim for
@@ -3059,6 +3055,17 @@ def _gather_rule(invals, traced, n, **params):
         else:
             # Diagonal(v) — value at col c is v[c]. Gather v[row_idx].
             vals = jnp.take(operand.values, row_idx)
+        if point_gather_kept:
+            # Primal aval is (*batch_shape, N, 1). Encode by extending
+            # batch with N and setting out_size=1 + nrows=1; cols and
+            # values get an extra trailing axis of size 1.
+            return BEllpack(
+                start_row=0, end_row=1,
+                in_cols=(row_idx[..., None],),
+                values=vals[..., None],
+                out_size=1, in_size=operand.n,
+                batch_shape=batch_shape + (N,),
+            )
         return BEllpack(
             start_row=0, end_row=N,
             in_cols=(row_idx,),
@@ -3092,6 +3099,16 @@ def _gather_rule(invals, traced, n, **params):
         else:
             vals = operand.values[ridx_flat].reshape(
                 batch_shape + (N, operand.k))
+        if point_gather_kept:
+            # Same trailing-1 trick as the Diagonal branch above.
+            new_in_cols = tuple(c[..., None] for c in new_in_cols)
+            vals = vals[..., None] if operand.k == 1 else vals[..., None, :]
+            return BEllpack(
+                start_row=0, end_row=1,
+                in_cols=new_in_cols, values=vals,
+                out_size=1, in_size=operand.in_size,
+                batch_shape=batch_shape + (N,),
+            )
         return BEllpack(
             start_row=0, end_row=N,
             in_cols=tuple(new_in_cols), values=vals,
@@ -3102,6 +3119,8 @@ def _gather_rule(invals, traced, n, **params):
         raise NotImplementedError("gather on BCOO operand")
     # Dense fallback: gather rows of the dense linop.
     dense = _to_dense(operand, n)
+    if point_gather_kept:
+        return dense[row_idx][..., None, :]
     return dense[row_idx]
 
 materialize_rules[lax.gather_p] = _gather_rule
@@ -3168,15 +3187,34 @@ def _scatter_add_rule(invals, traced, n, **params):
         raise NotImplementedError(f"scatter-add with unhandled dnums: {dnums}")
     if scatter_kept:
         # Drop the size-1 trailing axis from updates and rerun as collapsed.
-        if isinstance(updates, BEllpack):
-            # BEllpack with primal aval (*batch, M, 1) → squeeze the trailing 1.
-            # The size-1 axis is out_size=1 with batch ending in M.
-            if updates.out_size != 1:
-                raise NotImplementedError(
-                    "scatter-add kept form: expected size-1 trailing axis "
-                    f"on updates, got out_size={updates.out_size}"
-                )
-            # Densify and squeeze for now — correctness over speed.
+        # The kept form arises as the linear_transpose of the corresponding
+        # gather kept form, which encodes the trailing 1 by setting
+        # out_size=1 and appending the "real" out axis to batch_shape.
+        # Inverting that is structural — no dense fallback needed.
+        if (isinstance(updates, BEllpack)
+                and updates.out_size == 1
+                and updates.start_row == 0
+                and updates.end_row == 1
+                and len(updates.batch_shape) >= 1):
+            inner = updates.batch_shape[-1]
+            new_batch = updates.batch_shape[:-1]
+            new_in_cols = tuple(
+                c if isinstance(c, slice) else c.reshape(c.shape[:-1])
+                for c in updates.in_cols
+            )
+            if updates.k == 1:
+                new_values = updates.values.reshape(updates.values.shape[:-1])
+            else:
+                # values shape (..., 1, k) → drop the size-1 axis
+                shape = updates.values.shape
+                new_values = updates.values.reshape(shape[:-2] + shape[-1:])
+            updates = BEllpack(
+                start_row=0, end_row=inner,
+                in_cols=new_in_cols, values=new_values,
+                out_size=inner, in_size=updates.in_size,
+                batch_shape=new_batch,
+            )
+        elif isinstance(updates, BEllpack):
             updates = _to_dense(updates, n).squeeze(axis=-2)
         elif isinstance(updates, sparse.BCOO):
             updates = _to_dense(updates, n).squeeze(axis=-2)

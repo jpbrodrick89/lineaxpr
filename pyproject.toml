@@ -23,14 +23,14 @@ test = [
     # sif2jax provides the CUTEst problem suite the slow sweep iterates
     # over; without it, `tests/test_sif2jax_sweep.py` skips entirely
     # and the ECF/no-ECF CI matrix becomes a no-op.
-    "sif2jax",
+    "sif2jax @ git+https://github.com/johannahaffner/sif2jax.git@main",
 ]
 benchmark = [
     "pytest",
     "pytest-benchmark",
     "pytest-timeout",
     "asdex>=0.2.0",
-    "sif2jax",
+    "sif2jax @ git+https://github.com/johannahaffner/sif2jax.git@main",
     "matplotlib",
 ]
 
