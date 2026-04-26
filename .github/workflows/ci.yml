@@ -29,11 +29,17 @@ jobs:
         # rule branches than the default (e.g. static-out_idx path in
         # _scatter_add_rule). We run both regimes because correctness
         # bugs (40b01ca's gather-BE data loss on SPARSINE) have only
-        # manifested under ECF.
-        ecf: ["FALSE", "TRUE"]
+        # manifested under ECF. ECF holds more constants alive during
+        # lowering, so we cap the sweep size lower for that leg.
+        include:
+          - ecf: "FALSE"
+            sweep_max_n: "5000"
+          - ecf: "TRUE"
+            sweep_max_n: "1500"
     name: tests (ECF=${{ matrix.ecf }})
     env:
       EAGER_CONSTANT_FOLDING: ${{ matrix.ecf }}
+      LINEAXPR_SWEEP_MAX_N: ${{ matrix.sweep_max_n }}
     steps:
       - uses: actions/checkout@v4
 

@@ -25,6 +25,7 @@ couple of minutes. Invoke with `pytest -m slow tests/test_sif2jax_sweep.py`.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import jax
@@ -35,7 +36,11 @@ from jax.experimental import sparse
 import lineaxpr
 
 
-MAX_N = 5000
+# CI's ECF leg has a tighter memory ceiling (XLA constant-folding holds
+# more state alive). Allow CI to lower the sweep cap via an env var so
+# bigger problems skip cleanly there. Local dev / benchmarks keep the
+# 5000 default.
+MAX_N = int(os.environ.get("LINEAXPR_SWEEP_MAX_N", 5000))
 REL_TOL = 1e-6
 
 # Problems whose walk raises `NotImplementedError` because a primitive
@@ -127,7 +132,18 @@ SIZE_OVERRIDES: dict[str, dict] = {
     "CYCLOOCFLS": {"p": 20},
     # Cyclic cubic: n = n_param + 2. Default 100002; 502 for testing.
     "CYCLIC3LS": {"n_param": 500},
+    # Charged-disk equilibrium: n = 2 * n_charges. Default n_charges=1000
+    # (n=2000) — under MAX_N but the dense fallbacks in the linearised
+    # walk balloon to multi-GB and OOM the no-ECF GitHub runner. Shrink
+    # to n_charges=100 (n=200) for the sweep; benchmarks keep default.
+    "CHARDIS0":  {"n_charges": 100},
 }
+
+# Problems whose default size is below MAX_N but that still need
+# shrinking on the sweep path (memory-tight CI runners). Listed here in
+# addition to having a SIZE_OVERRIDES entry: the substitution is
+# applied unconditionally rather than only when default n > MAX_N.
+FORCE_OVERRIDE: set[str] = {"CHARDIS0"}
 
 _MANIFEST_PATH = Path(__file__).parent / "nse_manifest.json"
 
@@ -182,7 +198,10 @@ def test_sif2jax_correctness_and_nse(param):
     # constructor call is expected to always succeed; if it doesn't,
     # `SIZE_OVERRIDES[name]` is stale and we want to fail loudly.
     y = p.y0
-    if (y.ndim == 1 and y.shape[0] > MAX_N) and name in SIZE_OVERRIDES:
+    needs_override = name in SIZE_OVERRIDES and (
+        (y.ndim == 1 and y.shape[0] > MAX_N) or name in FORCE_OVERRIDE
+    )
+    if needs_override:
         p = type(p)(**SIZE_OVERRIDES[name])
         y = p.y0
 

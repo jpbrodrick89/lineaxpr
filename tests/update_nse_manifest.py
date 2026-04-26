@@ -13,15 +13,7 @@ Output is sorted deterministically so diffs are easy to review.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-
-# ECF=True matches the slow-sweep correctness check's intent (when run
-# under EAGER_CONSTANT_FOLDING=TRUE) and matches JAX's release config.
-# At the current commit, ECF and no-ECF give identical nse for every
-# sif2jax problem, so this is a no-op today — but it future-proofs the
-# manifest against rule changes that would diverge under ECF.
-os.environ.setdefault("EAGER_CONSTANT_FOLDING", "TRUE")
 
 import jax
 
@@ -49,13 +41,16 @@ def _collect():
     )
 
     from tests._synthetic_problems import SYNTHETIC_PROBLEMS
-    from tests.test_sif2jax_sweep import SIZE_OVERRIDES
+    from tests.test_sif2jax_sweep import FORCE_OVERRIDE, SIZE_OVERRIDES
 
     for group, plist in [("unconstrained", U), ("bounded", B), ("quadratic", Q)]:
         for p in plist:
             name = p.__class__.__name__
             y = p.y0
-            if (y.ndim == 1 and y.shape[0] > MAX_N) and name in SIZE_OVERRIDES:
+            needs_override = name in SIZE_OVERRIDES and (
+                (y.ndim == 1 and y.shape[0] > MAX_N) or name in FORCE_OVERRIDE
+            )
+            if needs_override:
                 p = type(p)(**SIZE_OVERRIDES[name])
             yield group, p, name
     for p in SYNTHETIC_PROBLEMS:
