@@ -606,6 +606,11 @@
       "n": 440,
       "nse": 18080,
       "group": "unconstrained"
+    },
+    "_SYN_SCATTER_COMPACT_DUP": {
+      "n": 100,
+      "nse": 1700,
+      "group": "synthetic"
     }
   }
 }

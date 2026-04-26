@@ -3164,6 +3164,11 @@ def _scatter_add_rule(invals, traced, n, **params):
                     static_ok = False
                     break
                 nrows_b = ep.nrows
+                # Source-row count must match scatter-target count, else
+                # the slice scatters partially and we can't gather.
+                if out_idx_b.shape[0] != nrows_b:
+                    static_ok = False
+                    break
                 # Group source rows by output row at trace time. unique_out
                 # is sorted; counts[r] = number of source rows scattering to
                 # unique_out[r]. We emit a structural BE iff the active rows

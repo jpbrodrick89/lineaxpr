@@ -40,6 +40,7 @@ def _collect():
         unconstrained_minimisation_problems as U,
     )
 
+    from tests._synthetic_problems import SYNTHETIC_PROBLEMS
     from tests.test_sif2jax_sweep import SIZE_OVERRIDES
 
     for group, plist in [("unconstrained", U), ("bounded", B), ("quadratic", Q)]:
@@ -49,6 +50,8 @@ def _collect():
             if (y.ndim == 1 and y.shape[0] > MAX_N) and name in SIZE_OVERRIDES:
                 p = type(p)(**SIZE_OVERRIDES[name])
             yield group, p, name
+    for p in SYNTHETIC_PROBLEMS:
+        yield "synthetic", p, p.__class__.__name__
 
 
 def main():

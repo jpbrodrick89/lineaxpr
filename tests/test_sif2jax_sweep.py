@@ -151,12 +151,17 @@ try:
 except ImportError:
     _GROUPS = []
 
+from tests._synthetic_problems import SYNTHETIC_PROBLEMS
+
 
 def _collect():
-    """Yield `(group, instance, name)` for each sif2jax problem."""
+    """Yield `(group, instance, name)` for each sif2jax problem +
+    hand-rolled synthetic problems that target rule corner cases."""
     for group, plist in _GROUPS:
         for p in plist:
             yield group, p, p.__class__.__name__
+    for p in SYNTHETIC_PROBLEMS:
+        yield "synthetic", p, p.__class__.__name__
 
 
 def _id(param):
