@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@v3.0.1
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ECF=TRUE matches JAX's release config and lights up different
+        # rule branches than the default; we run both regimes because
+        # bugs (e.g. 40b01ca) have only manifested under ECF.
+        ecf: ["FALSE", "TRUE"]
+    name: tests (ECF=${{ matrix.ecf }})
+    env:
+      EAGER_CONSTANT_FOLDING: ${{ matrix.ecf }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout sif2jax
+        uses: actions/checkout@v4
+        with:
+          repository: pasteurlabs/sif2jax
+          path: sif2jax
+          # If sif2jax is private, set SIF2JAX_TOKEN secret with a PAT
+          # that can read it; otherwise this checkout will fail and the
+          # job needs to be made conditional or sif2jax made public.
+          token: ${{ secrets.SIF2JAX_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install lineaxpr + sif2jax
+        run: |
+          uv pip install --system -e .[test]
+          uv pip install --system -e ./sif2jax
+
+      - name: Unit tests
+        run: pytest tests/ -q --tb=line
+
+      - name: Slow sweep
+        run: pytest tests/test_sif2jax_sweep.py -m slow -q --tb=line

@@ -232,6 +232,15 @@ tests/test_sif2jax_sweep.py -m slow --tb=line -q` (~3 min). The
    slow sweep caught a CHARDIS0 correctness bug on a 2026-04-22
    broadcast_in_dim change the unit tests missed.
 
+   **Run the slow sweep BOTH with and without ECF.** ECF flips
+   indices from traced to static np arrays, which lights up
+   different rule branches (e.g. the static-`out_idx` path in
+   `_scatter_add_rule`). Bugs that only fire under ECF have slipped
+   through the default no-ECF run before — 40b01ca's gather-BE data
+   loss on SPARSINE was undetected for 12 hours because the slow
+   sweep only ran no-ECF locally. Always also run:
+   `EAGER_CONSTANT_FOLDING=TRUE uv run pytest tests/test_sif2jax_sweep.py -m slow --tb=line -q`
+
 3. **Spot-check expected-win problems in isolation** — before the
    full bench, verify the change delivers on the problem(s) it was
    motivated by. If you don't see the expected win, stop and
@@ -285,6 +294,13 @@ uv run pytest tests/ -v
 
 # Slow sweep over all sif2jax problems (~200, ~2 min):
 uv run pytest tests/test_sif2jax_sweep.py -m slow -v
+
+# ALSO run the slow sweep with EAGER_CONSTANT_FOLDING=TRUE before any
+# rule change. ECF triggers different rule paths (static np indices
+# vs traced) and has caught real correctness regressions that the
+# default no-ECF run missed (e.g. 40b01ca's gather-BE data loss only
+# manifested under ECF). CI runs both regimes on push to main.
+EAGER_CONSTANT_FOLDING=TRUE uv run pytest tests/test_sif2jax_sweep.py -m slow -v
 
 # Regenerate the nse manifest after an intentional structural change:
 uv run python -m tests.update_nse_manifest
