@@ -153,7 +153,8 @@ def _index(json_path: Path) -> dict[tuple[str, str], tuple[float, int]]:
     return out
 
 
-def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
+def load_runs(lineaxpr_tag: str, refs_tag: str | None = None,
+              sha: str | None = None):
     """Return (lineaxpr_json_path, refs_json_path_list, unified_idx).
 
     `unified_idx` is a single dict keyed by (problem, method) where
@@ -170,10 +171,21 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
     Refs may live in per-method files (full-jaxhes, full-jaxhes-folded,
     full-asdex-dense, full-asdex-bcoo) as well as in the combined
     full-refs. All are loaded and merged."""
-    lx_path = _latest_matching(rf"_{re.escape(lineaxpr_tag)}\.json$")
-    lx_folded_path = None
-    if lineaxpr_tag == "full":
-        lx_folded_path = _latest_matching(r"_full_folded\.json$")
+    if sha is not None:
+        # Pin to a specific commit's bench files (used to regenerate
+        # historical plots after a load_runs fix).
+        lx_path = _latest_matching(
+            rf"_{re.escape(sha)}_{re.escape(lineaxpr_tag)}\.json$"
+        )
+        lx_folded_path = (
+            _latest_matching(rf"_{re.escape(sha)}_full_folded\.json$")
+            if lineaxpr_tag == "full" else None
+        )
+    else:
+        lx_path = _latest_matching(rf"_{re.escape(lineaxpr_tag)}\.json$")
+        lx_folded_path = None
+        if lineaxpr_tag == "full":
+            lx_folded_path = _latest_matching(r"_full_folded\.json$")
 
     refs_paths = []
     if refs_tag is not None:
@@ -205,8 +217,22 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None):
                 idx[(prob, f"{method}_folded")] = val
             else:
                 idx[(prob, method)] = val
+    # Refs JSONs are produced by sweeps that run lineaxpr's `materialize`
+    # and `bcoo_jacobian` alongside `asdex_*` / `jax_hessian*`, so the
+    # JSON contains stale lineaxpr entries (frozen at the commit the
+    # refs sweep was captured at). Drop those at ingest — otherwise they
+    # silently overwrite the just-loaded current-commit values, causing
+    # the bcoo_jacobian_min/materialize_min synthesis to mix stale
+    # unfolded with current folded. Refs files only contribute their
+    # own method names (asdex_bcoo, asdex_dense, jax_hessian,
+    # jax_hessian_folded) — anything else gets filtered.
+    REFS_METHODS = {
+        "asdex_bcoo", "asdex_dense", "jax_hessian", "jax_hessian_folded",
+    }
     for p in refs_paths:
-        idx.update(_index(p))
+        for (prob, method), val in _index(p).items():
+            if method in REFS_METHODS:
+                idx[(prob, method)] = val
 
     # Synthesize min-of-{folded, unfolded} methods (per-method "best" metric).
     problems = {p for (p, _) in idx}
@@ -423,6 +449,10 @@ def main():
                     help=f"Output directory (default: {PLOT_DIR}).")
     ap.add_argument("--name", default=None,
                     help="Override output filename stem.")
+    ap.add_argument("--sha", default=None,
+                    help="Pin to a specific commit's bench files (e.g. "
+                         "'2da443c'). Used to regenerate historical plots "
+                         "without picking up newer JSONs via _latest_matching.")
     ap.add_argument("--platform", default=None,
                     help="Restrict to a platform dir, e.g. 'Linux' or 'Darwin'. "
                          "Mac/Linux numbers aren't comparable; pick one. "
@@ -442,7 +472,7 @@ def main():
     import platform as _platform_mod
     _PLATFORM_FILTER = args.platform or _platform_mod.system()
 
-    lx, refs_paths, idx = load_runs(args.tag, args.refs_tag)
+    lx, refs_paths, idx = load_runs(args.tag, args.refs_tag, sha=args.sha)
     print(f"lineaxpr: {lx.name if lx else '(not found)'}")
     if refs_paths:
         for p in refs_paths:
