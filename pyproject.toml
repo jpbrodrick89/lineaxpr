@@ -20,6 +20,10 @@ test = [
     "pytest",
     "pytest-benchmark",
     "pytest-timeout",
+    # sif2jax provides the CUTEst problem suite the slow sweep iterates
+    # over; without it, `tests/test_sif2jax_sweep.py` skips entirely
+    # and the ECF/no-ECF CI matrix becomes a no-op.
+    "sif2jax",
 ]
 benchmark = [
     "pytest",

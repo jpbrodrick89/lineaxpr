@@ -6,11 +6,11 @@ __pycache__/
 # Per-commit bench results are local-only (noisy across machines).
 # Reference runs (tagged `refs-<jaxversion>`) ARE committed so users can
 # compare against them without rerunning jax.hessian / asdex.
-.benchmarks/*/*_lineaxpr.json
-.benchmarks/*/*_curated.json
-.benchmarks/*/*_highn.json
-.benchmarks/*/*_full.json
-.benchmarks/*/*_full_folded.json
+.benchmarks/*/*_lineaxpr*.json
+.benchmarks/*/*_curated*.json
+.benchmarks/*/*_highn*.json
+.benchmarks/*/*_full*.json
+.benchmarks/*/*_full_folded*.json
 !.benchmarks/*/*_refs-*.json
 !.benchmarks/*/*_full-refs-*.json
 !.benchmarks/*/*_full-jaxhes-*.json
@@ -27,5 +27,4 @@ dist/
 .venv/
 .env
 .DS_Store
-uv.lock
 .pytest_cache/
