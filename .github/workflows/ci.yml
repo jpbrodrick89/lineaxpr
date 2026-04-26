@@ -44,8 +44,10 @@ jobs:
       - name: Sync dependencies (locked)
         run: uv sync --locked --extra test
 
+      # `--frozen` on subsequent uv runs skips the implicit re-resolve;
+      # the sync step above already validated the lockfile.
       - name: Unit tests
-        run: uv run pytest tests/ -q --tb=line
+        run: uv run --frozen pytest tests/ -q --tb=line
 
       - name: Slow sweep
-        run: uv run pytest tests/test_sif2jax_sweep.py -m slow -q --tb=line
+        run: uv run --frozen pytest tests/test_sif2jax_sweep.py -m slow -q --tb=line
