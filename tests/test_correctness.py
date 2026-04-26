@@ -30,7 +30,12 @@ CASES = [
     ("sif2jax.cutest._unconstrained_minimisation.dixmaana1", "DIXMAANA1", 0.0),
     ("sif2jax.cutest._quadratic_problems.cmpc1", "CMPC1", 0.0),
     ("sif2jax.cutest._unconstrained_minimisation.luksan17ls", "LUKSAN17LS", 1e-11),
-    ("sif2jax.cutest._unconstrained_minimisation.tointgor", "TOINTGOR", 0.0),
+    # Tol was 0.0 (bit-exact) on the local editable sif2jax checkout,
+    # which rewrote TOINTGOR's gb_expressions. The pypi 0.0.8 build
+    # constructs a 33-element `jnp.array([...])` whose fusion drifts by
+    # 1 ULP under jit. Allow tight machine-precision wiggle so CI (which
+    # uses pypi sif2jax) passes; revisit when sif2jax >= 0.0.9 lands.
+    ("sif2jax.cutest._unconstrained_minimisation.tointgor", "TOINTGOR", 1e-13),
 ]
 
 

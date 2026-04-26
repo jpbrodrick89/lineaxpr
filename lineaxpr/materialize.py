@@ -3019,13 +3019,31 @@ def _gather_rule(invals, traced, n, **params):
         row_idx = start_indices[..., 0]
         col_idx = start_indices[..., 1]
         return dense[row_idx, col_idx]
-    if (
-        dnums.offset_dims != ()
-        or dnums.collapsed_slice_dims != (0,)
-        or dnums.start_index_map != (0,)
-        or params["slice_sizes"] != (1,)
-    ):
+    # Two equivalent point-gather forms differing only in whether the
+    # size-1 slice axis is collapsed away or kept in the output:
+    #   collapsed: offset_dims=(),  collapsed_slice_dims=(0,) → out shape (..., )
+    #   kept:      offset_dims=(1,), collapsed_slice_dims=()  → out shape (..., 1)
+    # The kept form is what `vmap`-ed scalar indexing (e.g. older sif2jax
+    # GENROSE's `vmap(lambda i: y[i])`) lowers to. Treat both, with the
+    # kept form taking the dense fallback that adds the trailing axis.
+    point_gather_collapsed = (
+        dnums.offset_dims == ()
+        and dnums.collapsed_slice_dims == (0,)
+        and dnums.start_index_map == (0,)
+        and params["slice_sizes"] == (1,)
+    )
+    point_gather_kept = (
+        dnums.offset_dims == (1,)
+        and dnums.collapsed_slice_dims == ()
+        and dnums.start_index_map == (0,)
+        and params["slice_sizes"] == (1,)
+    )
+    if not (point_gather_collapsed or point_gather_kept):
         raise NotImplementedError(f"gather with unhandled dnums: {dnums}")
+    if point_gather_kept:
+        dense = _to_dense(operand, n)
+        row_idx = start_indices[..., 0]
+        return dense[row_idx][..., None, :]
     row_idx = start_indices[..., 0]
     # Build a BEllpack for (Constant)Diagonal operand. row_idx has shape
     # (*batch_shape, N) — 1D for the standard gather case, multi-dim for
@@ -3129,12 +3147,41 @@ def _scatter_add_rule(invals, traced, n, **params):
             .add(updates_flat)
             .reshape(out_shape_2d + (n,))
         )
-    if (
-        dnums.update_window_dims != ()
-        or dnums.inserted_window_dims != (0,)
-        or dnums.scatter_dims_to_operand_dims != (0,)
-    ):
+    # Two equivalent point-scatter forms (transposes of the two gather
+    # variants in `_gather_rule`):
+    #   collapsed: update_window_dims=(),  inserted_window_dims=(0,)
+    #   kept:      update_window_dims=(1,), inserted_window_dims=()
+    # The kept form arises from `linear_transpose` of vmap-ed scalar
+    # indexing (older sif2jax GENROSE). Its updates carry an extra
+    # size-1 axis; squeeze it and route through the collapsed logic.
+    scatter_collapsed = (
+        dnums.update_window_dims == ()
+        and dnums.inserted_window_dims == (0,)
+        and dnums.scatter_dims_to_operand_dims == (0,)
+    )
+    scatter_kept = (
+        dnums.update_window_dims == (1,)
+        and dnums.inserted_window_dims == ()
+        and dnums.scatter_dims_to_operand_dims == (0,)
+    )
+    if not (scatter_collapsed or scatter_kept):
         raise NotImplementedError(f"scatter-add with unhandled dnums: {dnums}")
+    if scatter_kept:
+        # Drop the size-1 trailing axis from updates and rerun as collapsed.
+        if isinstance(updates, BEllpack):
+            # BEllpack with primal aval (*batch, M, 1) → squeeze the trailing 1.
+            # The size-1 axis is out_size=1 with batch ending in M.
+            if updates.out_size != 1:
+                raise NotImplementedError(
+                    "scatter-add kept form: expected size-1 trailing axis "
+                    f"on updates, got out_size={updates.out_size}"
+                )
+            # Densify and squeeze for now — correctness over speed.
+            updates = _to_dense(updates, n).squeeze(axis=-2)
+        elif isinstance(updates, sparse.BCOO):
+            updates = _to_dense(updates, n).squeeze(axis=-2)
+        else:
+            updates = jnp.asarray(updates).squeeze(axis=-2)
     out_idx = scatter_indices[..., 0]
     out_size = operand.shape[0]
     # BEllpack updates: batched case handled per-slice (each batch's
