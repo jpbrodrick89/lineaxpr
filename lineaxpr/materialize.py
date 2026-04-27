@@ -85,10 +85,11 @@ BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "200"
 # per-band accumulation loop.  For small K the per-band loop emits K cheap
 # lax.slice ops that XLA fuses efficiently; the two-gather approach emits 2
 # real gather kernels + concat whose overhead dominates at K < threshold.
-# Empirical breakeven: regressions confirmed at K≤8 (NONCVXU2/UN K=6,
-# BROYDN3DLS K=2-4, EDENSCH K=3-4, LUKSAN12LS K=3-8); wins at K≥10
-# (BDQRTIC), K≥21 (DRCAV1LQ/2LQ), K≥72 (NONMSQRT).
-TWO_GATHER_MIN_K = int(os.environ.get("LINEAXPR_TWO_GATHER_MIN_K", "10"))
+# Empirical breakeven: regressions confirmed at K≤10 (NONCVXU2/UN K=6,
+# BROYDN3DLS K=2-4, EDENSCH K=3-4, LUKSAN12LS K=3-8, BDQRTIC K=6-10);
+# wins at K≥15 (DRCAV1LQ/2LQ), K≥72 (NONMSQRT).  Gap between BDQRTIC's
+# max K=10 and DRCAV's min K=15 gives clean margin; 12 sits in the middle.
+BELLPACK_DEDUP_VECTORISED_MIN = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_VECTORISED_MIN", "12"))
 
 
 def _dedup_band_tuple(in_cols, values_per_band, nrows, limit=None):
@@ -714,7 +715,7 @@ def _add_rule(invals, traced, n, **params):
                 # Hash-based grouping via `col.tobytes()` keys. Builds
                 # `group_cols` (unique cols) and `inverse` (band → group
                 # index) in O(K) at trace time. For 2-operand case with
-                # K_total >= TWO_GATHER_MIN_K uses a two-gather reorder
+                # K_total >= BELLPACK_DEDUP_VECTORISED_MIN uses a two-gather reorder
                 # (2 HLO gathers vs K_total lax.slice ops); N-operand
                 # and small-K fallback uses the per-band accumulation loop.
                 # Measured wins: NONMSQRT -15%, DRCAV1LQ/2LQ; threshold
@@ -743,7 +744,7 @@ def _add_rule(invals, traced, n, **params):
                         band_idx += 1
                 new_k = len(group_cols)
                 if new_k < K_total:
-                    if len(vals) == 2 and K_total >= TWO_GATHER_MIN_K:
+                    if len(vals) == 2 and K_total >= BELLPACK_DEDUP_VECTORISED_MIN:
                         # Two-gather reorder: gather each operand in
                         # [dups | uniq] band order, add the dup slices,
                         # concat. dups2 is sorted to match dups1's group
