@@ -81,6 +81,15 @@ materialize_rules: dict[core.Primitive, Callable] = {}
 # at large limits — no reason to go lower for a tight budget.
 BELLPACK_DEDUP_LIMIT = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_LIMIT", "200"))
 
+# Minimum K_total to use the 2-operand two-gather reorder path instead of the
+# per-band accumulation loop.  For small K the per-band loop emits K cheap
+# lax.slice ops that XLA fuses efficiently; the two-gather approach emits 2
+# real gather kernels + concat whose overhead dominates at K < threshold.
+# Empirical breakeven: regressions confirmed at K≤8 (NONCVXU2/UN K=6,
+# BROYDN3DLS K=2-4, EDENSCH K=3-4, LUKSAN12LS K=3-8); wins at K≥10
+# (BDQRTIC), K≥21 (DRCAV1LQ/2LQ), K≥72 (NONMSQRT).
+TWO_GATHER_MIN_K = int(os.environ.get("LINEAXPR_TWO_GATHER_MIN_K", "10"))
+
 
 def _dedup_band_tuple(in_cols, values_per_band, nrows, limit=None):
     """Group bands with identical cols, summing their values.
@@ -704,11 +713,13 @@ def _add_rule(invals, traced, n, **params):
             if K_total <= BELLPACK_DEDUP_LIMIT:
                 # Hash-based grouping via `col.tobytes()` keys. Builds
                 # `group_cols` (unique cols) and `inverse` (band → group
-                # index) in O(K) at trace time. For 2-operand case uses a
-                # two-gather reorder (2 HLO gathers vs K_total per-band
-                # slices); N-operand fallback uses the original per-band
-                # accumulation. Measured wins: NONMSQRT 924→783µs (-15%),
-                # BDQRTIC 300→245µs (-18%); FREUROTH/CRAGGLVY within noise.
+                # index) in O(K) at trace time. For 2-operand case with
+                # K_total >= TWO_GATHER_MIN_K uses a two-gather reorder
+                # (2 HLO gathers vs K_total lax.slice ops); N-operand
+                # and small-K fallback uses the per-band accumulation loop.
+                # Measured wins: NONMSQRT -15%, DRCAV1LQ/2LQ; threshold
+                # prevents regressions at small K (NONCVXU2/UN, EDENSCH,
+                # BROYDN3DLS, LUKSAN12LS) where per-band slices beat gathers.
                 def _col_key(c):
                     if isinstance(c, np.ndarray):
                         return ("np", c.shape, c.tobytes())
@@ -732,7 +743,7 @@ def _add_rule(invals, traced, n, **params):
                         band_idx += 1
                 new_k = len(group_cols)
                 if new_k < K_total:
-                    if len(vals) == 2:
+                    if len(vals) == 2 and K_total >= TWO_GATHER_MIN_K:
                         # Two-gather reorder: gather each operand in
                         # [dups | uniq] band order, add the dup slices,
                         # concat. dups2 is sorted to match dups1's group
