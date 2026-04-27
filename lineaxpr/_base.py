@@ -253,12 +253,14 @@ class BEllpack:
         if k == 1:
             cols_b = _resolve_col(self.in_cols[0], self.nrows)
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
-                return dense.at[rows_1d, cols_b].add(self.values)
+                return dense.at[rows_1d, cols_b].add(
+                    self.values, unique_indices=True, indices_are_sorted=True)
             mask = cols_b >= 0
             safe_cols = jnp.where(mask, cols_b, 0)
             safe_vals = jnp.where(mask, self.values,
                                   jnp.zeros((), self.dtype))
-            return dense.at[rows_1d, safe_cols].add(safe_vals)
+            return dense.at[rows_1d, safe_cols].add(
+                safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
         if all_np:
@@ -293,12 +295,14 @@ class BEllpack:
             else:
                 cols_nd = jnp.asarray(cols_b)
             if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
-                return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(self.values)
+                return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(
+                    self.values, unique_indices=True, indices_are_sorted=True)
             mask = cols_nd >= 0
             safe_cols = jnp.where(mask, cols_nd, 0)
             safe_vals = jnp.where(mask, self.values,
                                   jnp.zeros((), self.dtype))
-            return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(safe_vals)
+            return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(
+                safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
         if all_np:
@@ -603,18 +607,21 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         if isinstance(cols_b, np.ndarray):
             if (cols_b >= 0).all():
                 indices = np.stack([rows_1d, cols_b], axis=1)
-                return sparse.BCOO((e.values, indices), shape=e.shape)
+                return sparse.BCOO((e.values, indices), shape=e.shape,
+                                   indices_sorted=True, unique_indices=True)
             keep = np.nonzero(cols_b >= 0)[0]
             indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
             return sparse.BCOO((jnp.take(e.values, keep), indices),
-                               shape=e.shape)
+                               shape=e.shape,
+                               indices_sorted=True, unique_indices=True)
         # Traced cols — mask values.
         cols_j = jnp.asarray(cols_b)
         mask = cols_j >= 0
         cols_safe = jnp.where(mask, cols_j, 0)
         vals_safe = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
         indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
-        return sparse.BCOO((vals_safe, indices), shape=e.shape)
+        return sparse.BCOO((vals_safe, indices), shape=e.shape,
+                           indices_sorted=True, unique_indices=True)
 
     # k>=2 path — values is (nrows, k). Dispatch by cols-type and k:
     #   * Static cols: always vectorize. Indices are built in pure np
@@ -855,7 +862,8 @@ def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
         data = d.values
     else:
         raise TypeError(f"_diag_to_bcoo expected diagonal LinOp, got {type(d)}")
-    return sparse.BCOO((data, indices), shape=(d.n, d.n))
+    return sparse.BCOO((data, indices), shape=(d.n, d.n),
+                       indices_sorted=True, unique_indices=True)
 
 
 def _to_bcoo(op, n: int):
