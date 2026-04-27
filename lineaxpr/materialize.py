@@ -334,15 +334,12 @@ def _linop_matrix_shape(v):
 
 
 def _cols_equal(a, b) -> bool:
-    """Structural equality test for BEllpack ColArr (slice / np.ndarray).
+    """Structural equality test for BEllpack ColArr (np.ndarray only).
 
     Conservative: returns False for traced jnp arrays (can't compare at
-    trace time) and for heterogeneous pairs (slice vs array). That's
-    fine — the caller falls back to band concat, which is correct just
-    wider than necessary.
+    trace time). The caller falls back to band concat, which is correct
+    just wider than necessary.
     """
-    if isinstance(a, slice) and isinstance(b, slice):
-        return a.start == b.start and a.stop == b.stop and a.step == b.step
     if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
         return a.shape == b.shape and np.array_equal(a, b)
     return False
@@ -351,12 +348,9 @@ def _cols_equal(a, b) -> bool:
 def _col_batch_slice(col, batch_idx):
     """Select one element from a batched ColArr along its leading axis.
 
-    - `slice` (shared across batches): pass through unchanged.
-    - `np.ndarray` / `jnp.ndarray`: if ndim > 1, index the leading axis;
-      else treat as shared (1D cols broadcast across batches).
+    If ndim > 1, index the leading axis; else treat as shared (1D cols
+    broadcast across batches).
     """
-    if isinstance(col, slice):
-        return col
     if col.ndim >= 2:
         return col[batch_idx]
     return col

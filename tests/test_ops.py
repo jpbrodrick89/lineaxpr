@@ -348,21 +348,6 @@ def test_ellpack_minus_one_sentinel_masks_slot():
     np.testing.assert_array_equal(np.asarray(e.to_bcoo().todense()), expected)
 
 
-def test_ellpack_slice_band_resolves():
-    # in_cols = slice(1, 5) on a length-4 row range => cols [1,2,3,4].
-    e = BEllpack(
-        start_row=0, end_row=4,
-        in_cols=(slice(1, 5),),
-        values=(jnp.ones((4,)),),
-        out_size=4, in_size=5,
-    )
-    expected = np.zeros((4, 5))
-    for r in range(4):
-        expected[r, r + 1] = 1.0
-    np.testing.assert_array_equal(np.asarray(e.todense()), expected)
-    np.testing.assert_array_equal(np.asarray(e.to_bcoo().todense()), expected)
-
-
 def test_ellpack_intra_row_duplicate_cols_sum():
     # Two bands both hitting col 0 on row 0 — densify must sum.
     e = BEllpack(

@@ -159,12 +159,12 @@ class BEllpack:
 
     Storage:
       - `in_cols`: tuple of length k. Each entry is a ColArr —
-        `slice` (step=1), static `np.ndarray`, or traced
-        `jnp.ndarray`. For unbatched (`batch_shape == ()`) the cols
-        are 1D `(nrows,)`. For batched, cols may be `(*batch_shape,
-        nrows)` (per-batch varying cols) or still 1D (shared cols
-        across batches). `-1` entries are sentinels: that slot
-        contributes 0 and is filtered at CSR/BCOO conversion.
+        static `np.ndarray` or traced `jnp.ndarray`. For unbatched
+        (`batch_shape == ()`) the cols are 1D `(nrows,)`. For batched,
+        cols may be `(*batch_shape, nrows)` (per-batch varying cols) or
+        still 1D (shared cols across batches). `-1` entries are
+        sentinels: that slot contributes 0 and is filtered at
+        CSR/BCOO conversion.
       - `values`: a single `jnp.ndarray`. Shape `(*batch_shape, nrows)`
         when k==1, `(*batch_shape, nrows, k)` when k>=2.
 
@@ -455,10 +455,7 @@ class BEllpack:
 
 
 def _transpose_col_batch(col, batch_perm):
-    """Permute only the batch axes of a ColArr. Slice / shared-1D cols
-    depend only on the row axis and are unaffected."""
-    if isinstance(col, slice):
-        return col
+    """Permute only the batch axes of a ColArr. Shared 1D cols are unaffected."""
     if col.ndim == 1:
         return col
     nb = col.ndim - 1
@@ -475,17 +472,8 @@ def _transpose_col_full(col, batch_shape, start_row, end_row, out_size,
     combined `(*batch, out)` axes.
     """
     nb = len(batch_shape)
-    nrows = end_row - start_row
     pad_before = start_row
     pad_after = out_size - end_row
-    if isinstance(col, slice):
-        start = 0 if col.start is None else col.start
-        full = np.arange(start, start + nrows)
-        if pad_before or pad_after:
-            full = np.pad(full, (pad_before, pad_after), constant_values=-1)
-        if nb:
-            full = np.broadcast_to(full, batch_shape + (out_size,))
-        return np.transpose(full, permutation)
     if col.ndim == 1:
         # Shared across batches. Pad row axis first, then broadcast.
         if pad_before or pad_after:
@@ -547,30 +535,20 @@ def _normalize_values(values, k: int, batch_shape=(), nrows=None):
 def _col_batch_index(col, batch_idx):
     """Index a ColArr at a batch position tuple.
 
-    - `slice` (shared across batches): pass through.
-    - `ndarray`: if col.ndim > 1, index the leading batch dims; else shared.
+    If col.ndim > 1, index the leading batch dims; else shared across batches.
     """
-    if isinstance(col, slice):
-        return col
     if col.ndim > 1:
         return col[batch_idx]
     return col
 
 
 def _resolve_col(col, nrows):
-    """Materialize a ColArr (slice | ndarray) to a length-nrows 1D array."""
-    if isinstance(col, slice):
-        start = 0 if col.start is None else col.start
-        stop = nrows if col.stop is None else col.stop
-        return np.arange(start, stop)
+    """Return a ColArr (ndarray) unchanged. nrows unused; kept for call-site symmetry."""
     return col
 
 
 def _slice_col(col, lo, hi):
     """Slice a ColArr along its row axis (the last axis for batched cols)."""
-    if isinstance(col, slice):
-        start = 0 if col.start is None else col.start
-        return slice(start + lo, start + hi)
     # Per-batch cols shape (*batch_shape, nrows) — slice the nrows axis.
     if col.ndim > 1:
         return col[..., lo:hi]
