@@ -702,15 +702,13 @@ def _add_rule(invals, traced, n, **params):
             n_batch = first.n_batch
             band_axis = n_batch + 1
             if K_total <= BELLPACK_DEDUP_LIMIT:
-                # Hash-based grouping via `col.tobytes()` keys. Same
-                # algorithm as `_reduce_sum_rule`'s dedup — consistent
-                # approach, O(K) at trace time. Empirically saves ~17%
-                # compile time on NONMSQRT vs O(K²) `np.array_equal`
-                # (285ms → 235ms); other problems flat. Values slice:
-                # `v.values` for k=1, `v.values[..., b]` for k>=2 —
-                # same convention as the widen path below; tuple
-                # iteration over in_cols, values passed whole (per
-                # CLAUDE.md "never loop over arrays").
+                # Hash-based grouping via `col.tobytes()` keys. Builds
+                # `group_cols` (unique cols) and `inverse` (band → group
+                # index) in O(K) at trace time. For 2-operand case uses a
+                # two-gather reorder (2 HLO gathers vs K_total per-band
+                # slices); N-operand fallback uses the original per-band
+                # accumulation. Measured wins: NONMSQRT 924→783µs (-15%),
+                # BDQRTIC 300→245µs (-18%); FREUROTH/CRAGGLVY within noise.
                 def _col_key(c):
                     if isinstance(c, np.ndarray):
                         return ("np", c.shape, c.tobytes())
@@ -718,26 +716,87 @@ def _add_rule(invals, traced, n, **params):
                         return ("slc", c.start, c.stop, c.step)
                     return ("id", id(c))  # traced — won't group
                 group_cols: list = []
-                group_values: list = []
                 key_to_group: dict = {}
+                inverse = np.empty(K_total, dtype=np.intp)
+                band_idx = 0
                 for v in vals:
                     for b in range(v.k):
                         c = _resolve_col(v.in_cols[b], v.nrows)
-                        vals_b = v.values if v.k == 1 else v.values[..., b]
                         k_ = _col_key(c)
                         g = key_to_group.get(k_)
                         if g is None:
-                            key_to_group[k_] = len(group_cols)
+                            g = len(group_cols)
+                            key_to_group[k_] = g
                             group_cols.append(c)
-                            group_values.append(vals_b)
-                        else:
-                            group_values[g] = group_values[g] + vals_b
+                        inverse[band_idx] = g
+                        band_idx += 1
                 new_k = len(group_cols)
                 if new_k < K_total:
-                    if new_k == 1:
-                        new_values = group_values[0]
-                    else:
-                        new_values = jnp.stack(group_values, axis=-1)
+                    if len(vals) == 2:
+                        # Two-gather reorder: gather each operand in
+                        # [dups | uniq] band order, add the dup slices,
+                        # concat. dups2 is sorted to match dups1's group
+                        # order (static np.argsort, zero runtime cost) so
+                        # v1r[..., i] and v2r[..., i] always correspond to
+                        # the same group regardless of band ordering.
+                        v1, v2 = vals
+                        inv1 = inverse[:v1.k]
+                        inv2 = inverse[v1.k:]
+                        dup_set = set(inv1.tolist()) & set(inv2.tolist())
+                        dups1 = np.where(np.isin(inv1, list(dup_set)))[0]
+                        dups2 = np.where(np.isin(inv2, list(dup_set)))[0]
+                        uniq1 = np.where(~np.isin(inv1, list(dup_set)))[0]
+                        uniq2 = np.where(~np.isin(inv2, list(dup_set)))[0]
+                        n_d = len(dups1)
+                        if n_d == len(dups2):
+                            dups1_groups = inv1[dups1]
+                            g_to_pos = {int(g): i for i, g in enumerate(dups1_groups.tolist())}
+                            dups2_aligned = dups2[np.argsort(
+                                [g_to_pos[int(inv2[d])] for d in dups2])]
+                            order1 = np.concatenate([dups1, uniq1])
+                            order2 = np.concatenate([dups2_aligned, uniq2])
+                            s1 = bool(np.all(np.diff(order1) >= 0)) if len(order1) > 1 else True
+                            s2 = bool(np.all(np.diff(order2) >= 0)) if len(order2) > 1 else True
+                            def _ov(v):
+                                if n_batch == 0:
+                                    return v.values if v.values.ndim == 2 else v.values[:, None]
+                                return (v.values if v.values.ndim >= band_axis + 1
+                                        else jnp.expand_dims(v.values, band_axis))
+                            v1r = _ov(v1).at[..., order1].get(
+                                unique_indices=True, indices_are_sorted=s1)
+                            v2r = _ov(v2).at[..., order2].get(
+                                unique_indices=True, indices_are_sorted=s2)
+                            combined = jnp.concatenate(
+                                [v1r[..., :n_d] + v2r[..., :n_d],
+                                 v1r[..., n_d:], v2r[..., n_d:]], axis=-1)
+                            new_group_cols = [group_cols[int(gi)] for gi in
+                                             np.concatenate([dups1_groups,
+                                                             inv1[uniq1],
+                                                             inv2[uniq2]])]
+                            new_values = combined[..., 0] if new_k == 1 else combined
+                            return _densify_if_wider_than_dense(BEllpack(
+                                first.start_row, first.end_row,
+                                tuple(new_group_cols), new_values,
+                                first.out_size, first.in_size,
+                                batch_shape=first.batch_shape,
+                            ), n)
+                        # n_d != len(dups2): a dup group appears multiple
+                        # times in one operand; fall through to per-band loop.
+                    # N-operand (or n_d mismatch) fallback: per-band
+                    # accumulation into group_values.
+                    group_values: list = [None] * new_k  # type: ignore[assignment]
+                    band_idx = 0
+                    for v in vals:
+                        for b in range(v.k):
+                            vals_b = v.values if v.k == 1 else v.values[..., b]
+                            g = int(inverse[band_idx])
+                            if group_values[g] is None:
+                                group_values[g] = vals_b
+                            else:
+                                group_values[g] = group_values[g] + vals_b
+                            band_idx += 1
+                    new_values = (group_values[0] if new_k == 1
+                                  else jnp.stack(group_values, axis=-1))
                     return _densify_if_wider_than_dense(BEllpack(
                         first.start_row, first.end_row,
                         tuple(group_cols), new_values,
