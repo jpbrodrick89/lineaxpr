@@ -15,7 +15,6 @@ from .structural import _concatenate_rule
 from .control_flow import (
     _cond_rule,
     _jit_rule,
-    _squeeze_leading_ones,
     _select_n_rule,
 )
 from .._linops import split_op as _split_op
@@ -58,7 +57,6 @@ __all__ = [
     "_split_rule",
     "_cond_rule",
     "_jit_rule",
-    "_squeeze_leading_ones",
     "_select_n_rule",
     "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
 ]

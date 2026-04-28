@@ -109,18 +109,6 @@ def _jit_rule(invals, traced, n, **params):
     return [inner_env[outvar][1] for outvar in inner.outvars]
 
 
-def _squeeze_leading_ones(arr, k):
-    """Squeeze `k` leading size-1 axes from `arr`. Used to align
-    densified LinOp case shapes in `_select_n_rule` (1-row BEs
-    densify to `(1, n)` but represent the same aval as a scalar-aval
-    LinOp densifying to `(n,)`)."""
-    for _ in range(k):
-        if arr.ndim == 0 or arr.shape[0] != 1:
-            break
-        arr = arr[0]
-    return arr
-
-
 def _select_n_rule(invals, traced, n, **params):
     """`select_n(pred, *cases)` for constant `pred`. Predicates derived from
     traced inputs would imply a data-dependent branch, which is non-linear and
@@ -285,7 +273,7 @@ def _select_n_rule(invals, traced, n, **params):
     min_ndim = min(d.ndim for d in case_dense)
     case_dense = [
         d if d.ndim == min_ndim
-        else _squeeze_leading_ones(d, d.ndim - min_ndim)
+        else d[(0,) * (d.ndim - min_ndim)]
         for d in case_dense
     ]
 

@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax.experimental import sparse
 
-from .base import gather_op, scatter_add_op
+from .base import LinOpProtocol, gather_op, scatter_add_op
 from .bcoo_extend import _bcoo_concat
 from .ellpack import BEllpack, _bellpack_unbatch
 
@@ -195,7 +195,6 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
     if not isinstance(updates, BEllpack):
         # Dense fallback (updates was converted above or was BCOO).
-        from .base import LinOpProtocol  # noqa: PLC0415
         out_idx_flat = out_idx.reshape(-1)
         updates_dense = (updates.todense() if isinstance(updates, LinOpProtocol)  # pyrefly: ignore [unsafe-overlap]
                          else updates)

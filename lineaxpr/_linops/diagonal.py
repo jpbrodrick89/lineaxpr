@@ -6,7 +6,10 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
+from jax import lax
 from jax.experimental import sparse
+
+from .ellpack import BEllpack
 
 from .base import (
     broadcast_in_dim_op,
@@ -154,11 +157,6 @@ def _(op, v):
 
 
 # ---- unary structural op registrations ----
-# These implement the CD/Diagonal-specific fast paths that unary.py used to
-# branch on via isinstance checks. They forward to BEllpack construction, which
-# is imported lazily (to avoid the module-level circular import through _linops).
-
-
 
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
@@ -166,7 +164,6 @@ def _(op, *, n, **params):
     limits = tuple(int(x) for x in params["limit_indices"])
     strides_p = params.get("strides")
     strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if len(starts) == 1:
         s, e = starts[0], limits[0]
         stride = strides[0]
@@ -183,7 +180,6 @@ def _(op, *, n, **params):
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
-    from jax import lax  # noqa: PLC0415
     return lax.slice(dense, s_full, l_full, str_full)
 
 
@@ -193,7 +189,6 @@ def _(op, *, n, **params):
     limits = tuple(int(x) for x in params["limit_indices"])
     strides_p = params.get("strides")
     strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if len(starts) == 1:
         s, e = starts[0], limits[0]
         stride = strides[0]
@@ -208,14 +203,12 @@ def _(op, *, n, **params):
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
-    from jax import lax  # noqa: PLC0415
     return lax.slice(dense, s_full, l_full, str_full)
 
 
 @squeeze_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if not dimensions:
         return op
     if op.n == 1 and dimensions == (0,):
@@ -231,7 +224,6 @@ def _(op, *, n, **params):
 @squeeze_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if not dimensions:
         return op
     if op.n == 1 and dimensions == (0,):
@@ -259,7 +251,6 @@ def _(op, *, n, **params):
 @reshape_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     new_sizes = tuple(int(s) for s in params["new_sizes"])
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -271,7 +262,6 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
@@ -279,7 +269,6 @@ def _(op, *, n, **params):
 @reshape_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     new_sizes = tuple(int(s) for s in params["new_sizes"])
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -291,7 +280,6 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
@@ -300,7 +288,6 @@ def _(op, *, n, **params):
 def _(op, *, n, **params):
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where all
     # non-n axes are size-1.
     if (len(broadcast_dimensions) == 1
@@ -340,7 +327,6 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
@@ -353,7 +339,6 @@ def _(op, *, n, **params):
 def _(op, *, n, **params):
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if (len(broadcast_dimensions) == 1
             and shape[broadcast_dimensions[0]] == op.n
             and all(s == 1 for i, s in enumerate(shape)
@@ -391,7 +376,6 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
@@ -419,7 +403,6 @@ def _(op, *, n, **params):
 @gather_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, start_indices, **params):
     dnums = params["dimension_numbers"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     point_gather_kept = (
         dnums.offset_dims == (1,)
         and dnums.collapsed_slice_dims == ()
@@ -488,7 +471,6 @@ def _(op, *, n, **params):
 @gather_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, start_indices, **params):
     dnums = params["dimension_numbers"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     point_gather_kept = (
         dnums.offset_dims == (1,)
         and dnums.collapsed_slice_dims == ()

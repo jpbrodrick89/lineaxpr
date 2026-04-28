@@ -200,34 +200,6 @@ def materialize(linear_fn, primal, format: str = "dense"):
 # -------------------------- jax-like public API --------------------------
 
 
-def _jacfwd_impl(f, y, format: str):
-    """materialize ∘ jax.linearize — forward-mode Jacobian."""
-    y_out, lin = jax.linearize(f, y)
-    del y_out  # only needed for shape in jacrev
-    return materialize(lin, y, format=format)
-
-
-def _jacrev_impl(f, y, format: str):
-    """materialize ∘ jax.linear_transpose ∘ jax.linearize — reverse-mode
-    Jacobian. linear_transpose of the JVP is the VJP; materializing gives
-    Jᵀ, so we transpose the result to match `jax.jacrev`'s shape."""
-    y_out, lin = jax.linearize(f, y)
-    vjp = jax.linear_transpose(lin, y)
-    # vjp: R^m -> R^n, where m = y_out.shape.
-    # jax.linear_transpose wraps the result in a tuple (multi-output),
-    # so we unpack.
-    def vjp_unpacked(w):
-        (out,) = vjp(w)
-        return out
-    # Primal for the VJP is a shape/dtype witness of y_out.
-    jt = materialize(vjp_unpacked, y_out, format=format)
-    # jt has shape (n, m); we want (m, n) to match jax.jacrev.
-    if format == "dense":
-        return jt.T
-    # BCOO supports .T via transpose().
-    return jt.T
-
-
 def jacfwd(f, *, format: str = "dense"):
     """Forward-mode Jacobian, matching `jax.jacfwd`'s output shape.
 
@@ -242,7 +214,8 @@ def jacfwd(f, *, format: str = "dense"):
     roadmap.
     """
     def wrapped(y):
-        return _jacfwd_impl(f, y, format)
+        _, lin = jax.linearize(f, y)
+        return materialize(lin, y, format=format)
     return wrapped
 
 
@@ -261,7 +234,12 @@ def jacrev(f, *, format: str = "dense"):
     Returns a function `(y) -> Jacobian`.
     """
     def wrapped(y):
-        return _jacrev_impl(f, y, format)
+        y_out, lin = jax.linearize(f, y)
+        vjp = jax.linear_transpose(lin, y)
+        def vjp_unpacked(w):
+            (out,) = vjp(w)
+            return out
+        return materialize(vjp_unpacked, y_out, format=format).T
     return wrapped
 
 
