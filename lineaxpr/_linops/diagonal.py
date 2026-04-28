@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
@@ -13,8 +14,10 @@ from .ellpack import BEllpack
 
 from .base import (
     broadcast_in_dim_op,
+    cumsum_op,
     gather_op,
     negate,
+    pad_op,
     reduce_sum_op,
     reshape_op,
     rev_op,
@@ -235,7 +238,7 @@ def _(op, *, n, **params):
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
 
 
-@rev_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
+@rev_op.register(ConstantDiagonal)
 def _(op, *, n, **params):
     return op  # constant under axis-reversal
 
@@ -384,7 +387,7 @@ def _(op, *, n, **params):
     return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
 
 
-@reduce_sum_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
+@reduce_sum_op.register(ConstantDiagonal)
 def _(op, *, n, **params):
     """CD: dense fallback (see comment in unary.py about XLA fusion)."""
     axes = params["axes"]
@@ -392,7 +395,7 @@ def _(op, *, n, **params):
     return jnp.sum(dense, axis=tuple(axes))
 
 
-@reduce_sum_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
+@reduce_sum_op.register(Diagonal)
 def _(op, *, n, **params):
     """Diagonal: dense fallback (same XLA fusion reason as CD)."""
     axes = params["axes"]
@@ -430,7 +433,7 @@ def _(op, *, n, start_indices, **params):
     )
 
 
-@split_op.register(ConstantDiagonal)  # pyrefly: ignore [bad-argument-type]
+@split_op.register(ConstantDiagonal)
 @split_op.register(Diagonal)  # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     sizes = params["sizes"]
@@ -493,3 +496,19 @@ def _(op, *, n, start_indices, **params):
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
     )
+
+
+@pad_op.register(ConstantDiagonal)
+@pad_op.register(Diagonal)
+def _(op, *, n, padding_value, **params) -> jax.Array:
+    config = params["padding_config"]
+    dense = op.todense()
+    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
+    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
+
+
+@cumsum_op.register(ConstantDiagonal)
+@cumsum_op.register(Diagonal)
+def _(op, *, n, **params) -> jax.Array:
+    return lax.cumsum(op.todense(), axis=params["axis"],
+                      reverse=params.get("reverse", False))

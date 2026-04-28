@@ -122,7 +122,7 @@ def _(op, *, n, start_indices, **params):
     return dense[row_idx]
 
 
-@scatter_add_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+@scatter_add_op.register(BEllpack)
 def _(updates, *, n, operand, scatter_indices, **params):
     dnums = params["dimension_numbers"]
 

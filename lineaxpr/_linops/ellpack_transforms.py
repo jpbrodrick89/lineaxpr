@@ -166,7 +166,7 @@ def _(op, *, n, **params):
 
 
 # BCOO batched → flat reshape registration.
-@reshape_op.register(sparse.BCOO) # pyrefly: ignore [bad-argument-type]
+@reshape_op.register(sparse.BCOO)
 def _(op, *, n, **params):
     new_sizes = tuple(int(s) for s in params["new_sizes"])
 
@@ -368,7 +368,7 @@ def _(op, *, n, **params):
 
 
 # Handle the jax.Array dense linear-form path for broadcast_in_dim.
-@broadcast_in_dim_op.register(jax.Array) # pyrefly: ignore [bad-argument-type]
+@broadcast_in_dim_op.register(jax.Array)
 def _(op, *, n, **params):
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
@@ -542,7 +542,7 @@ def _(op, *, n, **params):
 # cumsum_op registration
 # ---------------------------------------------------------------------------
 
-@cumsum_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+@cumsum_op.register(BEllpack)
 def _(op, *, n, **params):
     """BEllpack cumsum: dense fallback."""
     axis = params["axis"]

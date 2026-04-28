@@ -767,7 +767,7 @@ def _(op, *, n, **params):
     return lax.slice(dense, s_full, l_full, str_full)
 
 
-@pad_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+@pad_op.register(BEllpack)
 def _(op, *, n, padding_value, **params):
     config = params["padding_config"]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)

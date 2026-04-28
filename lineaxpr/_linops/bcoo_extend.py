@@ -15,6 +15,8 @@ from jax.experimental import sparse
 
 from .ellpack import BEllpack
 from .base import (
+    broadcast_in_dim_op,
+    cumsum_op,
     negate,
     pad_op,
     reduce_sum_op,
@@ -23,6 +25,7 @@ from .base import (
     scale_scalar,
     slice_op,
     split_op,
+    squeeze_op,
 )
 
 
@@ -46,7 +49,7 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
     )
 
 
-@slice_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
+@slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
     starts = tuple(int(s) for s in params["start_indices"])
     limits = tuple(int(l) for l in params["limit_indices"])
@@ -88,7 +91,7 @@ def _(op: sparse.BCOO, *, n, **params):
     return lax.slice(dense, s_full, l_full, str_full)
 
 
-@pad_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
+@pad_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, padding_value, **params):
     config = params["padding_config"]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
@@ -116,7 +119,7 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
 
 
-@rev_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
+@rev_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
     dimensions = params["dimensions"]
     if op.n_batch == 0 and dimensions == (0,):
@@ -208,3 +211,26 @@ def _bcoo_concat(bcoo_vals, shape):
     # pyrefly: ignore [bad-argument-type]
     return sparse.BCOO((cat_data, cat_indices), shape=shape,
                        indices_sorted=False, unique_indices=False)
+
+
+@squeeze_op.register(sparse.BCOO)
+def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
+    return lax.squeeze(op.todense(), params["dimensions"])
+
+
+@cumsum_op.register(sparse.BCOO)
+def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
+    return lax.cumsum(op.todense(), axis=params["axis"],
+                      reverse=params.get("reverse", False))
+
+
+@broadcast_in_dim_op.register(sparse.BCOO)
+def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
+    shape = params["shape"]
+    broadcast_dimensions = params["broadcast_dimensions"]
+    dense = op.todense()
+    expected_ndim = len(broadcast_dimensions) + 1
+    while dense.ndim > expected_ndim and dense.shape[0] == 1:
+        dense = dense[0]
+    out_dims = tuple(broadcast_dimensions) + (len(shape),)
+    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
