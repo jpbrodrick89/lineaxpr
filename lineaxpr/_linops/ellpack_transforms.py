@@ -165,8 +165,7 @@ def _(op, *, n, **params):
         )
 
     # Dense fallback.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
 
@@ -203,8 +202,7 @@ def _(op, *, n, **params):
             shape=(int(new_sizes[0]), in_size),
         )
 
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
 
@@ -249,8 +247,7 @@ def _(op, *, n, **params):
     if (op.n_batch == 0
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1
             and broadcast_dimensions == ()):
-        from lineaxpr._linops import _to_dense  # noqa: PLC0415
-        op_dense = _to_dense(op, n)[0]
+        op_dense = op.todense()[0]
         expected_ndim = len(broadcast_dimensions) + 1
         while op_dense.ndim > expected_ndim and op_dense.shape[0] == 1:
             op_dense = op_dense[0]
@@ -375,8 +372,7 @@ def _(op, *, n, **params):
         )
 
     # Dense fallback.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
         dense = dense[0]
@@ -551,8 +547,7 @@ def _(op, *, n, **params):
             jnp.where(mask, cols_stacked, 0)].add(jnp.where(mask, vals_stacked, jnp.zeros((), op.dtype)))
 
     # Dense fallback.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return jnp.sum(dense, axis=tuple(axes))
 
 
@@ -565,8 +560,7 @@ def _(op, *, n, **params):
     """BEllpack cumsum: dense fallback."""
     axis = params["axis"]
     reverse = params.get("reverse", False)
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.cumsum(dense, axis=axis, reverse=reverse)
 
 
@@ -672,9 +666,8 @@ def _(op, *, n, **params):
         return out
     # Fall through to BCOO-based split (handled in bcoo_extend.py for
     # ConstantDiagonal/Diagonal/BCOO; for BEllpack fall through to dense).
-    from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
     if axis == 0:
-        bcoo = _to_bcoo(op, n)
+        bcoo = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
         rows = bcoo.indices[:, 0]
         out = []
         start = 0
@@ -692,8 +685,7 @@ def _(op, *, n, **params):
             ))
             start = end
         return out
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     out = []
     start = 0
     for sz in sizes:

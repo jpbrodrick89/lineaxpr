@@ -179,8 +179,7 @@ def _(op, *, n, **params):
             out_size=k_out, in_size=op.n,
         )
     # Multi-dim: dense fallback
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
@@ -205,8 +204,7 @@ def _(op, *, n, **params):
             in_cols=(cols,), values=op.values[s:e:stride],
             out_size=k_out, in_size=op.n,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
@@ -273,9 +271,8 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
 
@@ -294,9 +291,8 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
 
@@ -344,9 +340,8 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
         dense = dense[0]
@@ -396,9 +391,8 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
         dense = dense[0]
@@ -409,18 +403,16 @@ def _(op, *, n, **params):
 @reduce_sum_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     """CD: dense fallback (see comment in unary.py about XLA fusion)."""
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     axes = params["axes"]
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return jnp.sum(dense, axis=tuple(axes))
 
 
 @reduce_sum_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     """Diagonal: dense fallback (same XLA fusion reason as CD)."""
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     axes = params["axes"]
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return jnp.sum(dense, axis=tuple(axes))
 
 
@@ -461,10 +453,9 @@ def _(op, *, n, **params):
     sizes = params["sizes"]
     axis = params["axis"]
     if axis == 0:
-        from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
         from jax.experimental import sparse as _sparse  # noqa: PLC0415
         import jax.numpy as _jnp  # noqa: PLC0415
-        bcoo = _to_bcoo(op, n)
+        bcoo = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
         rows = bcoo.indices[:, 0]
         out = []
         start = 0
@@ -482,9 +473,8 @@ def _(op, *, n, **params):
             ))
             start = end
         return out
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     import jax.numpy as _jnp  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     out = []
     start = 0
     for sz in sizes:

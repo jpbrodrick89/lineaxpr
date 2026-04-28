@@ -11,8 +11,7 @@ from jax import lax
 from .._linops import (
     BEllpack,
     ConstantDiagonal,
-    _to_dense,
-    _traced_shape,
+    LinOpProtocol,
 )
 from .mul import _mul_rule
 from .._linops.base import LinOpProtocol as _LinOpProtocol
@@ -116,7 +115,7 @@ def _dot_general_rule(invals, traced, n, **params):
     else:
         traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
     traced_is_first = tx
-    traced_shape = _traced_shape(traced_op)
+    traced_shape = traced_op.shape[:-1]
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
         if isinstance(traced_op, ConstantDiagonal):
@@ -124,7 +123,7 @@ def _dot_general_rule(invals, traced, n, **params):
         return M * traced_op
     if len(c_tr) == 0 and len(c_M) == 0:
         # Outer product. BE's trailing `n` axis stays last.
-        dense = _to_dense(traced_op, n)
+        dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
         if traced_is_first:
             # (*t, n) × (*m,) → (*t, *m, n)
             d = dense.reshape(traced_shape + (1,) * M.ndim + dense.shape[-1:])
@@ -151,7 +150,7 @@ def _dot_general_rule(invals, traced, n, **params):
         if be_result is not None:
             return be_result
 
-    dense = _to_dense(traced_op, n)
+    dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
         out = lax.dot_general(
             dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))

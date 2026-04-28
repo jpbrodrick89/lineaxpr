@@ -12,8 +12,7 @@ from .._linops import (
     BEllpack,
     ConstantDiagonal,
     Diagonal,
-    _to_bcoo,
-    _to_dense,
+    LinOpProtocol,
 )
 from .._linops import _bcoo_concat
 from .add import _cols_equal
@@ -251,7 +250,7 @@ def _select_n_rule(invals, traced, n, **params):
         for c_idx, (c, t) in enumerate(zip(cases, case_traced)):
             if not t:
                 continue
-            bc = _to_bcoo(c, n)
+            bc = c.to_bcoo() if hasattr(c, 'to_bcoo') else c
             if bc.n_batch != 0:
                 masked_bcoos = None
                 break
@@ -273,7 +272,7 @@ def _select_n_rule(invals, traced, n, **params):
     case_dense = []
     for c, t in zip(cases, case_traced):
         if t:
-            case_dense.append(_to_dense(c, n))
+            case_dense.append(c.todense() if isinstance(c, LinOpProtocol) else c)
         else:
             arr = jnp.asarray(c)
             zero_shape = arr.shape + (n,)

@@ -13,7 +13,4 @@ from ._linops import (  # noqa: F401
     _slice_col,
     _transpose_col_batch,
     _transpose_col_full,
-    _to_dense,
-    _to_bcoo,
-    _traced_shape,
 )

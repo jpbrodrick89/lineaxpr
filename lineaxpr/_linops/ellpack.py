@@ -746,8 +746,7 @@ def _(op, *, n, **params):
         return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
 
     # Dense fallback.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
@@ -800,8 +799,7 @@ def _(op, *, n, padding_value, **params):
 
     # Interior padding — promote to BCOO then shift rows.
     if len(config) == 1 and interior > 0:
-        from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
-        bcoo_op = _to_bcoo(op, n)
+        bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
         step = interior + 1
         old_size = bcoo_op.shape[0]
         out_size = old_size + before + after + interior * max(old_size - 1, 0)
@@ -812,8 +810,7 @@ def _(op, *, n, padding_value, **params):
         )
 
     # Dense fallback.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
 
@@ -860,8 +857,7 @@ def _(op, *, n, **params):
                 out_size=B, in_size=op.in_size,
             )
     # Densify (sparse → (out_size, in_size)) then squeeze.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    return lax.squeeze(_to_dense(op, n), dimensions)
+    return lax.squeeze(op.todense(), dimensions)
 
 
 @rev_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
@@ -883,8 +879,7 @@ def _(op, *, n, **params):
             in_cols=tuple(new_in_cols), values=new_values,
             out_size=op.out_size, in_size=op.in_size,
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.rev(dense, dimensions)
 
 

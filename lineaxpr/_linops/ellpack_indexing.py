@@ -57,8 +57,7 @@ def _(op, *, n, start_indices, **params):
                 out_size=new_out, in_size=op.in_size,
                 batch_shape=new_batch,
             )
-        from lineaxpr._linops import _to_dense  # noqa: PLC0415
-        dense = _to_dense(op, n)
+        dense = op.todense()
         row_idx = start_indices[..., 0]
         col_idx = start_indices[..., 1]
         return dense[row_idx, col_idx]
@@ -117,9 +116,8 @@ def _(op, *, n, start_indices, **params):
         )
 
     # Dense fallback for other BEllpack gather patterns.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     row_idx = start_indices[..., 0]
-    dense = _to_dense(op, n)
+    dense = op.todense()
     if point_gather_kept:
         return dense[row_idx][..., None, :]
     return dense[row_idx]
@@ -134,10 +132,9 @@ def _(updates, *, n, operand, scatter_indices, **params):
             and dnums.inserted_window_dims == (0, 1)
             and dnums.scatter_dims_to_operand_dims == (0, 1)
             and operand.ndim == 2):
-        from lineaxpr._linops import _to_dense  # noqa: PLC0415
         operand_dense = jnp.asarray(operand)
         out_shape_2d = operand_dense.shape
-        updates_dense = _to_dense(updates, n)
+        updates_dense = updates.todense()
         si_flat = scatter_indices.reshape(-1, 2)
         updates_flat = updates_dense.reshape(-1, n)
         flat_rows = (
@@ -190,8 +187,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 batch_shape=new_batch,
             )
         else:
-            from lineaxpr._linops import _to_dense  # noqa: PLC0415
-            updates = _to_dense(updates, n).squeeze(axis=-2)
+            updates = updates.todense().squeeze(axis=-2)
             # Now updates is a plain array — fall through to dense path.
 
     out_idx = scatter_indices[..., 0]
@@ -199,17 +195,17 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
     if not isinstance(updates, BEllpack):
         # Dense fallback (updates was converted above or was BCOO).
-        from lineaxpr._linops import _to_dense  # noqa: PLC0415
+        from .base import LinOpProtocol  # noqa: PLC0415
         out_idx_flat = out_idx.reshape(-1)
-        updates_dense = _to_dense(updates, n)
+        updates_dense = (updates.todense() if isinstance(updates, LinOpProtocol)  # pyrefly: ignore [unsafe-overlap]
+                         else updates)
         flat_updates = updates_dense.reshape(-1, n)
         return (jnp.zeros((out_size, n), flat_updates.dtype)
                 .at[out_idx_flat].add(flat_updates))
 
     # BEllpack batched case.
     if updates.n_batch == 0:
-        from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
-        updates = _to_bcoo(updates, n)
+        updates = updates.to_bcoo() if hasattr(updates, 'to_bcoo') else updates
     else:
         from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
         slices = _bellpack_unbatch(updates)
@@ -263,8 +259,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
         # Traced indices fallback.
         bcoo_pieces = []
         for b_idx, ep in enumerate(slices):
-            from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
-            bc = _to_bcoo(ep, n)
+            bc = ep.to_bcoo()
             old_rows = bc.indices[:, 0]
             new_rows = out_idx[b_idx][old_rows]
             new_indices = jnp.stack([new_rows, bc.indices[:, 1]], axis=1)
@@ -285,8 +280,6 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
     # Plain array fallback.
     out_idx_flat = out_idx.reshape(-1)
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    updates_dense = _to_dense(updates, n)
-    flat_updates = updates_dense.reshape(-1, n)
+    flat_updates = jnp.asarray(updates).reshape(-1, n)  # pyrefly: ignore [bad-argument-type]
     return (jnp.zeros((out_size, n), flat_updates.dtype)
             .at[out_idx_flat].add(flat_updates))

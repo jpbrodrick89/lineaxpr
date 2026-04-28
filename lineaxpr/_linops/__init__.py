@@ -15,8 +15,7 @@ To extend the format space:
    standard method set: `.shape`, `.n`, `.primal_aval()`, `.todense()`,
    `.to_bcoo()`, `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`,
    and any form-specific ops (e.g. `BEllpack.pad_rows`).
-2. Update `_to_dense(op, n)` and `_to_bcoo(op, n)` in this module.
-3. Export it from `lineaxpr/__init__.py`.
+2. Export it from `lineaxpr/__init__.py`.
 4. In `materialize.py`, touch:
    - `_add_rule`'s kind-dispatch shape checks use `v.shape` directly.
    - `_add_rule`'s kind-dispatch — decide which combos with the new
@@ -31,9 +30,6 @@ To extend the format space:
 """
 
 from __future__ import annotations
-
-import jax.numpy as jnp
-from jax.experimental import sparse
 
 from .base import (
     LinOpProtocol,
@@ -101,44 +97,4 @@ __all__ = [
     "_slice_col",
     "_transpose_col_batch",
     "_transpose_col_full",
-    "_to_dense",
-    "_to_bcoo",
-    "_traced_shape",
 ]
-
-
-def _to_dense(op, n: int) -> jnp.ndarray:
-    if isinstance(op, ConstantDiagonal):
-        if isinstance(op.value, float) and op.value == 1.0:
-            return jnp.eye(n)
-        return op.value * jnp.eye(n)
-    if isinstance(op, Diagonal):
-        # Consistent with Diagonal.todense — scatter is context-robust
-        # where the alternatives regress ARGTRIGLS.
-        return op.todense()
-    if isinstance(op, BEllpack):
-        return op.todense()
-    if isinstance(op, sparse.BCOO):
-        return op.todense()
-    return op
-
-
-def _to_bcoo(op, n: int):
-    """Convert any internal LinOp to BCOO (used at the `materialize`
-    boundary when `format='bcoo'`, and internally by `_add_rule` to
-    promote mixed-form operands to a common BCOO before concatenation)."""
-    if isinstance(op, sparse.BCOO):
-        return op
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        return op.to_bcoo()
-    return op  # plain ndarray — caller will keep dense
-
-
-def _traced_shape(op) -> tuple:
-    """Return the aval shape of the walk-variable this LinOp represents
-    (i.e., the LinOp shape minus the trailing input-coordinate axis)."""
-    if isinstance(op, (ConstantDiagonal, Diagonal)):
-        return (op.n,)
-    if isinstance(op, BEllpack):
-        return (*op.batch_shape, op.out_size)
-    return tuple(op.shape[:-1])

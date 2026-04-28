@@ -79,9 +79,8 @@ def _(op: sparse.BCOO, *, n, **params):
         return sparse.BCOO((new_data, new_indices), shape=(k, op.shape[1]))
 
     # Dense fallback for other BCOO slice patterns.
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
@@ -111,9 +110,8 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
         return sparse.BCOO(
             (op.data, new_indices), shape=(out_size, op.shape[1])
         )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
 
@@ -125,9 +123,8 @@ def _(op: sparse.BCOO, *, n, **params):
         new_rows = (op.shape[0] - 1) - op.indices[:, 0]
         new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
         return sparse.BCOO((op.data, new_indices), shape=op.shape)
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
     from jax import lax  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return lax.rev(dense, dimensions)
 
 
@@ -163,8 +160,7 @@ def _(op: sparse.BCOO, *, n, **params):
                     values=summed.reshape(1, n_groups),
                     out_size=1, in_size=in_size,
                 )
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     return jnp.sum(dense, axis=tuple(axes))
 
 
@@ -190,8 +186,7 @@ def _(op: sparse.BCOO, *, n, **params):
             ))
             start = end
         return out
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    dense = _to_dense(op, n)
+    dense = op.todense()
     out = []
     start = 0
     for sz in sizes:

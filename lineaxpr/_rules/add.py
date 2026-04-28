@@ -15,10 +15,9 @@ from .._linops import (
     BEllpack,
     ConstantDiagonal,
     Diagonal,
+    LinOpProtocol,
     _bcoo_concat,
     _ellpack_to_bcoo_batched,
-    _to_bcoo,
-    _to_dense,
 )
 
 # ---------------------------------------------------------------------------
@@ -151,7 +150,7 @@ def _densify_if_wider_than_dense(op, n):
     from carrying effectively-dense state through the rest of the walk.
     """
     if isinstance(op, BEllpack) and op.k >= op.in_size:
-        return _to_dense(op, n)
+        return op.todense()
     return op
 
 
@@ -648,7 +647,7 @@ def _add_rule(invals, traced, n, **params):
             ep_batch_shapes = {v.batch_shape for v in vals
                                if isinstance(v, BEllpack)}
             if len(ep_batch_shapes) <= 1:
-                bcoo_vals = [_to_bcoo(v, n) for v in vals]
+                bcoo_vals = [v.to_bcoo() if hasattr(v, 'to_bcoo') else v for v in vals]
                 return _bcoo_concat(bcoo_vals, shape=vals[0].shape)
 
     # Linear-form adds: a vector-aval-(k,) LinOp is normally stored as a
@@ -666,7 +665,7 @@ def _add_rule(invals, traced, n, **params):
         if (isinstance(v, BEllpack) and v.n_batch == 0
                 and v.out_size == 1 and v.start_row == 0
                 and v.end_row == 1):
-            return _to_dense(v, n)[0]
+            return v.todense()[0]
         if isinstance(v, sparse.BCOO) and v.shape == (1, n):
             return v.todense()[0]
         return None
@@ -675,5 +674,5 @@ def _add_rule(invals, traced, n, **params):
         return functools.reduce(operator.add, linear_form_rows)
 
     # Dense fallback: densify everything and sum.
-    dense_vals = [_to_dense(v, n) for v in vals]
+    dense_vals = [v.todense() if isinstance(v, LinOpProtocol) else v for v in vals]
     return functools.reduce(operator.add, dense_vals)

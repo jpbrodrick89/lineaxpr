@@ -10,8 +10,7 @@ own LinOp classes all satisfy by duck-typing. It deliberately excludes
 negate/scale_* (handled by singledispatch, not the protocol) so that external
 sparse formats can be passed as LinOps without any adapter code.
 Note: BCOO.to_bcoo() does not exist (BCOO is already BCOO); call sites that
-need a BCOO should use the module-level `_to_bcoo(op, n)` helper instead of
-the method directly.
+need a BCOO should use `op.to_bcoo() if hasattr(op, 'to_bcoo') else op`.
 
 Unary structural ops (squeeze_op, rev_op, etc.) live here as singledispatch
 bases with dense fallbacks; type-specific implementations are registered in
@@ -75,13 +74,6 @@ def scale_per_out_row(op, v) -> Any:
 # ellpack_transforms.py / ellpack_indexing.py.
 # ---------------------------------------------------------------------------
 
-def _to_dense_base(op, n: int):
-    """Lazy import shim to avoid circular import at module load time."""
-    # Imported at call time to avoid circular imports (base.py → _linops/__init__).
-    from lineaxpr._linops import _to_dense  # noqa: PLC0415
-    return _to_dense(op, n)
-
-
 @singledispatch
 def identity_op(op, *, n, **params):
     """Pass-through: return op unchanged (used by convert_element_type, copy)."""
@@ -93,7 +85,7 @@ def squeeze_op(op, *, n, **params):
     """Squeeze output axes. Dense fallback."""
     dimensions = params["dimensions"]
     if isinstance(op, sparse.BCOO):
-        return lax.squeeze(_to_dense_base(op, n), dimensions)
+        return lax.squeeze(op.todense(), dimensions)
     return lax.squeeze(op, dimensions)
 
 
@@ -102,7 +94,7 @@ def rev_op(op, *, n, **params):
     """Reverse output axes. Dense fallback."""
     dimensions = params["dimensions"]
     if isinstance(op, sparse.BCOO):
-        return lax.rev(_to_dense_base(op, n), dimensions)
+        return lax.rev(op.todense(), dimensions)
     return lax.rev(op, dimensions)
 
 
@@ -113,7 +105,7 @@ def slice_op(op, *, n, **params):
     limits = tuple(int(l) for l in params["limit_indices"])
     strides_p = params.get("strides")
     strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     s_full = starts + (0,)
     l_full = limits + (n,)
     str_full = strides + (1,)
@@ -124,7 +116,7 @@ def slice_op(op, *, n, **params):
 def pad_op(op, *, n, padding_value, **params):
     """Pad output axes. Dense fallback."""
     config = params["padding_config"]
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
 
@@ -134,7 +126,7 @@ def cumsum_op(op, *, n, **params):
     """Cumulative sum. Dense fallback."""
     axis = params["axis"]
     reverse = params.get("reverse", False)
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     return lax.cumsum(dense, axis=axis, reverse=reverse)
 
 
@@ -144,7 +136,7 @@ def cumsum_op(op, *, n, **params):
 def reshape_op(op, *, n, **params):
     """Reshape output axes. Dense fallback."""
     new_sizes = tuple(int(s) for s in params["new_sizes"])
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     return lax.reshape(dense, tuple(new_sizes) + (n,))
 
 
@@ -153,7 +145,7 @@ def broadcast_in_dim_op(op, *, n, **params):
     """Broadcast-in-dim. Dense fallback."""
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
         dense = dense[0]
@@ -165,7 +157,7 @@ def broadcast_in_dim_op(op, *, n, **params):
 def reduce_sum_op(op, *, n, **params):
     """Reduce sum. Dense fallback."""
     axes = params["axes"]
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     return jnp.sum(dense, axis=tuple(axes))
 
 
@@ -180,7 +172,7 @@ def gather_op(op, *, n, start_indices, **params):
         and params["slice_sizes"] == (1,)
     )
     row_idx = start_indices[..., 0]
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     if point_gather_kept:
         return dense[row_idx][..., None, :]
     return dense[row_idx]
@@ -192,7 +184,7 @@ def scatter_add_op(updates, *, n, operand, scatter_indices, **params):
     out_idx = scatter_indices[..., 0]
     out_idx_flat = out_idx.reshape(-1)
     out_size = operand.shape[0]
-    updates_dense = _to_dense_base(updates, n)
+    updates_dense = updates.todense() if isinstance(updates, LinOpProtocol) else updates
     flat_updates = updates_dense.reshape(-1, n)
     return (jnp.zeros((out_size, n), flat_updates.dtype)
             .at[out_idx_flat].add(flat_updates))
@@ -203,7 +195,7 @@ def split_op(op, *, n, **params):
     """Split output axis. Dense fallback — returns a list of arrays."""
     sizes = params["sizes"]
     axis = params["axis"]
-    dense = _to_dense_base(op, n)
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
     out = []
     start = 0
     for sz in sizes:

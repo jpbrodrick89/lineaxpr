@@ -11,7 +11,7 @@ from .._linops import (
     BEllpack,
     ConstantDiagonal,
     Diagonal,
-    _to_dense,
+    LinOpProtocol,
 )
 
 
@@ -201,7 +201,7 @@ def _concatenate_rule(invals, traced, n, **params):
     parts = []
     for v, t in zip(invals, traced):
         if t:
-            parts.append(_to_dense(v, n))
+            parts.append(v.todense() if isinstance(v, LinOpProtocol) else v)
         else:
             # Closure constant: extend with a zero "input axis" of size n.
             parts.append(jnp.broadcast_to(v[..., None] * 0, v.shape + (n,)))

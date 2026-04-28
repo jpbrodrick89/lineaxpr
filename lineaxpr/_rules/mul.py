@@ -9,8 +9,6 @@ import jax.numpy as jnp
 from .._linops import (
     BEllpack,
     LinOpProtocol,
-    _to_dense,
-    _traced_shape,
     scale_per_out_row,
     scale_scalar,
 )
@@ -38,7 +36,7 @@ def _mul_rule(invals, traced, n, **params):
     # scale_per_out_row assumes scale has shape that broadcasts cleanly
     # against the op's var_shape (batch_shape + (out_size,)). If scale has
     # extra dims (jaxpr outer-product-like broadcasts), fall back to dense.
-    traced_var_shape = _traced_shape(traced_op)
+    traced_var_shape = traced_op.shape[:-1]
     scale_ok = (
         hasattr(scale, "shape")
         and len(scale.shape) <= len(traced_var_shape)
@@ -158,5 +156,5 @@ def _mul_rule(invals, traced, n, **params):
                 out_size=new_out, in_size=traced_op.in_size,
                 batch_shape=traced_op.batch_shape,
             )
-    dense = _to_dense(traced_op, n)
+    dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     return scale[..., None] * dense

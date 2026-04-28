@@ -21,7 +21,7 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
-    _to_dense,
+    LinOpProtocol,
     broadcast_in_dim_op,
     cumsum_op,
     gather_op,
@@ -137,7 +137,7 @@ def _scatter_add_rule(invals, traced, n, **params):
     # Normalise "kept" form for non-BEllpack updates (BEllpack handles it).
     if scatter_kept and not isinstance(updates, BEllpack):
         if isinstance(updates, sparse.BCOO):
-            updates = _to_dense(updates, n).squeeze(axis=-2)
+            updates = updates.todense().squeeze(axis=-2)
         else:
             updates = jnp.asarray(updates).squeeze(axis=-2)
         # Rebuild dnums for the collapsed form.
@@ -224,12 +224,10 @@ def _transpose_rule(invals, traced, n, **params):
     if not t:
         return None
     permutation = tuple(int(p) for p in params["permutation"])
-    from .._linops import LinOpProtocol, _to_dense  # noqa: PLC0415
     from jax import lax as _lax  # noqa: PLC0415
     if isinstance(op, LinOpProtocol):
         return op.transpose(permutation)
-    dense = _to_dense(op, n)
-    return _lax.transpose(dense, permutation + (len(permutation),))
+    return _lax.transpose(op, permutation + (len(permutation),))
 
 materialize_rules[lax.transpose_p] = _transpose_rule
 materialize_rules[lax.gather_p] = _gather_rule
