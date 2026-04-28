@@ -26,7 +26,7 @@ repos:
       - id: pyrefly-check
         name: Pyrefly (type checking)
         language: system
-        entry: uv run pyrefly check lineaxpr/
+        entry: uv run --extra dev pyrefly check lineaxpr/
         pass_filenames: false
         types: [python]
 
