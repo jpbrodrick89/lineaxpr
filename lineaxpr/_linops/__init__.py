@@ -35,6 +35,7 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax.experimental import sparse
 
+from .base import LinOpProtocol, negate, scale_per_out_row, scale_scalar
 from .diagonal import ConstantDiagonal, Diagonal, Identity, _diag_to_bcoo
 from .ellpack import (
     BEllpack,
@@ -46,8 +47,13 @@ from .ellpack import (
     _transpose_col_batch,
     _transpose_col_full,
 )
+from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
 
 __all__ = [
+    "LinOpProtocol",
+    "negate",
+    "scale_scalar",
+    "scale_per_out_row",
     "ConstantDiagonal",
     "Diagonal",
     "Identity",

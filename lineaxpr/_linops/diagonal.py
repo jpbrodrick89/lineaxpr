@@ -8,6 +8,8 @@ import jax.numpy as jnp
 from jax import core
 from jax.experimental import sparse
 
+from .base import negate, scale_per_out_row, scale_scalar
+
 
 class ConstantDiagonal:
     """Diagonal matrix with all entries equal to `value`."""
@@ -124,3 +126,23 @@ def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
         raise TypeError(f"_diag_to_bcoo expected diagonal LinOp, got {type(d)}")
     return sparse.BCOO((data, indices), shape=(d.n, d.n),
                        indices_sorted=True, unique_indices=True)
+
+
+# ---- singledispatch registrations ----
+
+@negate.register(ConstantDiagonal)
+@negate.register(Diagonal)
+def _(op):
+    return op.negate()
+
+
+@scale_scalar.register(ConstantDiagonal)
+@scale_scalar.register(Diagonal)
+def _(op, s):
+    return op.scale_scalar(s)
+
+
+@scale_per_out_row.register(ConstantDiagonal)
+@scale_per_out_row.register(Diagonal)
+def _(op, v):
+    return op.scale_per_out_row(v)

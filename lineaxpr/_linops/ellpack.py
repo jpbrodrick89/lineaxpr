@@ -7,6 +7,8 @@ import numpy as np
 from jax import core
 from jax.experimental import sparse
 
+from .base import negate, scale_per_out_row, scale_scalar
+
 
 class BEllpack:
     """Batched multi-band sparse operator with a contiguous row range.
@@ -687,3 +689,20 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         shape=B + (e.out_size, e.in_size),
         indices_sorted=False, unique_indices=False,
     )
+
+
+# ---- singledispatch registrations ----
+
+@negate.register(BEllpack)
+def _(op):
+    return op.negate()
+
+
+@scale_scalar.register(BEllpack)
+def _(op, s):
+    return op.scale_scalar(s)
+
+
+@scale_per_out_row.register(BEllpack)
+def _(op, v):
+    return op.scale_per_out_row(v)

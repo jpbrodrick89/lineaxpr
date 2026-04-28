@@ -58,6 +58,7 @@ from ._base import (
     _to_dense,
     _traced_shape,
 )
+from ._linops import negate, scale_per_out_row, scale_scalar
 
 
 # -------------------------- rule registry --------------------------
@@ -95,20 +96,6 @@ BELLPACK_DEDUP_VECTORISED_MIN = int(os.environ.get("LINEAXPR_BELLPACK_DEDUP_VECT
 # -------------------------- rules --------------------------
 
 
-def _bcoo_scale_scalar(b: sparse.BCOO, s) -> sparse.BCOO:
-    return sparse.BCOO((s * b.data, b.indices), shape=b.shape)
-
-
-def _bcoo_scale_per_out_row(b: sparse.BCOO, v) -> sparse.BCOO:
-    row_idx = b.indices[:, 0]
-    v_arr = jnp.asarray(v)
-    return sparse.BCOO((b.data * jnp.take(v_arr, row_idx), b.indices), shape=b.shape)
-
-
-def _bcoo_negate(b: sparse.BCOO) -> sparse.BCOO:
-    return sparse.BCOO((-b.data, b.indices), shape=b.shape)
-
-
 def _mul_rule(invals, traced, n, **params):
     del params
     x, y = invals
@@ -128,7 +115,7 @@ def _mul_rule(invals, traced, n, **params):
         if isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack)):
             return traced_op.scale_scalar(s)
         if isinstance(traced_op, sparse.BCOO):
-            return _bcoo_scale_scalar(traced_op, s)
+            return scale_scalar(traced_op, s)
         return s * traced_op
     # scale_per_out_row assumes scale has shape that broadcasts cleanly
     # against the op's var_shape (batch_shape + (out_size,)). If scale has
@@ -145,7 +132,7 @@ def _mul_rule(invals, traced, n, **params):
     if scale_ok and isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack)):
         return traced_op.scale_per_out_row(scale)
     if scale_ok and isinstance(traced_op, sparse.BCOO):
-        return _bcoo_scale_per_out_row(traced_op, scale)
+        return scale_per_out_row(traced_op, scale)
     # Batch-expand path: scale broadcasts same-ndim as traced_var_shape
     # but expands one or more size-1 batch axes of the BE (dims where BE
     # has 1 and scale has K > 1). Structurally: new BEllpack with
@@ -1030,7 +1017,7 @@ def _neg_rule(invals, traced, n, **params):
     if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
         return op.negate()
     if isinstance(op, sparse.BCOO):
-        return _bcoo_negate(op)
+        return negate(op)
     return -op
 
 materialize_rules[lax.neg_p] = _neg_rule
