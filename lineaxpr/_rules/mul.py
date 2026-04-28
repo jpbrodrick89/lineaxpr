@@ -8,6 +8,7 @@ import jax.numpy as jnp
 
 from .._linops import (
     BEllpack,
+    ColArr,
     LinOpProtocol,
     scale_per_out_row,
     scale_scalar,
@@ -66,19 +67,15 @@ def _mul_rule(invals, traced, n, **params):
             new_values = scale_arr * traced_op.values
         else:
             new_values = scale_arr[..., None] * traced_op.values
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         can_emit = True
         for c in traced_op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 if c.ndim == 1:
-                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)
                 elif c.shape[:len(traced_op.batch_shape)] == traced_op.batch_shape \
                         and all(t == 1 for t in traced_op.batch_shape):
                     new_in_cols.append(
-                        # pyrefly: ignore [bad-argument-type]
                         np.broadcast_to(c, new_batch + c.shape[-1:]).copy()
                     )
                 else:
@@ -129,27 +126,22 @@ def _mul_rule(invals, traced, n, **params):
         else:
             # traced values (*batch, 1, k). Insert new_out axis then mul.
             new_values = scale_arr[..., None] * traced_op.values
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
+        can_emit2 = True
         for c in traced_op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 if c.ndim == traced_op.n_batch + 1:  # (*batch, 1) per-batch
                     new_in_cols.append(
-                        # pyrefly: ignore [bad-argument-type]
-                        np.broadcast_to(
-                            c, traced_op.batch_shape + (new_out,)
-                        ).copy()
+                        np.broadcast_to(c, traced_op.batch_shape + (new_out,)).copy()
                     )
                 else:
-                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)
             else:
                 # Traced cols — would need jnp broadcast; keep simple by
                 # falling through to dense. Rare.
-                new_in_cols = None
+                can_emit2 = False
                 break
-        if new_in_cols is not None:
+        if can_emit2:
             return BEllpack(
                 start_row=0, end_row=new_out,
                 in_cols=tuple(new_in_cols), values=new_values,

@@ -19,7 +19,7 @@ from .base import (
     reshape_op,
     split_op,
 )
-from .ellpack import BEllpack, _bellpack_unbatch
+from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,7 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(total)
         else:
             new_values = op.values.reshape(total, op.k)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if isinstance(c, slice):
                 rs = np.arange(c.start or 0, c.stop or op.nrows, c.step or 1)
@@ -80,7 +80,7 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(A, B_out)
         else:
             new_values = op.values.reshape(A, B_out, op.k)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if isinstance(c, slice):
                 rs = np.arange(c.start or 0, c.stop or op.nrows, c.step or 1)
@@ -109,11 +109,9 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(prefix + (op.nrows,))
         else:
             new_values = op.values.reshape(prefix + (op.nrows, op.k))
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 if c.ndim == 1:
                     # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)
@@ -146,11 +144,9 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(new_batch + (1,))
         else:
             new_values = op.values.reshape(new_batch + (1, op.k))
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
             else:
@@ -227,16 +223,12 @@ def _(op, *, n, **params):
             and broadcast_dimensions == () and len(shape) == 1):
         N = int(shape[0])
         new_values = jnp.broadcast_to(op.values, (N,) + op.values.shape[1:])
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                resolved = c
-                new_in_cols.append(np.broadcast_to(resolved, (N,)).copy())  # pyrefly: ignore [no-matching-overload]
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 new_in_cols.append(np.broadcast_to(c, (N,)).copy())
             else:
-                # pyrefly: ignore [bad-argument-type]
-                new_in_cols.append(jnp.broadcast_to(c, (N,)))
+                new_in_cols.append(jnp.broadcast_to(jnp.asarray(c), (N,)))
         return BEllpack(
             start_row=0, end_row=N,
             in_cols=tuple(new_in_cols), values=new_values,
@@ -279,9 +271,9 @@ def _(op, *, n, **params):
         prepend = tuple(shape[:len(shape) - input_rank])
         new_batch = prepend + op.batch_shape
         new_values = jnp.broadcast_to(op.values, prepend + op.values.shape)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice) or c.ndim == 1:
+            if c.ndim == 1:
                 new_in_cols.append(c)
                 continue
             target = prepend + c.shape
@@ -309,12 +301,9 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(new_batch + (1,))
         else:
             new_values = op.values.reshape(new_batch + (1, op.k))
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            else:
-                new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
+            new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=tuple(new_in_cols), values=new_values,
@@ -345,11 +334,9 @@ def _(op, *, n, **params):
                 op.values.reshape(reshape_shape),
                 new_batch + (new_out, op.k),
             )
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 reshape_c = (N,) + (1,) * (len(new_batch) - 1) + (1,) + c.shape[1:]
                 new_in_cols.append(
                     # pyrefly: ignore [bad-argument-type]
@@ -437,9 +424,9 @@ def _(op, *, n, **params):
                     break
             if safe:
                 new_values = op.values.sum(axis=axes_t)
-                new_in_cols = []
+                new_in_cols: list[ColArr] = []
                 for c in op.in_cols:
-                    if isinstance(c, slice) or c.ndim == 1:
+                    if c.ndim == 1:
                         new_in_cols.append(c)
                     else:
                         new_in_cols.append(c.squeeze(axis=axes_t))
@@ -459,7 +446,7 @@ def _(op, *, n, **params):
             B = op.batch_shape[0]
             O = op.out_size
             K = op.k
-            new_in_cols = []
+            new_in_cols: list[ColArr] = []
             for r in range(O):
                 for b in range(K):
                     c = op.in_cols[b]
@@ -588,7 +575,7 @@ def _(op, *, n, **params):
             val_slc = [slice(None)] * op.values.ndim
             val_slc[nb] = slice(start, end)
             new_values = op.values[tuple(val_slc)]
-            new_in_cols = []
+            new_in_cols: list[ColArr] = []
             for c in op.in_cols:
                 arr = c
                 if isinstance(arr, np.ndarray):
@@ -647,7 +634,7 @@ def _(op, *, n, **params):
                 continue
             row_lo = max(start, op.start_row) - op.start_row
             row_hi = min(end, op.end_row) - op.start_row
-            new_in_cols = []
+            new_in_cols: list[ColArr] = []
             for c in op.in_cols:
                 if isinstance(c, slice):
                     c = c

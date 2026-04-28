@@ -13,6 +13,7 @@ from jax.experimental import sparse
 
 from .._linops import (
     BEllpack,
+    ColArr,
     ConstantDiagonal,
     Diagonal,
     LinOpProtocol,
@@ -117,7 +118,7 @@ def _broadcast_be_to_batch(be, target_batch_shape):
         new_values = jnp.broadcast_to(
             be.values, target_batch_shape + (be.nrows, be.k))
     # Broadcast cols.
-    new_in_cols = []
+    new_in_cols: list[ColArr] = []
     for c in be.in_cols:
         if not hasattr(c, "ndim") or c.ndim == 1:
             new_in_cols.append(c)
@@ -169,7 +170,7 @@ def _tile_1row_bellpack(ep, target_rows):
     else:
         new_values = jnp.broadcast_to(ep.values, (target_rows, ep.k))
     # Cols: 1D (nrows=1,) → broadcast to (target_rows,).
-    new_in_cols = []
+    new_in_cols: list[ColArr] = []
     for c in ep.in_cols:
         if isinstance(c, np.ndarray):
             # pyrefly: ignore [bad-argument-type]
@@ -493,12 +494,11 @@ def _add_rule(invals, traced, n, **params):
             # Values shape for n_batch=0 is (nrows,) for k=1 or (nrows, k)
             # for k>=2; concat along the band axis (axis=1 i.e. the k dim).
             # For batched values (n_batch>0) the band axis is n_batch+1.
-            new_in_cols = tuple(c for v in vals for c in v.in_cols)
             parts = [v.values_2d for v in vals]
             new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
             return _densify_if_wider_than_dense(BEllpack(
                 first.start_row, first.end_row,
-                new_in_cols, new_values,
+                tuple(c for v in vals for c in v.in_cols), new_values,
                 first.out_size, first.in_size,
                 batch_shape=first.batch_shape), n)
 
@@ -526,7 +526,7 @@ def _add_rule(invals, traced, n, **params):
                 else:
                     parts = [v.values for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
-                new_in_cols = []
+                new_in_cols: list[ColArr] = []
                 for b in range(k_new):
                     band_rows = [v.in_cols[b]
                                  for v in sorted_vals]

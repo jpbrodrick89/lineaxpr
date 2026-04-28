@@ -151,30 +151,26 @@ def _select_n_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (new_data, t_case.indices), shape=t_case.shape
             )
-    # pyrefly: ignore [unbound-name]
-    if sum(case_traced) == 1 and isinstance(t_case, BEllpack):
+        # BEllpack: mask values by row-predicate.
         # pred has the BE's aval shape `(*batch_shape, out_size)`;
-        # slice the last axis to the active row range. mask is
-        # `(*batch_shape, nrows)`, broadcasting over the trailing k
-        # axis for k>=2 values. Scalar pred (aval=()) applies
-        # uniformly — skip the slice.
-        pred_arr = jnp.asarray(pred)
-        if pred_arr.ndim == 0:
-            # pyrefly: ignore [unbound-name]
-            mask = (pred_arr == t_idx)
-        else:
-            pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
-            # pyrefly: ignore [unbound-name]
-            mask = (pred_slice == t_idx)
-            if t_case.k >= 2:
-                mask = mask[..., None]
-        new_values = jnp.where(mask, t_case.values,
-                               jnp.zeros((), t_case.dtype))
-        return BEllpack(
-            t_case.start_row, t_case.end_row, t_case.in_cols,
-            new_values, t_case.out_size, t_case.in_size,
-            batch_shape=t_case.batch_shape,
-        )
+        # slice the last axis to the active row range. Scalar pred
+        # (aval=()) applies uniformly — skip the slice.
+        if isinstance(t_case, BEllpack):
+            pred_arr = jnp.asarray(pred)
+            if pred_arr.ndim == 0:
+                mask = (pred_arr == t_idx)
+            else:
+                pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
+                mask = (pred_slice == t_idx)
+                if t_case.k >= 2:
+                    mask = mask[..., None]
+            new_values = jnp.where(mask, t_case.values,
+                                   jnp.zeros((), t_case.dtype))
+            return BEllpack(
+                t_case.start_row, t_case.end_row, t_case.in_cols,
+                new_values, t_case.out_size, t_case.in_size,
+                batch_shape=t_case.batch_shape,
+            )
 
     # Structural fast path: all cases are BEllpack with matching
     # (start_row, end_row, out_size, in_size) and identical in_cols tuples.

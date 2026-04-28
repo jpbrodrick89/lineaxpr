@@ -34,7 +34,7 @@ from .base import (
     squeeze_op,
 )
 from .diagonal import ConstantDiagonal, Diagonal, Identity
-from .ellpack import BEllpack, _ellpack_to_bcoo_batched
+from .ellpack import BEllpack, ColArr, _ellpack_to_bcoo_batched
 from .bcoo_extend import _bcoo_concat
 from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
 from . import ellpack_transforms as _ellpack_transforms  # noqa: F401 — registers BE transform dispatchers
@@ -61,6 +61,7 @@ __all__ = [
     "Diagonal",
     "Identity",
     "BEllpack",
+    "ColArr",
     "_bcoo_concat",
     "_ellpack_to_bcoo_batched",
 ]

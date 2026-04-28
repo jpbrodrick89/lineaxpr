@@ -9,6 +9,7 @@ from jax.experimental import sparse
 
 from .._linops import (
     BEllpack,
+    ColArr,
     ConstantDiagonal,
     Diagonal,
     LinOpProtocol,
@@ -47,7 +48,7 @@ def _concatenate_rule(invals, traced, n, **params):
                       # on batch-axis concat; avoid complexity)
             else:
                 new_values = jnp.concatenate([v.values for v in invals], axis=dimension)
-                new_in_cols = []
+                new_in_cols: list[ColArr] = []
                 for b in range(invals[0].k):
                     parts = []
                     has_per_batch = False
@@ -126,7 +127,7 @@ def _concatenate_rule(invals, traced, n, **params):
                     vals = jnp.pad(vals, pad)
                 return vals
             new_values = jnp.concatenate([_widen_values(v) for v in invals], axis=nb)
-            new_in_cols = []
+            new_in_cols: list[ColArr] = []
             for b in range(max_k):
                 band_parts = []
                 has_per_batch = False

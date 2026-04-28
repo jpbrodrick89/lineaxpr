@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax
 from jax.experimental import sparse
+
+# ColArr: a column-index array — either a static numpy array (trace-time
+# constant, allows compile-time sentinel filtering) or a traced JAX array.
+ColArr = np.ndarray | jax.Array
 
 from .base import (
     negate,
@@ -59,8 +64,19 @@ class BEllpack:
     __slots__ = ("start_row", "end_row", "in_cols", "values",
                  "out_size", "in_size", "batch_shape")
 
-    def __init__(self, start_row, end_row, in_cols, values,
-                 out_size, in_size, batch_shape=()):
+    start_row: int
+    end_row: int
+    in_cols: tuple[ColArr, ...]
+    values: jax.Array
+    out_size: int
+    in_size: int
+    batch_shape: tuple[int, ...]
+
+    def __init__(self, start_row: int, end_row: int,
+                 in_cols: tuple[ColArr, ...] | list[ColArr],
+                 values: jax.Array,
+                 out_size: int, in_size: int,
+                 batch_shape: tuple[int, ...] = ()):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
@@ -183,7 +199,7 @@ class BEllpack:
         resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
         if all_np:
-            cols_per_band = []
+            cols_per_band: list[ColArr] = []
             for c in resolved:
                 if c.ndim == 1:
                     cols_per_band.append(np.broadcast_to(c, nb_shape))
@@ -728,11 +744,9 @@ def _(op, *, n, **params):
         out_start, out_limit = int(starts[-1]), int(limits[-1])
         tail = (slice(None),) * (op.values.ndim - op.n_batch)
         new_values = op.values[batch_slicer + tail]
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif hasattr(c, "ndim") and c.ndim > 1:
+            if hasattr(c, "ndim") and c.ndim > 1:
                 new_in_cols.append(c[batch_slicer + (slice(None),)])
             else:
                 new_in_cols.append(c)
@@ -775,17 +789,13 @@ def _(op, *, n, padding_value, **params):
         )
         tail_pad = ((0, 0),) * (op.values.ndim - op.n_batch)
         new_values = jnp.pad(op.values, batch_pads + tail_pad)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(c)
-            elif hasattr(c, "ndim") and c.ndim > 1:
+            if hasattr(c, "ndim") and c.ndim > 1:
                 pad_cfg = batch_pads + ((0, 0),)
                 if isinstance(c, np.ndarray):
-                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(np.pad(c, pad_cfg, constant_values=-1))
                 else:
-                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(jnp.pad(c, pad_cfg, constant_values=-1))
             else:
                 new_in_cols.append(c)
@@ -830,7 +840,7 @@ def _(op, *, n, **params):
             new_values = op.values.reshape(B)
         else:
             new_values = op.values.reshape(B, op.k)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         ok = True
         for c in op.in_cols:
             if isinstance(c, slice):
@@ -868,7 +878,7 @@ def _(op, *, n, **params):
         new_start = op.out_size - op.end_row
         new_end = op.out_size - op.start_row
         new_values = jnp.flip(op.values, axis=0)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if isinstance(c, np.ndarray):
                 new_in_cols.append(c[::-1].copy())
@@ -897,9 +907,9 @@ def _bellpack_unbatch(bep):
         prod_B = int(np.prod(bep.batch_shape))
         trailing = bep.values.shape[bep.n_batch:]
         flat_values = bep.values.reshape((prod_B,) + trailing)
-        flat_cols = []
+        flat_cols: list[ColArr] = []
         for c in bep.in_cols:
-            if isinstance(c, slice) or (hasattr(c, "ndim") and c.ndim == 1):
+            if c.ndim == 1:
                 flat_cols.append(c)
             else:
                 flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))

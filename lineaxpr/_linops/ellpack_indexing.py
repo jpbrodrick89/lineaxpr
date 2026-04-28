@@ -13,7 +13,7 @@ from jax.experimental import sparse
 
 from .base import LinOpProtocol, gather_op, scatter_add_op
 from .bcoo_extend import _bcoo_concat
-from .ellpack import BEllpack, _bellpack_unbatch
+from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 
 
 @gather_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
@@ -40,7 +40,7 @@ def _(op, *, n, start_indices, **params):
                 row_flat = jnp.asarray(start_indices[..., 0]).reshape(-1)
                 col_flat = jnp.asarray(start_indices[..., 1]).reshape(-1)
             from lineaxpr._rules.multilinear import _resolve_full  # noqa: PLC0415
-            new_in_cols = []
+            new_in_cols: list[ColArr] = []
             for c in op.in_cols:
                 c_full = _resolve_full(c, op.nrows, op.batch_shape)
                 if not idx_static and isinstance(c_full, np.ndarray):
@@ -87,7 +87,7 @@ def _(op, *, n, start_indices, **params):
         idx_static = isinstance(row_idx, np.ndarray)
         ridx_flat = row_idx.reshape(-1) if idx_static else jnp.asarray(
             row_idx).reshape(-1)
-        new_in_cols = []
+        new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             cr = c
             if idx_static and isinstance(cr, np.ndarray):
@@ -100,11 +100,10 @@ def _(op, *, n, start_indices, **params):
         else:
             vals = op.values[ridx_flat].reshape(batch_shape + (N, op.k))
         if point_gather_kept:
-            new_in_cols = tuple(c[..., None] for c in new_in_cols)
-            vals = vals[..., None] if op.k == 1 else vals[..., None, :]
             return BEllpack(
                 start_row=0, end_row=1,
-                in_cols=new_in_cols, values=vals,
+                in_cols=tuple(c[..., None] for c in new_in_cols),
+                values=vals[..., None] if op.k == 1 else vals[..., None, :],
                 out_size=1, in_size=op.in_size,
                 batch_shape=batch_shape + (N,),
             )
@@ -171,9 +170,8 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 and len(updates.batch_shape) >= 1):
             inner = updates.batch_shape[-1]
             new_batch = updates.batch_shape[:-1]
-            new_in_cols = tuple(
-                c if isinstance(c, slice) else c.reshape(c.shape[:-1])
-                for c in updates.in_cols
+            squeezed_cols = tuple(
+                c.reshape(c.shape[:-1]) for c in updates.in_cols
             )
             if updates.k == 1:
                 new_values = updates.values.reshape(updates.values.shape[:-1])
@@ -182,7 +180,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 new_values = updates.values.reshape(shape[:-2] + shape[-1:])
             updates = BEllpack(
                 start_row=0, end_row=inner,
-                in_cols=new_in_cols, values=new_values,
+                in_cols=squeezed_cols, values=new_values,
                 out_size=inner, in_size=updates.in_size,
                 batch_shape=new_batch,
             )
@@ -233,7 +231,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
             dup = int(counts[0])
             order = np.argsort(inverse, kind="stable").reshape(n_unique, dup)
             try:
-                new_in_cols = []
+                new_in_cols: list[ColArr] = []
                 for d in range(dup):
                     src = order[:, d]
                     for col in ep.in_cols:
