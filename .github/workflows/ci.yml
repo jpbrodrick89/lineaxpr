@@ -17,6 +17,8 @@ jobs:
       - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
+      - name: Sync dependencies (locked)
+        run: uv sync --locked --extra dev
       - name: Run pre-commit
         run: uvx pre-commit run --all-files --show-diff-on-failure
 
