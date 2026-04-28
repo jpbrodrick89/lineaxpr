@@ -11,7 +11,6 @@ from jax import lax
 from .._linops import (
     BEllpack,
     ConstantDiagonal,
-    _resolve_col,
     _to_dense,
     _traced_shape,
 )
@@ -39,7 +38,7 @@ def _bcast(arr, shape):
 def _resolve_full(c, nrows, batch_shape):
     """Resolve a ColArr (slice | 1D | N-D) to shape `(*batch, nrows)`."""
     if isinstance(c, slice):
-        c = _resolve_col(c, nrows)
+        c = c
     if c.ndim == 1:
         return _bcast(c, batch_shape + (nrows,))
     return c

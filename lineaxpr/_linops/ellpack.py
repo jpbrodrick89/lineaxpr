@@ -102,6 +102,13 @@ class BEllpack:
         return self.nrows * self.k
 
     @property
+    def values_2d(self):
+        """values always in (*batch, nrows, k) shape regardless of k."""
+        if self.values.ndim == self.n_batch + 1:  # k==1
+            return self.values[..., None]
+        return self.values
+
+    @property
     def dtype(self):
         return self.values.dtype
 
@@ -121,7 +128,7 @@ class BEllpack:
         dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
         if k == 1:
-            cols_b = _resolve_col(self.in_cols[0], self.nrows)
+            cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
                 return dense.at[rows_1d, cols_b].add(
                     self.values, unique_indices=True, indices_are_sorted=True)
@@ -131,7 +138,7 @@ class BEllpack:
                                   jnp.zeros((), self.dtype))
             return dense.at[rows_1d, safe_cols].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
-        resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
+        resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
         if all_np:
             cols_nk = np.stack(resolved, axis=-1)  # (nrows, k), static
@@ -159,7 +166,7 @@ class BEllpack:
         row_idx = batch_grids[-1] + self.start_row
         nb_shape = self.batch_shape + (self.nrows,)
         if k == 1:
-            cols_b = _resolve_col(self.in_cols[0], self.nrows)
+            cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and cols_b.ndim == 1:
                 cols_nd = np.broadcast_to(cols_b, nb_shape)
             else:
@@ -173,7 +180,7 @@ class BEllpack:
                                   jnp.zeros((), self.dtype))
             return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
-        resolved = [_resolve_col(c, self.nrows) for c in self.in_cols]
+        resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
         if all_np:
             cols_per_band = []
@@ -374,11 +381,6 @@ def _normalize_values(values, k: int, batch_shape=(), nrows=None):
     return arr
 
 
-def _resolve_col(col, nrows):
-    """Return a ColArr (ndarray) unchanged. nrows unused; kept for call-site symmetry."""
-    return col
-
-
 def _slice_col(col, lo, hi):
     """Slice a ColArr along its row axis (the last axis for batched cols)."""
     # Per-batch cols shape (*batch_shape, nrows) — slice the nrows axis.
@@ -407,12 +409,11 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     if e.n_batch > 0:
         return _ellpack_to_bcoo_batched(e)
     rows_1d = np.arange(e.start_row, e.end_row)
-    nrows = e.nrows
     k = e.k
 
     # k=1 fast path — single band, values already 1D.
     if k == 1:
-        cols_b = _resolve_col(e.in_cols[0], nrows)
+        cols_b = e.in_cols[0]
         if isinstance(cols_b, np.ndarray):
             if (cols_b >= 0).all():
                 indices = np.stack([rows_1d, cols_b], axis=1)
@@ -450,7 +451,7 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     #     chosen to match the empirical split: NONCVX k=3 is the only
     #     known case needing loop; SPARSINE k=6 and up want vec.
     _BE_TO_BCOO_LOOP_K_THRESHOLD = 3
-    per_band_cols = [_resolve_col(c, nrows) for c in e.in_cols]
+    per_band_cols = list(e.in_cols)
     any_traced_cols = any(not isinstance(c, np.ndarray) for c in per_band_cols)
     if not any_traced_cols:
         # Static cols: always vectorize (any K, any nrows).
@@ -526,7 +527,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
     k = e.k
     rows_1d = np.arange(e.start_row, e.end_row)
 
-    per_band = [_resolve_col(c, nrows) for c in e.in_cols]
+    per_band = list(e.in_cols)
     all_static = all(isinstance(c, np.ndarray) for c in per_band)
     # (debug hook removed; see git blame if you need to re-instrument)
 
@@ -873,12 +874,10 @@ def _(op, *, n, **params):
         new_values = jnp.flip(op.values, axis=0)
         new_in_cols = []
         for c in op.in_cols:
-            if isinstance(c, slice):
-                new_in_cols.append(_resolve_col(c, op.nrows)[::-1].copy())
-            elif isinstance(c, np.ndarray):
+            if isinstance(c, np.ndarray):
                 new_in_cols.append(c[::-1].copy())
             else:
-                new_in_cols.append(jnp.flip(c, axis=0))
+                new_in_cols.append(jnp.flip(c, axis=0))  # pyrefly: ignore [bad-argument-type]
         return BEllpack(
             start_row=new_start, end_row=new_end,
             in_cols=tuple(new_in_cols), values=new_values,

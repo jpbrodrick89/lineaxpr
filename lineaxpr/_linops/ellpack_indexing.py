@@ -12,7 +12,7 @@ import numpy as np
 from jax.experimental import sparse
 
 from .base import gather_op, scatter_add_op
-from .ellpack import BEllpack, _resolve_col
+from .ellpack import BEllpack
 
 
 @gather_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
@@ -89,7 +89,7 @@ def _(op, *, n, start_indices, **params):
             row_idx).reshape(-1)
         new_in_cols = []
         for c in op.in_cols:
-            cr = _resolve_col(c, op.nrows)
+            cr = c
             if idx_static and isinstance(cr, np.ndarray):
                 gathered = cr[ridx_flat].reshape(batch_shape + (N,))
             else:
@@ -243,7 +243,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 for d in range(dup):
                     src = order[:, d]
                     for col in ep.in_cols:
-                        col_np = _resolve_col(col, nrows_b)
+                        col_np = col
                         if not isinstance(col_np, np.ndarray):
                             col_np = np.asarray(col_np)
                         new_in_cols.append(col_np[src].astype(np.intp))

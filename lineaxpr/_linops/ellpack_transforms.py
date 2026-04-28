@@ -18,7 +18,7 @@ from .base import (
     reduce_sum_op,
     reshape_op,
 )
-from .ellpack import BEllpack, _resolve_col
+from .ellpack import BEllpack
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +231,8 @@ def _(op, *, n, **params):
         new_in_cols = []
         for c in op.in_cols:
             if isinstance(c, slice):
-                resolved = _resolve_col(c, 1)
-                new_in_cols.append(np.broadcast_to(resolved, (N,)).copy())
+                resolved = c
+                new_in_cols.append(np.broadcast_to(resolved, (N,)).copy())  # pyrefly: ignore [no-matching-overload]
             elif isinstance(c, np.ndarray):
                 new_in_cols.append(np.broadcast_to(c, (N,)).copy())
             else:
@@ -408,59 +408,6 @@ def _(op, *, n, **params):
 # reduce_sum_op registrations
 # ---------------------------------------------------------------------------
 
-def _bellpack_row_sum(ep):
-    """Sum the rows of an unbatched BEllpack structurally where possible.
-
-    When static cols let us compute the set of touched columns at trace time
-    AND the result is structurally sparse (distinct cols < in_size), emit a
-    BEllpack row-vector `(1, in_size)` whose bands hold the per-col sums.
-    Otherwise fall back to a dense `(in_size,)` array.
-    """
-    assert ep.n_batch == 0
-    nrows = ep.nrows
-    k = ep.k
-    in_size = ep.in_size
-    per_band_cols = [_resolve_col(c, nrows) for c in ep.in_cols]
-    if all(isinstance(c, np.ndarray) for c in per_band_cols):
-        cols_flat = np.concatenate(per_band_cols)
-        valid = cols_flat >= 0
-        cols_valid = cols_flat[valid]
-        uniq_cols, inverse = np.unique(cols_valid, return_inverse=True)
-        n_groups = uniq_cols.shape[0]
-        if 0 < n_groups < in_size:
-            vals_flat = ep.values if k == 1 else ep.values.T.reshape(-1)
-            keep = np.nonzero(valid)[0]
-            if keep.shape[0] < cols_flat.shape[0]:
-                vals_keep = jnp.take(vals_flat, jnp.asarray(keep))
-            else:
-                vals_keep = vals_flat
-            summed = jnp.zeros((n_groups,), ep.dtype).at[
-                jnp.asarray(inverse)].add(vals_keep)
-            if n_groups == 1:
-                return BEllpack(
-                    start_row=0, end_row=1,
-                    in_cols=(np.asarray([uniq_cols[0]], dtype=uniq_cols.dtype),),
-                    values=summed.reshape(1),
-                    out_size=1, in_size=in_size,
-                )
-            return BEllpack(
-                start_row=0, end_row=1,
-                in_cols=tuple(np.asarray([c], dtype=uniq_cols.dtype)
-                              for c in uniq_cols),
-                values=summed.reshape(1, n_groups),
-                out_size=1, in_size=in_size,
-            )
-    # Tracer-cols fallback.
-    cols_stacked = jnp.concatenate(
-        [jnp.asarray(c) for c in per_band_cols], axis=0
-    )
-    vals_stacked = (ep.values if k == 1 else ep.values.T.reshape(-1))
-    mask = cols_stacked >= 0
-    safe_cols = jnp.where(mask, cols_stacked, 0)
-    safe_vals = jnp.where(mask, vals_stacked, jnp.zeros((), ep.dtype))
-    return jnp.zeros((in_size,), ep.dtype).at[safe_cols].add(safe_vals)
-
-
 @reduce_sum_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     axes = params["axes"]
@@ -572,9 +519,35 @@ def _(op, *, n, **params):
                 out_size=B, in_size=op.in_size,
             ), n)
 
-    # BEllpack row-sum (unbatched, axis 0).
+    # BEllpack row-sum (unbatched, axis 0): emit a BEllpack row-vector whose
+    # bands hold per-col sums when static cols allow trace-time sparsity analysis.
     if tuple(axes) == (0,) and op.n_batch == 0:
-        return _bellpack_row_sum(op)
+        k = op.k
+        in_size = op.in_size
+        per_band_cols = list(op.in_cols)
+        if all(isinstance(c, np.ndarray) for c in per_band_cols):
+            cols_flat = np.concatenate(per_band_cols)
+            valid = cols_flat >= 0
+            cols_valid = cols_flat[valid]
+            uniq_cols, inverse = np.unique(cols_valid, return_inverse=True)
+            n_groups = uniq_cols.shape[0]
+            if 0 < n_groups < in_size:
+                vals_flat = op.values if k == 1 else op.values.T.reshape(-1)
+                keep = np.nonzero(valid)[0]
+                vals_keep = jnp.take(vals_flat, jnp.asarray(keep)) if keep.shape[0] < cols_flat.shape[0] else vals_flat
+                summed = jnp.zeros((n_groups,), op.dtype).at[jnp.asarray(inverse)].add(vals_keep)
+                if n_groups == 1:
+                    return BEllpack(start_row=0, end_row=1,
+                                   in_cols=(np.asarray([uniq_cols[0]], dtype=uniq_cols.dtype),),
+                                   values=summed.reshape(1), out_size=1, in_size=in_size)
+                return BEllpack(start_row=0, end_row=1,
+                               in_cols=tuple(np.asarray([c], dtype=uniq_cols.dtype) for c in uniq_cols),
+                               values=summed.reshape(1, n_groups), out_size=1, in_size=in_size)
+        cols_stacked = jnp.concatenate([jnp.asarray(c) for c in per_band_cols], axis=0)
+        vals_stacked = op.values if k == 1 else op.values.T.reshape(-1)
+        mask = cols_stacked >= 0
+        return jnp.zeros((in_size,), op.dtype).at[
+            jnp.where(mask, cols_stacked, 0)].add(jnp.where(mask, vals_stacked, jnp.zeros((), op.dtype)))
 
     # Dense fallback.
     from lineaxpr._linops import _to_dense  # noqa: PLC0415

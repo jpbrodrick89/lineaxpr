@@ -10,7 +10,6 @@ from ._linops import (  # noqa: F401
     _ellpack_to_bcoo,
     _ellpack_to_bcoo_batched,
     _normalize_values,
-    _resolve_col,
     _slice_col,
     _transpose_col_batch,
     _transpose_col_full,

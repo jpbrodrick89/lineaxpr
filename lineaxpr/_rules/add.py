@@ -16,7 +16,6 @@ from .._linops import (
     ConstantDiagonal,
     Diagonal,
     _ellpack_to_bcoo_batched,
-    _resolve_col,
     _to_bcoo,
     _to_dense,
 )
@@ -307,8 +306,6 @@ def _add_be_dedup(vals, first, n):
     through to band-widen).
     """
     K_total = sum(v.k for v in vals)
-    n_batch = first.n_batch
-    band_axis = n_batch + 1
 
     def _col_key(c):
         if isinstance(c, np.ndarray):
@@ -323,7 +320,7 @@ def _add_be_dedup(vals, first, n):
     band_idx = 0
     for v in vals:
         for b in range(v.k):
-            c = _resolve_col(v.in_cols[b], v.nrows)
+            c = v.in_cols[b]
             k_ = _col_key(c)
             g = key_to_group.get(k_)
             if g is None:
@@ -361,10 +358,7 @@ def _add_be_dedup(vals, first, n):
             s1 = bool(np.all(np.diff(order1) >= 0)) if len(order1) > 1 else True
             s2 = bool(np.all(np.diff(order2) >= 0)) if len(order2) > 1 else True
             def _ov(v):
-                if n_batch == 0:
-                    return v.values if v.values.ndim == 2 else v.values[:, None]
-                return (v.values if v.values.ndim >= band_axis + 1
-                        else jnp.expand_dims(v.values, band_axis))
+                return v.values_2d
             v1r = _ov(v1).at[..., order1].get(
                 unique_indices=True, indices_are_sorted=s1)
             v2r = _ov(v2).at[..., order2].get(
@@ -391,7 +385,7 @@ def _add_be_dedup(vals, first, n):
     band_idx = 0
     for v in vals:
         for b in range(v.k):
-            vals_b = v.values if v.k == 1 else v.values[..., b]
+            vals_b = v.values_2d[..., b]
             g = int(inverse[band_idx])
             if group_values[g] is None:
                 group_values[g] = vals_b
@@ -444,7 +438,7 @@ def _add_be_overlap_merge(ep1, ep2, n):
                 np.full(p.nrows, -1, dtype=np.intp) for _ in range(extra_k)
             )
             extra_vals = jnp.zeros((p.nrows, extra_k), dtype=p.values.dtype)
-            base = (p.values[:, None] if p.values.ndim == 1 else p.values)
+            base = p.values_2d
             padded.append(BEllpack(
                 p.start_row, p.end_row,
                 p.in_cols + extra_cols,
@@ -591,17 +585,8 @@ def _add_rule(invals, traced, n, **params):
             # for k>=2; concat along the band axis (axis=1 i.e. the k dim).
             # For batched values (n_batch>0) the band axis is n_batch+1.
             new_in_cols = tuple(c for v in vals for c in v.in_cols)
-            if n_batch == 0:
-                # Preserve the exact unbatched HLO — previously measured
-                # to differ from jnp.expand_dims form on small problems.
-                parts = [v.values if v.values.ndim == 2 else v.values[:, None]
-                         for v in vals]
-                new_values = jnp.concatenate(parts, axis=1) if len(parts) > 1 else parts[0]
-            else:
-                parts = [v.values if v.values.ndim >= band_axis + 1
-                         else jnp.expand_dims(v.values, band_axis)
-                         for v in vals]
-                new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
+            parts = [v.values_2d for v in vals]
+            new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
             return _densify_if_wider_than_dense(BEllpack(
                 first.start_row, first.end_row,
                 new_in_cols, new_values,
@@ -627,15 +612,14 @@ def _add_rule(invals, traced, n, **params):
             if abut:
                 k_new = first.k
                 if k_new == 1:
-                    parts = [v.values if v.values.ndim == 1 else v.values[:, 0]
-                             for v in sorted_vals]
+                    parts = [v.values_2d[..., 0] for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 else:
                     parts = [v.values for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 new_in_cols = []
                 for b in range(k_new):
-                    band_rows = [_resolve_col(v.in_cols[b], v.nrows)
+                    band_rows = [v.in_cols[b]
                                  for v in sorted_vals]
                     if all(isinstance(c, np.ndarray) for c in band_rows):
                         new_in_cols.append(np.concatenate(band_rows, axis=0))

@@ -32,7 +32,6 @@ from .._linops import (
     gather_op as _gather_rule_dispatch,
     scatter_add_op as _scatter_add_rule_dispatch,
 )
-from .._linops.ellpack_transforms import _bellpack_row_sum
 
 __all__ = [
     "materialize_rules",
@@ -52,5 +51,5 @@ __all__ = [
     "_jit_rule",
     "_squeeze_leading_ones",
     "_select_n_rule",
-    "_bellpack_row_sum", "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
+    "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
 ]

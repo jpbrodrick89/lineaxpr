@@ -12,7 +12,6 @@ from .._linops import (
     BEllpack,
     ConstantDiagonal,
     Diagonal,
-    _resolve_col,
     _to_bcoo,
     _to_dense,
 )
@@ -299,7 +298,7 @@ def _split_rule(invals, traced, n, **params):
             new_in_cols = []
             for c in operand.in_cols:
                 if isinstance(c, slice):
-                    c = _resolve_col(c, operand.nrows)
+                    c = c
                 new_in_cols.append(c[row_lo:row_hi])
             if operand.k == 1:
                 new_values = operand.values[row_lo:row_hi]

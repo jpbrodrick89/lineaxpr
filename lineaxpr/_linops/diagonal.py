@@ -157,14 +157,6 @@ def _(op, v):
 # branch on via isinstance checks. They forward to BEllpack construction, which
 # is imported lazily (to avoid the module-level circular import through _linops).
 
-def _make_bellpack_from_diag(operand, s, e, cols, values_fn):
-    """Lazy-import BEllpack to avoid import cycle at module load time."""
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
-    return BEllpack(
-        start_row=0, end_row=e - s,
-        in_cols=(cols,), values=values_fn(),
-        out_size=e - s, in_size=operand.n,
-    )
 
 
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
