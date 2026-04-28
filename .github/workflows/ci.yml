@@ -48,7 +48,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies (locked)
-        run: uv sync --locked --extra test
+        run: uv sync --locked --extra dev
 
       # `--frozen` on subsequent uv runs skips the implicit re-resolve;
       # the sync step above already validated the lockfile.

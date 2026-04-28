@@ -16,21 +16,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = [
+dev = [
     "pytest",
-    "pytest-benchmark",
     "pytest-timeout",
+    "pyrefly>=0.63.0",
     # sif2jax provides the CUTEst problem suite the slow sweep iterates
     # over; without it, `tests/test_sif2jax_sweep.py` skips entirely
     # and the ECF/no-ECF CI matrix becomes a no-op.
     "sif2jax @ git+https://github.com/johannahaffner/sif2jax.git@main",
 ]
 benchmark = [
-    "pytest",
+    "lineaxpr[dev]",
     "pytest-benchmark",
-    "pytest-timeout",
     "asdex>=0.2.0",
-    "sif2jax @ git+https://github.com/johannahaffner/sif2jax.git@main",
     "matplotlib",
 ]
 
@@ -109,7 +107,3 @@ module = [
 ]
 ignore_missing_imports = true
 
-[dependency-groups]
-dev = [
-    "pyrefly>=0.63.0",
-]

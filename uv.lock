@@ -384,42 +384,33 @@ dependencies = [
 benchmark = [
     { name = "asdex" },
     { name = "matplotlib" },
+    { name = "pyrefly" },
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "pytest-timeout" },
     { name = "sif2jax" },
 ]
-test = [
-    { name = "pytest" },
-    { name = "pytest-benchmark" },
-    { name = "pytest-timeout" },
-    { name = "sif2jax" },
-]
-
-[package.dev-dependencies]
 dev = [
     { name = "pyrefly" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+    { name = "sif2jax" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "asdex", marker = "extra == 'benchmark'", specifier = ">=0.2.0" },
     { name = "jax", specifier = ">=0.4.30" },
+    { name = "lineaxpr", extras = ["dev"], marker = "extra == 'benchmark'" },
     { name = "matplotlib", marker = "extra == 'benchmark'" },
     { name = "numpy" },
-    { name = "pytest", marker = "extra == 'benchmark'" },
-    { name = "pytest", marker = "extra == 'test'" },
+    { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=0.63.0" },
+    { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-benchmark", marker = "extra == 'benchmark'" },
-    { name = "pytest-benchmark", marker = "extra == 'test'" },
-    { name = "pytest-timeout", marker = "extra == 'benchmark'" },
-    { name = "pytest-timeout", marker = "extra == 'test'" },
-    { name = "sif2jax", marker = "extra == 'benchmark'", git = "https://github.com/johannahaffner/sif2jax.git?rev=main" },
-    { name = "sif2jax", marker = "extra == 'test'", git = "https://github.com/johannahaffner/sif2jax.git?rev=main" },
+    { name = "pytest-timeout", marker = "extra == 'dev'" },
+    { name = "sif2jax", marker = "extra == 'dev'", git = "https://github.com/johannahaffner/sif2jax.git?rev=main" },
 ]
-provides-extras = ["test", "benchmark"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pyrefly", specifier = ">=0.63.0" }]
+provides-extras = ["dev", "benchmark"]
 
 [[package]]
 name = "llvmlite"
