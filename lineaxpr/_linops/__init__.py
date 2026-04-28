@@ -1,32 +1,16 @@
-"""LinOp classes and densification helpers.
+"""LinOp classes and singledispatch ops for the sparsify walk.
 
-Internal structural forms used by the sparsify walk. They live in the env
-during a single walk and are converted to BCOO or ndarray at the public
-API boundary (`materialize`, `to_dense`, `to_bcoo`).
-
-Public API consumers should use `Identity(n, dtype=...)` as the seed for
-`lineaxpr.sparsify`.
+Internal structural forms live in the env during a walk and are converted
+to BCOO or ndarray at the public API boundary (`materialize`).
 
 ### Adding a new LinOp form
 
-To extend the format space:
-
 1. Define the class in the appropriate module under `_linops/`. Give it the
-   standard method set: `.shape`, `.n`, `.primal_aval()`, `.todense()`,
-   `.to_bcoo()`, `.negate()`, `.scale_scalar(s)`, `.scale_per_out_row(v)`,
-   and any form-specific ops (e.g. `BEllpack.pad_rows`).
-2. Export it from `lineaxpr/__init__.py`.
-4. In `materialize.py`, touch:
-   - `_add_rule`'s kind-dispatch shape checks use `v.shape` directly.
-   - `_add_rule`'s kind-dispatch — decide which combos with the new
-     form stay structural vs promote to BCOO. Shared path is "any mix
-     of {CD, D, BEllpack, <new>, BCOO} at matching shape → BCOO via
-     `_to_bcoo` and concat", so no per-combo isinstance soup needed.
-   - `_mul_rule` / `_neg_rule` just dispatch to the LinOp methods — no
-     new branches unless the new form needs special-case BCOO fallbacks.
-   - Rules that currently return BEllpack (e.g. `_slice_rule`,
-     `_gather_rule`) may opportunistically return the new form when
-     the pattern warrants it.
+   standard interface: `.shape`, `.dtype`, `.todense()`, `.to_bcoo()`,
+   `.transpose(permutation)`.
+2. Register singledispatch implementations for any ops it supports.
+3. Export the class from `lineaxpr/__init__.py`.
+4. In `_rules/`, `_add_rule`'s kind-dispatch uses `v.shape` directly.
 """
 
 from __future__ import annotations
@@ -48,21 +32,11 @@ from .base import (
     slice_op,
     split_op,
     squeeze_op,
-
 )
-from .diagonal import ConstantDiagonal, Diagonal, Identity, _diag_to_bcoo
-from .ellpack import (
-    BEllpack,
-    _bellpack_unbatch,
-    _ellpack_to_bcoo,
-    _ellpack_to_bcoo_batched,
-    _normalize_values,
-    _slice_col,
-    _transpose_col_batch,
-    _transpose_col_full,
-)
-from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
+from .diagonal import ConstantDiagonal, Diagonal, Identity
+from .ellpack import BEllpack, _ellpack_to_bcoo_batched
 from .bcoo_extend import _bcoo_concat
+from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
 from . import ellpack_transforms as _ellpack_transforms  # noqa: F401 — registers BE transform dispatchers
 from . import ellpack_indexing as _ellpack_indexing  # noqa: F401 — registers BE indexing dispatchers
 
@@ -77,7 +51,6 @@ __all__ = [
     "slice_op",
     "pad_op",
     "cumsum_op",
-
     "reshape_op",
     "broadcast_in_dim_op",
     "reduce_sum_op",
@@ -88,13 +61,6 @@ __all__ = [
     "Diagonal",
     "Identity",
     "BEllpack",
-    "_diag_to_bcoo",
-    "_bellpack_unbatch",
     "_bcoo_concat",
-    "_ellpack_to_bcoo",
     "_ellpack_to_bcoo_batched",
-    "_normalize_values",
-    "_slice_col",
-    "_transpose_col_batch",
-    "_transpose_col_full",
 ]

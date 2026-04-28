@@ -22,7 +22,6 @@ from lineaxpr import (
     Identity,
     materialize_rules,
     sparsify,
-    to_dense,
 )
 
 
@@ -36,7 +35,7 @@ def test_identity_seed_matches_vmap_eye(n):
 
     seed = Identity(n, dtype=jnp.float64)
     linop = sparsify(lin)(seed)
-    ours = to_dense(linop)
+    ours = linop.todense()
     ref = jax.vmap(lin)(jnp.eye(n)).T
     np.testing.assert_allclose(np.asarray(ours), np.asarray(ref), atol=1e-12)
 
@@ -51,8 +50,8 @@ def test_constant_diagonal_seed_scales_output():
     def lin(x):
         return 3.0 * x
 
-    out_identity = to_dense(sparsify(lin)(Identity(n, dtype=jnp.float64)))
-    out_scaled = to_dense(sparsify(lin)(ConstantDiagonal(n, value=2.0)))
+    out_identity = (sparsify(lin).todense()(Identity(n, dtype=jnp.float64)))
+    out_scaled = (sparsify(lin).todense()(ConstantDiagonal(n, value=2.0)))
     np.testing.assert_allclose(
         np.asarray(out_scaled), 2.0 * np.asarray(out_identity), atol=1e-12
     )
@@ -66,8 +65,8 @@ def test_diagonal_seed_scales_per_column():
     def lin(x):
         return jnp.cumsum(x)
 
-    out_identity = to_dense(sparsify(lin)(Identity(n, dtype=jnp.float64)))
-    out_diag = to_dense(sparsify(lin)(Diagonal(v)))
+    out_identity = (sparsify(lin).todense()(Identity(n, dtype=jnp.float64)))
+    out_diag = (sparsify(lin).todense()(Diagonal(v)))
     # sparsify(lin)(Diagonal(v)) computes lin as applied to diag(v)'s columns:
     # column i of output is lin(v[i] * e_i) = v[i] * lin(e_i). So the
     # result is out_identity with each column j scaled by v[j].
@@ -93,7 +92,7 @@ def test_constant_hessian_folds_to_literal():
     @jax.jit
     def extract(y):
         _, hvp = jax.linearize(jax.grad(f), y)
-        return to_dense(sparsify(hvp)(Identity(y.size, dtype=y.dtype)))
+        return (sparsify(hvp).todense()(Identity(y.size, dtype=y.dtype)))
 
     y0 = jnp.zeros(12)
     H = extract(y0)
@@ -116,7 +115,7 @@ def test_nested_jit_inside_linear_fn():
 
     y = jnp.zeros(20)
     _, hvp = jax.linearize(jax.grad(f), y)
-    out = to_dense(sparsify(hvp)(Identity(20, dtype=y.dtype)))
+    out = (sparsify(hvp).todense()(Identity(20, dtype=y.dtype)))
     # Hessian is (2.5)^2 · I = 6.25 · I.
     np.testing.assert_allclose(np.asarray(out), 6.25 * np.eye(20), atol=1e-12)
 

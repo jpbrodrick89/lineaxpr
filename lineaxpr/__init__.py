@@ -22,8 +22,7 @@ Public API:
     # Primitive transform — returns a LinOp to post-process:
     seed = lineaxpr.Identity(primal.size, dtype=primal.dtype)
     linop = lineaxpr.sparsify(linear_fn)(seed)
-    H = lineaxpr.to_dense(linop)
-    S = lineaxpr.to_bcoo(linop)
+    # Convert the result: linop.todense() or linop.to_bcoo()
 """
 
 from .materialize import (
@@ -36,12 +35,10 @@ from .materialize import (
     materialize,
     materialize_rules,
     sparsify,
-    to_bcoo,
-    to_dense,
     _SMALL_N_VMAP_THRESHOLD,
 )
 
-from ._base import (
+from ._linops import (
     ConstantDiagonal,
     Diagonal,
     BEllpack,
@@ -59,8 +56,6 @@ __all__ = [
     # lower-level building blocks
     "sparsify",
     "materialize",
-    "to_dense",
-    "to_bcoo",
     # rule registry
     "materialize_rules",
     # LinOp classes (exposed for custom seeds / debugging)

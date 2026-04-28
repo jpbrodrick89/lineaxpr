@@ -13,7 +13,7 @@ Public API (see `lineaxpr/__init__.py`):
 All of the above trace `linear_fn` to a jaxpr and walk its equations
 with per-primitive rules that propagate structural per-var operators.
 The LinOp classes (`ConstantDiagonal`, `Diagonal`, `BEllpack`; see
-`_base.py`) let common patterns (scalar · I, vector-scaled I, sparse
+`_linops/`) let common patterns (scalar · I, vector-scaled I, sparse
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
 
@@ -38,12 +38,7 @@ import jax.numpy as jnp
 from jax.experimental import sparse
 from jax.extend import core
 
-from ._base import (
-    ConstantDiagonal,
-    Diagonal,
-    BEllpack,
-    Identity,
-)
+from ._linops import Identity, LinOpProtocol
 from ._rules.registry import materialize_rules
 from ._rules.add import (
     BELLPACK_DEDUP_LIMIT,  # noqa: F401 — accessible as lineaxpr.materialize.BELLPACK_DEDUP_LIMIT
@@ -164,36 +159,6 @@ valid; no live code path uses it. Formerly: below this n,
 on most problems. Above it the walk's structure exploitation dominates."""
 
 
-def to_dense(op):
-    """Densify a LinOp returned by `sparsify` to a jnp.ndarray.
-
-    Uniform across all possible return types:
-    - Our LinOp classes (ConstantDiagonal, Diagonal, BEllpack) → `.todense()`.
-    - `jax.experimental.sparse.BCOO` → `.todense()`.
-    - Plain ndarray → passthrough.
-    """
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        return op.todense()
-    if isinstance(op, sparse.BCOO):
-        return op.todense()
-    return op
-
-
-def to_bcoo(op):
-    """Convert a LinOp returned by `sparsify` to a BCOO (or ndarray if
-    the walk produced a dense fallback that can't be usefully sparsified).
-
-    - Our LinOp classes → `.to_bcoo()`.
-    - `BCOO` passthrough.
-    - Plain ndarray passthrough (caller decides what to do).
-    """
-    if isinstance(op, sparse.BCOO):
-        return op
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        return op.to_bcoo()
-    return op
-
-
 _VALID_FORMATS = ("dense", "bcoo")
 
 
@@ -223,8 +188,8 @@ def materialize(linear_fn, primal, format: str = "dense"):
     seed = Identity(n, dtype=primal.dtype)
     linop = sparsify(linear_fn)(seed)
     if format == "dense":
-        return to_dense(linop)
-    bcoo = to_bcoo(linop)
+        return linop.todense() if isinstance(linop, LinOpProtocol) else linop
+    bcoo = linop.to_bcoo() if hasattr(linop, 'to_bcoo') else linop
     # Smart-densify at output: at `nse >= prod(shape)` the BCOO stores
     # at least as many float values as dense AND carries 2·nse index
     # ints on top — strictly worse than dense. DUAL-class problems
