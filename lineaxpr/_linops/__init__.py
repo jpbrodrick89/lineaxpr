@@ -56,6 +56,7 @@ from .base import (
 from .diagonal import ConstantDiagonal, Diagonal, Identity, _diag_to_bcoo
 from .ellpack import (
     BEllpack,
+    _bellpack_unbatch,
     _ellpack_to_bcoo,
     _ellpack_to_bcoo_batched,
     _normalize_values,
@@ -64,6 +65,7 @@ from .ellpack import (
     _transpose_col_full,
 )
 from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
+from .bcoo_extend import _bcoo_concat
 from . import ellpack_transforms as _ellpack_transforms  # noqa: F401 — registers BE transform dispatchers
 from . import ellpack_indexing as _ellpack_indexing  # noqa: F401 — registers BE indexing dispatchers
 
@@ -89,6 +91,8 @@ __all__ = [
     "Identity",
     "BEllpack",
     "_diag_to_bcoo",
+    "_bellpack_unbatch",
+    "_bcoo_concat",
     "_ellpack_to_bcoo",
     "_ellpack_to_bcoo_batched",
     "_normalize_values",

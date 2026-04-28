@@ -165,3 +165,18 @@ def _(op: sparse.BCOO, *, n, **params):
     from lineaxpr._linops import _to_dense  # noqa: PLC0415
     dense = _to_dense(op, n)
     return jnp.sum(dense, axis=tuple(axes))
+
+
+def _bcoo_concat(bcoo_vals, shape):
+    """Concatenate a list of BCOO matrices by stacking their (data, indices)."""
+    all_data = [b.data for b in bcoo_vals]
+    all_indices = [b.indices for b in bcoo_vals]
+    if all(isinstance(b.data, np.ndarray) for b in bcoo_vals):
+        cat_data = np.concatenate(all_data, axis=-1)
+        cat_indices = np.concatenate(all_indices, axis=-2)
+    else:
+        cat_data = jnp.concatenate(all_data, axis=-1)
+        cat_indices = jnp.concatenate(all_indices, axis=-2)
+    # pyrefly: ignore [bad-argument-type]
+    return sparse.BCOO((cat_data, cat_indices), shape=shape,
+                       indices_sorted=False, unique_indices=False)

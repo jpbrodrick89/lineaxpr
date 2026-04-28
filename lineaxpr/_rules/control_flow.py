@@ -15,7 +15,7 @@ from .._linops import (
     _to_bcoo,
     _to_dense,
 )
-from .add import _bcoo_concat
+from .._linops import _bcoo_concat
 from .add import _cols_equal
 
 

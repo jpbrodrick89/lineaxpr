@@ -18,7 +18,7 @@ from .base import (
     reduce_sum_op,
     reshape_op,
 )
-from .ellpack import BEllpack
+from .ellpack import BEllpack, _bellpack_unbatch
 
 
 # ---------------------------------------------------------------------------
@@ -417,7 +417,7 @@ def _(op, *, n, **params):
         axes_t = tuple(sorted(axes))
         # Full batch reduction.
         if axes_t == tuple(range(op.n_batch)):
-            from lineaxpr._rules.add import _add_rule, _bellpack_unbatch  # noqa: PLC0415
+            from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
             slices = _bellpack_unbatch(op)
             if len(slices) == 1:
                 return slices[0]

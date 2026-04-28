@@ -886,3 +886,44 @@ def _(op, *, n, **params):
     from lineaxpr._linops import _to_dense  # noqa: PLC0415
     dense = _to_dense(op, n)
     return lax.rev(dense, dimensions)
+
+
+def _bellpack_unbatch(bep):
+    """Split a BEllpack with n_batch >= 1 into a tuple of unbatched BEllpacks.
+
+    For n_batch == 1 the split is direct. For n_batch > 1 we flatten the
+    batch axes first: values `(*batch, nrows, k) -> (prod_batch, nrows, k)`;
+    N-D cols `(*batch, nrows, ...)` similarly collapse. 1-D shared cols
+    and slices stay as-is. Each emitted slice shares
+    `(start_row, end_row, out_size, in_size)`.
+    """
+    assert bep.n_batch >= 1, "use only when n_batch > 0"
+    if bep.n_batch > 1:
+        prod_B = int(np.prod(bep.batch_shape))
+        trailing = bep.values.shape[bep.n_batch:]
+        flat_values = bep.values.reshape((prod_B,) + trailing)
+        flat_cols = []
+        for c in bep.in_cols:
+            if isinstance(c, slice) or (hasattr(c, "ndim") and c.ndim == 1):
+                flat_cols.append(c)
+            else:
+                flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))
+        bep = BEllpack(
+            start_row=bep.start_row, end_row=bep.end_row,
+            in_cols=tuple(flat_cols), values=flat_values,
+            out_size=bep.out_size, in_size=bep.in_size,
+            batch_shape=(prod_B,),
+        )
+    B = bep.batch_shape[0]
+    result = []
+    for b in range(B):
+        in_cols_b = tuple(c[b] if hasattr(c, "ndim") and c.ndim >= 2 else c
+                          for c in bep.in_cols)
+        values_b = bep.values[b]
+        result.append(BEllpack(
+            start_row=bep.start_row, end_row=bep.end_row,
+            in_cols=in_cols_b, values=values_b,
+            out_size=bep.out_size, in_size=bep.in_size,
+            batch_shape=(),
+        ))
+    return tuple(result)

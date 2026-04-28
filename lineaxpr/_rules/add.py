@@ -15,6 +15,7 @@ from .._linops import (
     BEllpack,
     ConstantDiagonal,
     Diagonal,
+    _bcoo_concat,
     _ellpack_to_bcoo_batched,
     _to_bcoo,
     _to_dense,
@@ -91,58 +92,6 @@ def _cols_equal(a, b) -> bool:
     if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
         return a.shape == b.shape and np.array_equal(a, b)
     return False
-
-
-def _col_batch_slice(col, batch_idx):
-    """Select one element from a batched ColArr along its leading axis.
-
-    If ndim > 1, index the leading axis; else treat as shared (1D cols
-    broadcast across batches).
-    """
-    if col.ndim >= 2:
-        return col[batch_idx]
-    return col
-
-
-def _bellpack_unbatch(bep):
-    """Split a BEllpack with n_batch >= 1 into a tuple of unbatched Ellpacks.
-
-    For n_batch == 1 the split is direct. For n_batch > 1 we flatten the
-    batch axes first: values `(*batch, nrows, k) -> (prod_batch, nrows, k)`;
-    N-D cols `(*batch, nrows, ...)` similarly collapse. 1-D shared cols
-    and slices stay as-is. Each emitted slice shares
-    `(start_row, end_row, out_size, in_size)`.
-    """
-    assert bep.n_batch >= 1, "use only when n_batch > 0"
-    if bep.n_batch > 1:
-        prod_B = int(np.prod(bep.batch_shape))
-        # Flatten batch axes of values.
-        trailing = bep.values.shape[bep.n_batch:]
-        flat_values = bep.values.reshape((prod_B,) + trailing)
-        flat_cols = []
-        for c in bep.in_cols:
-            if isinstance(c, slice) or (hasattr(c, "ndim") and c.ndim == 1):
-                flat_cols.append(c)
-            else:
-                flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))
-        bep = BEllpack(
-            start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=tuple(flat_cols), values=flat_values,
-            out_size=bep.out_size, in_size=bep.in_size,
-            batch_shape=(prod_B,),
-        )
-    B = bep.batch_shape[0]
-    result = []
-    for b in range(B):
-        in_cols_b = tuple(_col_batch_slice(c, b) for c in bep.in_cols)
-        values_b = bep.values[b]
-        result.append(BEllpack(
-            start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=in_cols_b, values=values_b,
-            out_size=bep.out_size, in_size=bep.in_size,
-            batch_shape=(),
-        ))
-    return tuple(result)
 
 
 def _broadcast_common_batch(batch_shapes):
@@ -226,21 +175,6 @@ def _densify_if_wider_than_dense(op, n):
     if isinstance(op, BEllpack) and op.k >= op.in_size:
         return _to_dense(op, n)
     return op
-
-
-def _bcoo_concat(bcoo_vals, shape):
-    """Concatenate a list of BCOO matrices by stacking their (data, indices)."""
-    all_data = [b.data for b in bcoo_vals]
-    all_indices = [b.indices for b in bcoo_vals]
-    if all(isinstance(b.data, np.ndarray) for b in bcoo_vals):
-        cat_data = np.concatenate(all_data, axis=-1)
-        cat_indices = np.concatenate(all_indices, axis=-2)
-    else:
-        cat_data = jnp.concatenate(all_data, axis=-1)
-        cat_indices = jnp.concatenate(all_indices, axis=-2)
-    # pyrefly: ignore [bad-argument-type]
-    return sparse.BCOO((cat_data, cat_indices), shape=shape,
-                       indices_sorted=False, unique_indices=False)
 
 
 def _tile_1row_bellpack(ep, target_rows):

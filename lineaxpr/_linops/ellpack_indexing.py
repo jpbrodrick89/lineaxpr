@@ -12,7 +12,8 @@ import numpy as np
 from jax.experimental import sparse
 
 from .base import gather_op, scatter_add_op
-from .ellpack import BEllpack
+from .bcoo_extend import _bcoo_concat
+from .ellpack import BEllpack, _bellpack_unbatch
 
 
 @gather_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
@@ -210,9 +211,7 @@ def _(updates, *, n, operand, scatter_indices, **params):
         from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
         updates = _to_bcoo(updates, n)
     else:
-        from lineaxpr._rules.add import (  # noqa: PLC0415
-            _add_rule, _bcoo_concat, _bellpack_unbatch,
-        )
+        from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
         slices = _bellpack_unbatch(updates)
         be_pieces = []
         static_ok = True
