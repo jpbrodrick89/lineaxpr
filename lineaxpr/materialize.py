@@ -53,7 +53,7 @@ from ._base import (
     _to_dense,
     _traced_shape,
 )
-from ._linops import negate
+from ._linops import LinOpProtocol, negate
 from ._rules import _add_rule, _mul_rule
 from ._rules.add import (
     _bcoo_concat,
@@ -101,7 +101,7 @@ def _neg_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO)):
+    if isinstance(op, LinOpProtocol):
         return negate(op)
     return -op
 
@@ -269,7 +269,7 @@ def _slice_rule(invals, traced, n, **params):
 
     # Structural fast path — unit-stride 1D (hot path, unchanged HLO).
     if (len(starts) == 1 and strides == (1,)
-            and isinstance(operand, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO))):
+            and isinstance(operand, LinOpProtocol)):
         s, e = starts[0], limits[0]
         k = e - s
         if isinstance(operand, ConstantDiagonal):
@@ -289,37 +289,38 @@ def _slice_rule(invals, traced, n, **params):
             )
         if isinstance(operand, BEllpack):
             return operand.pad_rows(-s, -(operand.out_size - e))
-        # BCOO slice axis=0: drop out-of-range rows rather than mask to
-        # zero. The mask-to-zero variant leaves entries with row indices
-        # outside `[0, k)` in the output — downstream `_bcoo_scale_*`
-        # rules index with those rows and emit NaN / wrong values. When
-        # indices are a static np array (the common case for our BCOO
-        # construction), filter at trace time; otherwise drop via
-        # runtime gather. Mirrors the fix applied to `_split_rule` for
-        # the same reason.
-        indices_np = None
-        try:
-            indices_np = np.asarray(operand.indices)
-        except (jax.errors.TracerArrayConversionError, TypeError):
-            pass
-        if isinstance(indices_np, np.ndarray):
-            rows_np = indices_np[:, 0]
-            keep = np.nonzero((rows_np >= s) & (rows_np < e))[0]
-            new_indices = np.stack(
-                [rows_np[keep] - s, indices_np[keep, 1]], axis=1
-            )
-            new_data = jnp.take(operand.data, jnp.asarray(keep))
-            return sparse.BCOO(
-                # pyrefly: ignore [bad-argument-type]
-                (new_data, new_indices), shape=(k, operand.shape[1]),
-            )
-        rows = operand.indices[:, 0]
-        in_range = (rows >= s) & (rows < e)
-        new_rows = jnp.where(in_range, rows - s, 0)
-        new_data = jnp.where(in_range, operand.data,
-                             jnp.zeros((), operand.data.dtype))
-        new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
-        return sparse.BCOO((new_data, new_indices), shape=(k, operand.shape[1]))
+        if isinstance(operand, sparse.BCOO):
+            # BCOO slice axis=0: drop out-of-range rows rather than mask to
+            # zero. The mask-to-zero variant leaves entries with row indices
+            # outside `[0, k)` in the output — downstream `_bcoo_scale_*`
+            # rules index with those rows and emit NaN / wrong values. When
+            # indices are a static np array (the common case for our BCOO
+            # construction), filter at trace time; otherwise drop via
+            # runtime gather. Mirrors the fix applied to `_split_rule` for
+            # the same reason.
+            indices_np = None
+            try:
+                indices_np = np.asarray(operand.indices)
+            except (jax.errors.TracerArrayConversionError, TypeError):
+                pass
+            if isinstance(indices_np, np.ndarray):
+                rows_np = indices_np[:, 0]
+                keep = np.nonzero((rows_np >= s) & (rows_np < e))[0]
+                new_indices = np.stack(
+                    [rows_np[keep] - s, indices_np[keep, 1]], axis=1
+                )
+                new_data = jnp.take(operand.data, jnp.asarray(keep))
+                return sparse.BCOO(
+                    # pyrefly: ignore [bad-argument-type]
+                    (new_data, new_indices), shape=(k, operand.shape[1]),
+                )
+            rows = operand.indices[:, 0]
+            in_range = (rows >= s) & (rows < e)
+            new_rows = jnp.where(in_range, rows - s, 0)
+            new_data = jnp.where(in_range, operand.data,
+                                 jnp.zeros((), operand.data.dtype))
+            new_indices = jnp.stack([new_rows, operand.indices[:, 1]], axis=1)
+            return sparse.BCOO((new_data, new_indices), shape=(k, operand.shape[1]))
 
     # Strided 1D slice on ConstantDiagonal/Diagonal — emit a BEllpack
     # whose in_cols carry the strided index pattern. Used by RAYBENDL's

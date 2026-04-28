@@ -5,12 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 import jax.numpy as jnp
-from jax.experimental import sparse
 
 from .._linops import (
     BEllpack,
-    ConstantDiagonal,
-    Diagonal,
+    LinOpProtocol,
     _to_dense,
     _traced_shape,
     scale_per_out_row,
@@ -34,7 +32,7 @@ def _mul_rule(invals, traced, n, **params):
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
         s = jnp.asarray(scale).reshape(())
-        if isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO)):
+        if isinstance(traced_op, LinOpProtocol):
             return scale_scalar(traced_op, s)
         return s * traced_op
     # scale_per_out_row assumes scale has shape that broadcasts cleanly
@@ -49,7 +47,7 @@ def _mul_rule(invals, traced, n, **params):
             for s, t in zip(scale.shape[::-1], traced_var_shape[::-1])
         )
     )
-    if scale_ok and isinstance(traced_op, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO)):
+    if scale_ok and isinstance(traced_op, LinOpProtocol):
         return scale_per_out_row(traced_op, scale)
     # Batch-expand path: scale broadcasts same-ndim as traced_var_shape
     # but expands one or more size-1 batch axes of the BE (dims where BE
