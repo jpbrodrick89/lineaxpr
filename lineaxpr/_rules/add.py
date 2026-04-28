@@ -60,28 +60,6 @@ BELLPACK_DEDUP_VECTORISED_MIN = int(
 # _reduce_sum_rule in materialize.py)
 # ---------------------------------------------------------------------------
 
-def _linop_matrix_shape(v):
-    """Return the structural shape used to check operand compatibility
-    in `_add_rule`'s mix-path. Unbatched LinOps → 2D `(out, in)`;
-    batched BEllpack → `(*batch_shape, out_size, in_size)` (matching
-    what `_ellpack_to_bcoo_batched` now emits — a batched BCOO, since
-    the old flat-collapse was removed in commit TODO-0j). BCOO passes
-    through its own shape.
-
-    Returning structural (rather than flattened) shape keeps operand
-    compatibility honest: a batched BE only matches another batched
-    LinOp with the same batch structure, and batched-vs-unbatched
-    mixes fall through to the dense fallback rather than attempting
-    a `_bcoo_concat` across inconsistent `n_batch` values."""
-    if isinstance(v, (ConstantDiagonal, Diagonal)):
-        return (v.n, v.n)
-    if isinstance(v, BEllpack):
-        return (*v.batch_shape, v.out_size, v.in_size)
-    if isinstance(v, sparse.BCOO):
-        return v.shape
-    return None
-
-
 def _cols_equal(a, b) -> bool:
     """Structural equality test for BEllpack ColArr (np.ndarray only).
 
@@ -408,15 +386,13 @@ def _add_rule(invals, traced, n, **params):
     # on `linear_form + vector` broadcasts that used to bottleneck
     # LIARWHD-class problems.
     if len(vals) >= 2:
-        shapes = [_linop_matrix_shape(v) for v in vals]
-        non_scalar_out = [s[0] for s in shapes
-                          if s is not None and s[0] != 1]
+        non_scalar_out = [v.shape[0] for v in vals if v.shape[0] != 1]
         if non_scalar_out and all(s == non_scalar_out[0] for s in non_scalar_out):
             target = non_scalar_out[0]
             tiled_any = False
             new_vals = []
-            for v, s in zip(vals, shapes):
-                if (s is not None and s[0] == 1
+            for v in vals:
+                if (v.shape[0] == 1
                         and isinstance(v, BEllpack)
                         and v.n_batch == 0 and v.start_row == 0
                         and v.end_row == 1):
@@ -583,9 +559,8 @@ def _add_rule(invals, traced, n, **params):
     # range must be `(0, n)` for this to work — a diagonal always spans
     # the full range.
     if (kinds <= {ConstantDiagonal, Diagonal, BEllpack}
-            and all(_linop_matrix_shape(v) == _linop_matrix_shape(vals[0])
-                    for v in vals)):
-        shape = _linop_matrix_shape(vals[0])
+            and all(v.shape == vals[0].shape for v in vals)):
+        shape = vals[0].shape
         # Only unbatched 2D shapes can be square; skip this
         # diagonal-promote path for batched BEllpacks.
         if len(shape) == 2 and shape[0] == shape[1]:  # square — diagonals fit
@@ -661,7 +636,7 @@ def _add_rule(invals, traced, n, **params):
     # Any combination of {ConstantDiagonal, Diagonal, BEllpack, BCOO} at
     # compatible matrix shape: promote each to BCOO and concat.
     # CHARDIS0 disambiguation: two batched BEllpacks can flat-collide to
-    # the same `_linop_matrix_shape` while representing different
+    # the same `.shape` while representing different
     # semantic tensors — e.g. `batch=(n,), out=1, in=m` (col-broadcast,
     # true shape `(n, 1, m)`) vs `batch=(1,), out=n, in=m` (row-broadcast,
     # true shape `(1, n, m)`), both flatten to `(n, m)`. Concatenating
@@ -669,13 +644,12 @@ def _add_rule(invals, traced, n, **params):
     # operands to share the same `batch_shape`; the fallback dense
     # `reduce(add, …)` then broadcasts correctly via numpy-style rules.
     if kinds <= {ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO}:
-        shapes = [_linop_matrix_shape(v) for v in vals]
-        if all(s == shapes[0] for s in shapes):
+        if all(v.shape == vals[0].shape for v in vals):
             ep_batch_shapes = {v.batch_shape for v in vals
                                if isinstance(v, BEllpack)}
             if len(ep_batch_shapes) <= 1:
                 bcoo_vals = [_to_bcoo(v, n) for v in vals]
-                return _bcoo_concat(bcoo_vals, shape=shapes[0])
+                return _bcoo_concat(bcoo_vals, shape=vals[0].shape)
 
     # Linear-form adds: a vector-aval-(k,) LinOp is normally stored as a
     # (k, n) matrix, but an aval-() linear form emerges either as a (n,)

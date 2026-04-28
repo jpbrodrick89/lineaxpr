@@ -18,7 +18,7 @@ To extend the format space:
 2. Update `_to_dense(op, n)` and `_to_bcoo(op, n)` in this module.
 3. Export it from `lineaxpr/__init__.py`.
 4. In `materialize.py`, touch:
-   - `_linop_matrix_shape(v)` — add an `isinstance` branch for shape.
+   - `_add_rule`'s kind-dispatch shape checks use `v.shape` directly.
    - `_add_rule`'s kind-dispatch — decide which combos with the new
      form stay structural vs promote to BCOO. Shared path is "any mix
      of {CD, D, BEllpack, <new>, BCOO} at matching shape → BCOO via
