@@ -536,16 +536,6 @@ def _normalize_values(values, k: int, batch_shape=(), nrows=None):
     return arr
 
 
-def _col_batch_index(col, batch_idx):
-    """Index a ColArr at a batch position tuple.
-
-    If col.ndim > 1, index the leading batch dims; else shared across batches.
-    """
-    if col.ndim > 1:
-        return col[batch_idx]
-    return col
-
-
 def _resolve_col(col, nrows):
     """Return a ColArr (ndarray) unchanged. nrows unused; kept for call-site symmetry."""
     return col
