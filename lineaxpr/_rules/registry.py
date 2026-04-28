@@ -21,6 +21,8 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
+    ConstantDiagonal,
+    Diagonal,
     LinOpProtocol,
     broadcast_in_dim_op,
     cumsum_op,
@@ -127,6 +129,22 @@ def _scatter_add_rule(invals, traced, n, **params):
         return None
     dnums = params["dimension_numbers"]
 
+    # 2D point-scatter (HADAMALS-class): inserts updates[k] at
+    # operand[scatter_indices[k,0], scatter_indices[k,1]].
+    if (dnums.update_window_dims == ()
+            and dnums.inserted_window_dims == (0, 1)
+            and dnums.scatter_dims_to_operand_dims == (0, 1)
+            and operand.ndim == 2):
+        out_shape_2d = operand.shape
+        updates_dense = updates.todense() if isinstance(updates, LinOpProtocol) else jnp.asarray(updates)
+        si_flat = scatter_indices.reshape(-1, 2)
+        updates_flat = updates_dense.reshape(-1, n)
+        flat_rows = (si_flat[:, 0].astype(jnp.int64) * out_shape_2d[1]
+                     + si_flat[:, 1].astype(jnp.int64))
+        return (jnp.zeros((out_shape_2d[0] * out_shape_2d[1], n), updates_flat.dtype)
+                .at[flat_rows].add(updates_flat)
+                .reshape(out_shape_2d + (n,)))
+
     scatter_kept = (
         dnums.update_window_dims == (1,)
         and dnums.inserted_window_dims == ()
@@ -223,9 +241,10 @@ def _transpose_rule(invals, traced, n, **params):
     if not t:
         return None
     permutation = tuple(int(p) for p in params["permutation"])
-    if isinstance(op, LinOpProtocol):
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
         return op.transpose(axes=permutation)
-    return lax.transpose(op, permutation + (len(permutation),))
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
+    return lax.transpose(dense, permutation + (len(permutation),))
 
 materialize_rules[lax.transpose_p] = _transpose_rule
 materialize_rules[lax.gather_p] = _gather_rule

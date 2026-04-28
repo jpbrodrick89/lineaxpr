@@ -386,7 +386,10 @@ def _add_rule(invals, traced, n, **params):
     # on `linear_form + vector` broadcasts that used to bottleneck
     # LIARWHD-class problems.
     if len(vals) >= 2:
-        non_scalar_out = [v.shape[0] for v in vals if v.shape[0] != 1]
+        # Only consider LinOp/BCOO shapes — plain arrays (dense fallbacks) have
+        # no well-defined "output size" and must not trigger the tiling path.
+        non_scalar_out = [v.shape[0] for v in vals
+                          if isinstance(v, LinOpProtocol) and v.shape[0] != 1]
         if non_scalar_out and all(s == non_scalar_out[0] for s in non_scalar_out):
             target = non_scalar_out[0]
             tiled_any = False

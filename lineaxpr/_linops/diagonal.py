@@ -115,7 +115,7 @@ class Diagonal:
     def to_bcoo(self):
         return _diag_to_bcoo(self.n, self.values)
 
-    def transpose(self, permutation):
+    def transpose(self, axes: tuple[int, ...] | None = None):
         return self  # symmetric
 
 
