@@ -69,6 +69,10 @@ METHOD_ALIASES = {
     "jax_min": "jax_min",  # synthesized
     "asdex_dense": "asdex_dense",
     "asdex_bcoo": "asdex_bcoo",
+    "asdex_bcoo_folded": "asdex_bcoo_folded",   # ECF=TRUE run
+    "asdex_bcoo_min": "asdex_bcoo_min",          # synthesized min(ECF=FALSE, ECF=TRUE)
+    "asdex_dense_folded": "asdex_dense_folded",
+    "asdex_dense_min": "asdex_dense_min",
 }
 
 # Plot style registry — keep consistent across figures. Labels use the
@@ -85,8 +89,12 @@ METHOD_STYLE = {
     "jax_hessian":           dict(label="jax.hessian (unfolded)",                   color="C2", linestyle="--"),
     "jax_hessian_folded":    dict(label="jax.hessian (folded)",                     color="C2", linestyle="-."),
     "jax_min":               dict(label="jax.hessian (best of folded/unfolded)",    color="C3", linestyle="-"),
-    "asdex_dense":           dict(label="asdex.dense",                              color="C4", linestyle=":"),
-    "asdex_bcoo":            dict(label="asdex.bcoo",                               color="C5", linestyle="-"),
+    "asdex_dense":           dict(label="asdex.dense (unfolded)",                   color="C4", linestyle="--"),
+    "asdex_bcoo":            dict(label="asdex.bcoo (unfolded)",                    color="C5", linestyle="--"),
+    "asdex_dense_folded":    dict(label="asdex.dense (folded)",                     color="C4", linestyle="-."),
+    "asdex_bcoo_folded":     dict(label="asdex.bcoo (folded)",                      color="C5", linestyle="-."),
+    "asdex_dense_min":       dict(label="asdex.dense (best of folded/unfolded)",    color="C4", linestyle=":"),
+    "asdex_bcoo_min":        dict(label="asdex.bcoo (best of folded/unfolded)",     color="C5", linestyle="-"),
 }
 
 
@@ -197,13 +205,22 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None,
         # Auto-discover. For full, look for any per-method + combined refs.
         patterns = (
             ["full-refs-jax", "full-jaxhes-jax", "full-jaxhes-folded-jax",
-             "full-asdex-jax", "full-asdex-dense-jax", "full-asdex-bcoo-jax"]
+             "full-asdex-jax", "full-asdex-dense-jax"]
             if "full" in lineaxpr_tag else ["refs-jax"]
         )
         for pat in patterns:
             p = _latest_matching(rf"{re.escape(pat)}.*\.json$")
             if p and p not in refs_paths:
                 refs_paths.append(p)
+        if "full" in lineaxpr_tag:
+            # asdex-bcoo: load both ECF=FALSE (_linux suffix) and ECF=TRUE
+            # (no _linux suffix) so we can synthesize asdex_bcoo_min later.
+            p_unf = _latest_matching(r"full-asdex-bcoo-jax.*_linux\.json$")
+            if p_unf and p_unf not in refs_paths:
+                refs_paths.append(p_unf)
+            p_fold = _latest_matching(r"full-asdex-bcoo-jax[^_]*\.json$")
+            if p_fold and p_fold not in refs_paths and p_fold != p_unf:
+                refs_paths.append(p_fold)
 
     idx: dict[tuple[str, str], tuple[float, int]] = {}
     if lx_path:
@@ -226,18 +243,33 @@ def load_runs(lineaxpr_tag: str, refs_tag: str | None = None,
     # unfolded with current folded. Refs files only contribute their
     # own method names (asdex_bcoo, asdex_dense, jax_hessian,
     # jax_hessian_folded) — anything else gets filtered.
+    #
+    # asdex ECF convention: files with `_linux` in stem = ECF=FALSE (unfolded);
+    # files without `_linux` = ECF=TRUE (folded). Re-key the folded variants
+    # so min synthesis can produce asdex_bcoo_min / asdex_dense_min, mirroring
+    # how jax_min / bcoo_jacobian_min are produced for lineaxpr and jax.
     REFS_METHODS = {
         "asdex_bcoo", "asdex_dense", "jax_hessian", "jax_hessian_folded",
     }
     for p in refs_paths:
+        is_asdex_folded = (
+            "asdex" in p.stem
+            and "_linux" not in p.stem
+        )
         for (prob, method), val in _index(p).items():
             if method in REFS_METHODS:
-                idx[(prob, method)] = val
+                if is_asdex_folded and method in ("asdex_bcoo", "asdex_dense"):
+                    idx[(prob, f"{method}_folded")] = val
+                else:
+                    idx[(prob, method)] = val
 
     # Synthesize min-of-{folded, unfolded} methods (per-method "best" metric).
+    # Covers lineaxpr, jax, and asdex — all three now have ECF=TRUE / ECF=FALSE
+    # variants and the min is the fairest single-number comparison.
     problems = {p for (p, _) in idx}
     for p in problems:
-        for base in ("jax_hessian", "materialize", "bcoo_jacobian"):
+        for base in ("jax_hessian", "materialize", "bcoo_jacobian",
+                     "asdex_bcoo", "asdex_dense"):
             u = idx.get((p, base))
             f = idx.get((p, f"{base}_folded"))
             min_key = "jax_min" if base == "jax_hessian" else f"{base}_min"

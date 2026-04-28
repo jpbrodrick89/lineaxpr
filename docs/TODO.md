@@ -35,30 +35,95 @@ false positives — always isolate-verify before believing. See
 CLAUDE.md "Sweep vs isolated min". EIGEN\*, DMN15102, LUKSAN16LS have
 all been false positives this session.
 
-## Current losses to `asdex_bcoo` (sweep 57c3093)
+## Current losses to `asdex_bcoo` (sweep min, commit 4cd3609)
 
-Problems where `bcoo_hessian` is meaningfully slower than `asdex_bcoo`
-(>1.1× ratio, >5µs absolute). Check before committing new work.
+Problems where lineaxpr is meaningfully slower than `asdex_bcoo`
+(>1.05× ratio, >3µs absolute). **Methodology**: lineaxpr =
+min(`lineaxpr.bcoo_hessian`, `lineaxpr.hessian`) — min of folded
+(ECF=TRUE) and unfolded (ECF=FALSE) sweep min for each method. asdex =
+min of ECF=FALSE (`0023_full-asdex-bcoo-jax0.10.0_linux.json`) and
+ECF=TRUE (`0443_full-asdex-bcoo-jax0.10.0.json`) — both methods measured
+under both regimes for a fair apples-to-apples comparison. Sweep mins
+carry ±20–30% cross-problem contamination — always isolate-verify before
+acting on a specific entry; contamination is why HATFLDC and LUKSAN16LS
+are absent (sweep showed loss; isolated confirmed we beat asdex).
 
-| Problem    |    n | ratio |   bcoo | asdex | presumed cause                                 |
-| ---------- | ---: | ----: | -----: | ----: | ---------------------------------------------- |
-| BROYDN7D   | 5000 |  128× | 26.7ms | 210µs | dense fallback — 7-diag stencil densifies      |
-| BDQRTIC    | 5000 |   40× |  6.3ms | 157µs | dense fallback; `D` quartic → wide-k BE        |
-| LUKSAN16LS |  100 |  4.8× |   91µs |  19µs | effectively-dense Hessian; BE overhead         |
-| GENHUMPS   | 5000 |  2.7× |  536µs | 202µs | dense fallback in HVP chain                    |
-| NONMSQRT   | 4900 |  2.1× |  649µs | 308µs | k=71 emit path — partially structural but slow |
-| DQDRTIC    | 5000 |  1.9× |   16µs |   8µs | small absolute; call-overhead dominance        |
-| BROYDN3DLS | 5000 |  1.8× |  149µs |  81µs | similar stencil-densify as BROYDN7D            |
-| SBRYBND    | 5000 |  1.8× |  1.6ms | 894µs | banded system walker produces wide-k BE        |
-| LIARWHD    | 5000 |  1.4× |   49µs |  35µs | closed mostly (2026-04-22); residual small     |
-| LUKSAN17LS |  100 |  1.3× |   50µs |  38µs | partial structural coverage                    |
-| ARWHEAD    | 5000 |  1.3× |   53µs |  40µs | small absolute                                 |
+**ECF-sensitive wins (not losses)**: ARGLINA, DIXMAANB, DIXMAANC, DIXMAAND,
+DIXMAANF all win under min(fold,unfold) for both lineaxpr and asdex, but
+the gap is ECF-driven. ARGLINA is a particularly interesting case: under
+ECF=FALSE lineaxpr loses ~6× to asdex (111µs vs 17µs — asdex's 200
+batched HVPs for H=2\*I are trivially cheap even without folding), while
+under ECF=TRUE lineaxpr wins 2× (10µs vs 19µs — the y-independent
+Hessian folds to a compile-time constant for lineaxpr; asdex doesn't
+benefit much since its HVPs are already trivial). Min of both:
+lineaxpr=10µs, asdex=17µs → lineaxpr wins overall. The densifying
+`reduce_sum(Identity)` rule is what makes lineaxpr slow under ECF=FALSE —
+a structural fix would help under the unfolded regime but the ECF=TRUE
+path is already optimal.
 
-Dominant patterns: (1) 5-diagonal / 7-diagonal stencil densification
-(BROYDN7D/BDQRTIC/BROYDN3DLS — likely the 0c transpose / 0d 2D-gather
-territory), (2) wide-k BE emission where smart-densify could be more
-aggressive (SBRYBND, NONMSQRT), (3) small-n call-overhead where
-coloring might win (LUKSAN16LS, DQDRTIC, 0f covers this).
+Note on the ECF=FALSE gap: the root cause is not AD strategy but the cost
+of materializing `eye(200)` at runtime. Both lineaxpr and `jax.hessian`
+construct the identity seed dynamically inside the jaxpr (via iota+eq+
+convert, 26 extra ops). asdex captures `coloring._seed_matrix` as a
+static numpy closure constant, so XLA never needs to materialize it.
+Isolated benchmarks confirm: if `eye` is pre-materialized as a closure
+constant, `jax.hessian` drops from ~108µs to ~8µs and matches asdex
+exactly (`vmap(jvp)(eye_const)` and `linearize+vmap(eye_const)` both
+≈8µs). The benchmark as written reflects real user usage patterns for
+both libraries, so this is a fair comparison — but the loss is
+architectural (jaxpr eye construction) not algorithmic.
+
+### n ≥ 16
+
+| Problem    |    n | ratio | lineaxpr | asdex | best method | presumed cause                                    |
+| ---------- | ---: | ----: | -------: | ----: | ----------- | ------------------------------------------------- |
+| GENHUMPS   | 5000 | 2.70× |    545µs | 202µs | bcoo        | dense fallback in HVP chain                       |
+| BROYDN7D   | 5000 | 1.97× |    359µs | 183µs | bcoo        | stencil densification (5/7-diag)                  |
+| SBRYBND    | 5000 | 1.88× |   1600µs | 851µs | bcoo        | banded walker emits wide-k BE                     |
+| NONMSQRT   | 4900 | 1.79× |    487µs | 273µs | bcoo        | k=71 emit path — partially structural but wide    |
+| WOODS      | 4000 | 1.63× |     47µs |  29µs | bcoo        | structural walk (BE→BCOO conversions)             |
+| TOINTGOR   |   50 | 1.57× |     14µs |   9µs | mat         | `select_n(CD,CD)` densifies — fixable (see below) |
+| LUKSAN17LS |  100 | 1.45× |     50µs |  34µs | bcoo        | partial structural coverage                       |
+| LIARWHD    | 5000 | 1.43× |     50µs |  35µs | bcoo        | residual after 2026-04-22 improvements            |
+| BROYDN3DLS | 5000 | 1.40× |    103µs |  73µs | bcoo        | similar stencil-densify as BROYDN7D               |
+| DQDRTIC    | 5000 | 1.39× |     12µs |   8µs | bcoo        | small absolute; cause not diagnosed               |
+| ARWHEAD    | 5000 | 1.35× |     54µs |  40µs | bcoo        | structural but asdex coloring wins                |
+| NONDQUAR   | 5000 | 1.22× |     72µs |  59µs | bcoo        | small absolute                                    |
+| TOINTGSS   | 5000 | 1.26× |    150µs | 120µs | bcoo        | marginal — isolated shows ~1.04× (likely noise)   |
+| BDQRTIC    | 5000 | 1.17× |    158µs | 135µs | bcoo        | wide-k BE; previously much worse (dense fallback) |
+| BDEXP      | 5000 | 1.07× |     94µs |  88µs | bcoo        | marginal; nearly noise                            |
+
+Resolved vs 57c3093 baseline: BROYDN7D improved 128×→1.97×, BDQRTIC
+improved 40×→1.17× (structural rule coverage). HATFLDC and LUKSAN16LS
+removed — sweep showed loss but isolated confirmed we beat asdex.
+New entries vs baseline: TOINTGOR (select_n densification, fixable),
+DQDRTIC, BDEXP, WOODS, NONDQUAR.
+
+**TOINTGOR root cause**: `select_n(pred, ConstantDiagonal_a, ConstantDiagonal_b)`
+with both cases traced falls through to the dense path. The structural
+fix is trivial: when all traced cases are ConstantDiagonal (or Diagonal)
+with matching n, emit a Diagonal with `values[i] = select_n(pred[i], a.value, b.value)`.
+The existing gate comment ("Pure CD/Diag cases → dense fallback") is
+overly conservative and should be removed for this case.
+
+Dominant remaining patterns: (1) stencil densification
+(BROYDN7D/BROYDN3DLS — 5/7-diag patterns still densify), (2) wide-k
+BE emission (SBRYBND, NONMSQRT), (3) partial structural coverage
+(LUKSAN17LS, GENHUMPS).
+
+### n < 16 (fixed-overhead dominated — lower priority)
+
+| Problem    |   n | ratio | lineaxpr | asdex | best method | note                                   |
+| ---------- | --: | ----: | -------: | ----: | ----------- | -------------------------------------- |
+| HEART6LS   |   6 | 4.63× |     29µs |   6µs | mat         | small-n                                |
+| DEVGLA2    |   5 | 4.16× |     49µs |  12µs | bcoo        | small-n; asdex coloring overhead amort |
+| HEART8LS   |   8 | 2.56× |     17µs |   7µs | mat         | small-n                                |
+| DEVGLA2B   |   5 | 2.15× |     25µs |  12µs | mat         | small-n                                |
+| BENNETT5LS |   3 | 1.36× |     23µs |  17µs | bcoo        | small-n                                |
+| FBRAINLS   |   2 | 1.06× |     83µs |  78µs | mat         | small-n; marginal                      |
+
+These are call-overhead dominated; the coloring amortises better for
+tiny n. Not actionable without a fundamentally different small-n path.
 
 ## Priority 0 — open
 
