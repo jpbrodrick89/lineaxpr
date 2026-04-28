@@ -1,14 +1,17 @@
 """Singledispatch op functions and LinOpProtocol.
 
-`negate`, `scale_scalar`, `scale_per_out_row` are the operations that our
-LinOp classes share as methods but BCOO does not. Defining them as
-singledispatch functions gives a single call-site regardless of format and
-lets bcoo_extend.py register non-densifying BCOO implementations.
+`negate`, `scale_scalar`, `scale_per_out_row` are operations that our native
+LinOp classes implement as methods but BCOO/CSR do not. They live here as
+singledispatch functions so every format (LinOp, BCOO, future CSR) shares
+one call-site; bcoo_extend.py registers the BCOO implementations.
 
-LinOpProtocol documents the required interface for new LinOp forms and lets
-pyrefly check that call sites annotated `op: LinOpProtocol` are valid.
-BCOO satisfies todense() and to_bcoo() but not negate/scale_* — it is
-handled via singledispatch registrations in bcoo_extend.py, not the protocol.
+LinOpProtocol is the minimal structural interface that BCOO, BCSR, and our
+own LinOp classes all satisfy by duck-typing. It deliberately excludes
+negate/scale_* (handled by singledispatch, not the protocol) so that external
+sparse formats can be passed as LinOps without any adapter code.
+Note: BCOO.to_bcoo() does not exist (BCOO is already BCOO); call sites that
+need a BCOO should use the module-level `_to_bcoo(op, n)` helper instead of
+the method directly.
 """
 
 from __future__ import annotations
@@ -21,22 +24,19 @@ from jax import core
 
 
 class LinOpProtocol(Protocol):
-    """Interface every native LinOp class must satisfy."""
+    """Minimal interface shared by all walk-compatible formats.
+
+    Satisfied by duck-typing: jax.experimental.sparse.BCOO, BCSR, and our
+    own ConstantDiagonal / Diagonal / BEllpack all satisfy this without any
+    adapter code (modulo to_bcoo, which BCOO handles via _to_bcoo()).
+    """
 
     @property
     def shape(self) -> tuple[int, ...]: ...
 
-    def primal_aval(self) -> core.ShapedArray: ...
-
     def todense(self) -> jnp.ndarray: ...
 
-    def to_bcoo(self): ...
-
-    def negate(self): ...
-
-    def scale_scalar(self, s): ...
-
-    def scale_per_out_row(self, v): ...
+    def primal_aval(self) -> core.ShapedArray: ...
 
 
 @singledispatch
