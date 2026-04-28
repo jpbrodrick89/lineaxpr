@@ -35,7 +35,24 @@ from __future__ import annotations
 import jax.numpy as jnp
 from jax.experimental import sparse
 
-from .base import LinOpProtocol, negate, scale_per_out_row, scale_scalar
+from .base import (
+    LinOpProtocol,
+    broadcast_in_dim_op,
+    cumsum_op,
+    gather_op,
+    identity_op,
+    negate,
+    pad_op,
+    reduce_sum_op,
+    reshape_op,
+    rev_op,
+    scale_per_out_row,
+    scale_scalar,
+    scatter_add_op,
+    slice_op,
+    squeeze_op,
+    transpose_op,
+)
 from .diagonal import ConstantDiagonal, Diagonal, Identity, _diag_to_bcoo
 from .ellpack import (
     BEllpack,
@@ -48,12 +65,26 @@ from .ellpack import (
     _transpose_col_full,
 )
 from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
+from . import ellpack_transforms as _ellpack_transforms  # noqa: F401 — registers BE transform dispatchers
+from . import ellpack_indexing as _ellpack_indexing  # noqa: F401 — registers BE indexing dispatchers
 
 __all__ = [
     "LinOpProtocol",
     "negate",
     "scale_scalar",
     "scale_per_out_row",
+    "identity_op",
+    "squeeze_op",
+    "rev_op",
+    "slice_op",
+    "pad_op",
+    "cumsum_op",
+    "transpose_op",
+    "reshape_op",
+    "broadcast_in_dim_op",
+    "reduce_sum_op",
+    "gather_op",
+    "scatter_add_op",
     "ConstantDiagonal",
     "Diagonal",
     "Identity",

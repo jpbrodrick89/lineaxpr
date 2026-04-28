@@ -16,7 +16,20 @@ from .._linops import (
     _traced_shape,
 )
 from .mul import _mul_rule
-from .unary import _neg_rule
+from .._linops.base import LinOpProtocol as _LinOpProtocol
+from .._linops.base import negate as _negate_dispatch
+
+
+def _neg_rule(invals, traced, n, **params):
+    """Local neg rule copy (avoids circular import with registry)."""
+    del params, n
+    (op,) = invals
+    (t,) = traced
+    if not t:
+        return None
+    if isinstance(op, _LinOpProtocol):
+        return _negate_dispatch(op)
+    return -op
 
 
 def _bcast(arr, shape):

@@ -4,9 +4,19 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+from jax import lax
 from jax.experimental import sparse
 
-from .base import negate, scale_per_out_row, scale_scalar
+from .base import (
+    negate,
+    pad_op,
+    rev_op,
+    scale_per_out_row,
+    scale_scalar,
+    slice_op,
+    squeeze_op,
+    transpose_op,
+)
 
 
 class BEllpack:
@@ -693,3 +703,194 @@ def _(op, v):
     return BEllpack(op.start_row, op.end_row, op.in_cols,
                    scaled, op.out_size, op.in_size,
                    batch_shape=op.batch_shape)
+
+
+# ---- unary structural op registrations for BEllpack ----
+
+@slice_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    starts = tuple(int(s) for s in params["start_indices"])
+    limits = tuple(int(l) for l in params["limit_indices"])
+    strides_p = params.get("strides")
+    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
+
+    # Unit-stride 1D slice on unbatched BEllpack.
+    if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
+        s, e = starts[0], limits[0]
+        return op.pad_rows(-s, -(op.out_size - e))
+
+    # N-D unit-stride slice on batched BEllpack.
+    if (op.n_batch > 0
+            and len(starts) == op.n_batch + 1
+            and all(st == 1 for st in strides)):
+        batch_slicer = tuple(slice(int(s), int(e))
+                             for s, e in zip(starts[:-1], limits[:-1]))
+        out_start, out_limit = int(starts[-1]), int(limits[-1])
+        tail = (slice(None),) * (op.values.ndim - op.n_batch)
+        new_values = op.values[batch_slicer + tail]
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif hasattr(c, "ndim") and c.ndim > 1:
+                new_in_cols.append(c[batch_slicer + (slice(None),)])
+            else:
+                new_in_cols.append(c)
+        new_batch = tuple(b.stop - b.start for b in batch_slicer)
+        sliced = BEllpack(
+            op.start_row, op.end_row,
+            tuple(new_in_cols), new_values,
+            op.out_size, op.in_size,
+            batch_shape=new_batch,
+        )
+        return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
+
+    # Dense fallback.
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    s_full = starts + (0,)
+    l_full = limits + (n,)
+    str_full = strides + (1,)
+    return lax.slice(dense, s_full, l_full, str_full)
+
+
+@pad_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, padding_value, **params):
+    config = params["padding_config"]
+    before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
+    before, after = int(before), int(after)
+    interior = int(interior)
+
+    # 1D no-interior pad on unbatched BEllpack.
+    if len(config) == 1 and interior == 0 and op.n_batch == 0:
+        return op.pad_rows(before, after)
+
+    # N-D zero-interior pad on batched BEllpack.
+    if (op.n_batch > 0
+            and len(config) == op.n_batch + 1
+            and all(int(c[2]) == 0 for c in config)):
+        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-1])
+        out_before, out_after = int(config[-1][0]), int(config[-1][1])
+        new_batch_shape = tuple(
+            b + s + a for (b, a), s in zip(batch_pads, op.batch_shape)
+        )
+        tail_pad = ((0, 0),) * (op.values.ndim - op.n_batch)
+        new_values = jnp.pad(op.values, batch_pads + tail_pad)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(c)
+            elif hasattr(c, "ndim") and c.ndim > 1:
+                pad_cfg = batch_pads + ((0, 0),)
+                if isinstance(c, np.ndarray):
+                    # pyrefly: ignore [bad-argument-type]
+                    new_in_cols.append(np.pad(c, pad_cfg, constant_values=-1))
+                else:
+                    # pyrefly: ignore [bad-argument-type]
+                    new_in_cols.append(jnp.pad(c, pad_cfg, constant_values=-1))
+            else:
+                new_in_cols.append(c)
+        padded_batch = BEllpack(
+            op.start_row, op.end_row,
+            tuple(new_in_cols), new_values,
+            op.out_size, op.in_size,
+            batch_shape=new_batch_shape,
+        )
+        return padded_batch.pad_rows(out_before, out_after)
+
+    # Interior padding — promote to BCOO then shift rows.
+    if len(config) == 1 and interior > 0:
+        from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
+        bcoo_op = _to_bcoo(op, n)
+        step = interior + 1
+        old_size = bcoo_op.shape[0]
+        out_size = old_size + before + after + interior * max(old_size - 1, 0)
+        new_rows = bcoo_op.indices[:, 0] * step + before
+        new_indices = jnp.stack([new_rows, bcoo_op.indices[:, 1]], axis=1)
+        return sparse.BCOO(
+            (bcoo_op.data, new_indices), shape=(out_size, bcoo_op.shape[1])
+        )
+
+    # Dense fallback.
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
+    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
+
+
+@squeeze_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    dimensions = params["dimensions"]
+    if (op.n_batch == 0 and dimensions == (0,)
+            and op.out_size == 1 and op.start_row == 0 and op.end_row == 1):
+        return op
+    if (op.n_batch >= 1
+            and op.out_size == 1
+            and op.start_row == 0 and op.end_row == 1
+            and dimensions == (op.n_batch,)):
+        B = int(np.prod(op.batch_shape))
+        if op.k == 1:
+            new_values = op.values.reshape(B)
+        else:
+            new_values = op.values.reshape(B, op.k)
+        new_in_cols = []
+        ok = True
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                rs = np.arange(c.start or 0, c.stop or 1, c.step or 1)
+                if len(rs) == 1:
+                    new_in_cols.append(np.broadcast_to(rs, (B,)).copy())
+                else:
+                    ok = False; break
+            elif isinstance(c, np.ndarray):
+                if c.ndim == op.n_batch + 1:
+                    new_in_cols.append(c.reshape(B))
+                elif c.ndim == 1 and c.shape[0] == 1:
+                    new_in_cols.append(np.broadcast_to(c, (B,)).copy())
+                elif c.ndim == 1 and c.shape[0] == B:
+                    new_in_cols.append(c)
+                else:
+                    ok = False; break
+            else:
+                ok = False; break
+        if ok:
+            return BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), values=new_values,
+                out_size=B, in_size=op.in_size,
+            )
+    # Densify (sparse → (out_size, in_size)) then squeeze.
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    return lax.squeeze(_to_dense(op, n), dimensions)
+
+
+@rev_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    dimensions = params["dimensions"]
+    # Unbatched reverse along out axis.
+    if op.n_batch == 0 and dimensions == (0,):
+        new_start = op.out_size - op.end_row
+        new_end = op.out_size - op.start_row
+        new_values = jnp.flip(op.values, axis=0)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, slice):
+                new_in_cols.append(_resolve_col(c, op.nrows)[::-1].copy())
+            elif isinstance(c, np.ndarray):
+                new_in_cols.append(c[::-1].copy())
+            else:
+                new_in_cols.append(jnp.flip(c, axis=0))
+        return BEllpack(
+            start_row=new_start, end_row=new_end,
+            in_cols=tuple(new_in_cols), values=new_values,
+            out_size=op.out_size, in_size=op.in_size,
+        )
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    return lax.rev(dense, dimensions)
+
+
+@transpose_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    permutation = tuple(params["permutation"])
+    return op.transpose(permutation)
