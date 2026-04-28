@@ -85,7 +85,7 @@ def _cond_rule(invals, traced, n, **params):
         inner_env[inner_invar] = (was_traced, outer_val)
     # Late import to avoid circular dependency.
     import importlib
-    _materialize_module = importlib.import_module("lineaxpr.materialize")
+    _materialize_module = importlib.import_module("lineaxpr._transform")
     _materialize_module._walk_jaxpr(inner, inner_env, n)
     return [inner_env[outvar][1] for outvar in inner.outvars]
 
@@ -101,7 +101,7 @@ def _jit_rule(invals, traced, n, **params):
         inner_env[inner_invar] = (was_traced, outer_val)
     # Late import to avoid circular dependency.
     import importlib
-    _materialize_module = importlib.import_module("lineaxpr.materialize")
+    _materialize_module = importlib.import_module("lineaxpr._transform")
     _materialize_module._walk_jaxpr(inner, inner_env, n)
 
     # jit_p is always multiple_results; walker sets all outputs to traced

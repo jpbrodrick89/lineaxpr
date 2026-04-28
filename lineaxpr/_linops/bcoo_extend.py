@@ -10,8 +10,10 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax import lax
 from jax.experimental import sparse
 
+from .ellpack import BEllpack
 from .base import (
     negate,
     pad_op,
@@ -79,7 +81,6 @@ def _(op: sparse.BCOO, *, n, **params):
         return sparse.BCOO((new_data, new_indices), shape=(k, op.shape[1]))
 
     # Dense fallback for other BCOO slice patterns.
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     s_full = starts + (0,)
     l_full = limits + (n,)
@@ -110,7 +111,6 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
         return sparse.BCOO(
             (op.data, new_indices), shape=(out_size, op.shape[1])
         )
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
@@ -123,7 +123,6 @@ def _(op: sparse.BCOO, *, n, **params):
         new_rows = (op.shape[0] - 1) - op.indices[:, 0]
         new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
         return sparse.BCOO((op.data, new_indices), shape=op.shape)
-    from jax import lax  # noqa: PLC0415
     dense = op.todense()
     return lax.rev(dense, dimensions)
 
@@ -132,7 +131,6 @@ def _(op: sparse.BCOO, *, n, **params):
 def _(op: sparse.BCOO, *, n, **params):
     """BCOO row-sum: when indices are static np, emit a structural BE row-vector."""
     axes = params["axes"]
-    from lineaxpr._linops.ellpack import BEllpack  # noqa: PLC0415
     if tuple(axes) == (0,) and op.n_batch == 0:
         try:
             indices_np = np.asarray(op.indices)

@@ -30,7 +30,7 @@ from .._linops import (
 # the rule falls through to naive band-widening.
 #
 # Configurable via the `LINEAXPR_BELLPACK_DEDUP_LIMIT` env var, or by
-# assigning to `lineaxpr.materialize.BELLPACK_DEDUP_LIMIT` at runtime.
+# assigning to `lineaxpr._transform.BELLPACK_DEDUP_LIMIT` at runtime.
 #
 # Default 200: empirically captures all observed wins across FREUROTH /
 # CRAGGLVY / WOODS / CHAINWOO / SROSENBR (K_total ≤ 20), DRCAV1LQ/2LQ

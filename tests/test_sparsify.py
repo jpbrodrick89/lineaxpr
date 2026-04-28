@@ -180,7 +180,7 @@ def test_add_rule_absorbs_diagonal_into_ellpack():
     """Diagonal + BEllpack at matching square shape should stay BEllpack
     (promoted diagonals become an extra band), not fall through to BCOO."""
     from lineaxpr import BEllpack
-    from lineaxpr.materialize import _add_rule
+    from lineaxpr._transform import _add_rule
 
     D = Diagonal(jnp.asarray([1.0, 2.0, 3.0]))
     E = BEllpack(0, 3, (np.array([1, 0, 2]),), jnp.asarray([5.0, 6.0, 7.0]), 3, 3)
@@ -204,7 +204,7 @@ def test_add_rule_absorbs_constant_diagonal_into_ellpack():
     correct but defeats this test's structural-emit verification.
     """
     from lineaxpr import BEllpack
-    from lineaxpr.materialize import _add_rule
+    from lineaxpr._transform import _add_rule
 
     CD = ConstantDiagonal(5, 0.5)
     D = Diagonal(jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0]))

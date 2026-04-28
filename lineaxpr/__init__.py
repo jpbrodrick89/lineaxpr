@@ -25,7 +25,7 @@ Public API:
     # Convert the result: linop.todense() or linop.to_bcoo()
 """
 
-from .materialize import (
+from ._transform import (
     bcoo_hessian,
     bcoo_jacfwd,
     bcoo_jacrev,

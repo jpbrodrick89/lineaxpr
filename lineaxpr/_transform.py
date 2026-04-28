@@ -41,7 +41,7 @@ from jax.extend import core
 from ._linops import Identity, LinOpProtocol
 from ._rules.registry import materialize_rules
 from ._rules.add import (
-    BELLPACK_DEDUP_LIMIT,  # noqa: F401 — accessible as lineaxpr.materialize.BELLPACK_DEDUP_LIMIT
+    BELLPACK_DEDUP_LIMIT,  # noqa: F401 — accessible as lineaxpr._transform.BELLPACK_DEDUP_LIMIT
     BELLPACK_DEDUP_VECTORISED_MIN,  # noqa: F401 — same
     _add_rule,  # noqa: F401 — re-exported for test compatibility
 )
@@ -49,9 +49,9 @@ from ._rules.add import (
 # -------------------------- rule registry --------------------------
 # Rules are registered in `lineaxpr/_rules/registry.py`.
 # Re-exported here for backward-compatibility:
-#   lineaxpr.materialize.materialize_rules
-#   lineaxpr.materialize.BELLPACK_DEDUP_LIMIT
-#   lineaxpr.materialize.BELLPACK_DEDUP_VECTORISED_MIN
+#   lineaxpr._transform.materialize_rules
+#   lineaxpr._transform.BELLPACK_DEDUP_LIMIT
+#   lineaxpr._transform.BELLPACK_DEDUP_VECTORISED_MIN
 
 # -------------------------- driver --------------------------
 

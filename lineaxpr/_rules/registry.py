@@ -73,7 +73,6 @@ def _neg_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    from .._linops.base import LinOpProtocol  # noqa: PLC0415
     if isinstance(op, LinOpProtocol):
         return _negate_dispatch(op)
     return -op
@@ -224,10 +223,9 @@ def _transpose_rule(invals, traced, n, **params):
     if not t:
         return None
     permutation = tuple(int(p) for p in params["permutation"])
-    from jax import lax as _lax  # noqa: PLC0415
     if isinstance(op, LinOpProtocol):
         return op.transpose(permutation)
-    return _lax.transpose(op, permutation + (len(permutation),))
+    return lax.transpose(op, permutation + (len(permutation),))
 
 materialize_rules[lax.transpose_p] = _transpose_rule
 materialize_rules[lax.gather_p] = _gather_rule
