@@ -2200,58 +2200,57 @@ def _reduce_sum_rule(invals, traced, n, **params):
                         c_full = c if c.ndim >= 2 else jnp.broadcast_to(
                             c, op.batch_shape + (op.nrows,))
                         new_in_cols.append(c_full[:, r])
-            if True:
-                if K == 1:
-                    # (B, O) already in natural r-major order, k=O.
-                    new_values = op.values
-                else:
-                    # (B, O, K) → flatten to (B, O*K) in r-major, b-minor order.
-                    new_values = op.values.reshape(B, O * K)
-                # Dedup the O*K emitted bands. After out-axis reduction
-                # many (r, b) pairs produce cols-identical bands — e.g.
-                # NONMSQRT at n=4900 has O*K=5040 bands but only 70
-                # unique cols (72× savings). Hash-group by cols bytes
-                # (O(K) at trace time) and sum per-group values via one
-                # scatter-add HLO op. Not gated on BELLPACK_DEDUP_LIMIT:
-                # the dedup savings on wide-K justify the linear-time
-                # cost (and the values scatter-add is one HLO op
-                # regardless of K).
-                def _col_key(c):
-                    if isinstance(c, np.ndarray):
-                        return ("np", c.shape, c.tobytes())
-                    if isinstance(c, slice):
-                        return ("slc", c.start, c.stop, c.step)
-                    return ("id", id(c))  # traced — won't group
-                assigned = np.empty(len(new_in_cols), dtype=np.int64)
-                group_cols: list = []
-                key_to_group: dict = {}
-                for i, c in enumerate(new_in_cols):
-                    k_ = _col_key(c)
-                    g = key_to_group.get(k_)
-                    if g is None:
-                        g = len(group_cols)
-                        key_to_group[k_] = g
-                        group_cols.append(c)
-                    assigned[i] = g
-                n_groups = len(group_cols)
-                if n_groups < len(new_in_cols):
-                    # Scatter-add: new_values shape (B, O*K),
-                    # assigned shape (O*K,), output shape (B, n_groups).
-                    # `.at[..., assigned].add(new_values)` accumulates
-                    # along the last axis with repeated indices.
-                    dedup_values = jnp.zeros(
-                        (B, n_groups), dtype=new_values.dtype
-                    ).at[:, assigned].add(new_values)
-                    return _densify_if_wider_than_dense(BEllpack(
-                        start_row=0, end_row=B,
-                        in_cols=tuple(group_cols), values=dedup_values,
-                        out_size=B, in_size=op.in_size,
-                    ), n)
+            if K == 1:
+                # (B, O) already in natural r-major order, k=O.
+                new_values = op.values
+            else:
+                # (B, O, K) → flatten to (B, O*K) in r-major, b-minor order.
+                new_values = op.values.reshape(B, O * K)
+            # Dedup the O*K emitted bands. After out-axis reduction
+            # many (r, b) pairs produce cols-identical bands — e.g.
+            # NONMSQRT at n=4900 has O*K=5040 bands but only 70
+            # unique cols (72× savings). Hash-group by cols bytes
+            # (O(K) at trace time) and sum per-group values via one
+            # scatter-add HLO op. Not gated on BELLPACK_DEDUP_LIMIT:
+            # the dedup savings on wide-K justify the linear-time
+            # cost (and the values scatter-add is one HLO op
+            # regardless of K).
+            def _col_key(c):
+                if isinstance(c, np.ndarray):
+                    return ("np", c.shape, c.tobytes())
+                if isinstance(c, slice):
+                    return ("slc", c.start, c.stop, c.step)
+                return ("id", id(c))  # traced — won't group
+            assigned = np.empty(len(new_in_cols), dtype=np.int64)
+            group_cols: list = []
+            key_to_group: dict = {}
+            for i, c in enumerate(new_in_cols):
+                k_ = _col_key(c)
+                g = key_to_group.get(k_)
+                if g is None:
+                    g = len(group_cols)
+                    key_to_group[k_] = g
+                    group_cols.append(c)
+                assigned[i] = g
+            n_groups = len(group_cols)
+            if n_groups < len(new_in_cols):
+                # Scatter-add: new_values shape (B, O*K),
+                # assigned shape (O*K,), output shape (B, n_groups).
+                # `.at[..., assigned].add(new_values)` accumulates
+                # along the last axis with repeated indices.
+                dedup_values = jnp.zeros(
+                    (B, n_groups), dtype=new_values.dtype
+                ).at[:, assigned].add(new_values)
                 return _densify_if_wider_than_dense(BEllpack(
                     start_row=0, end_row=B,
-                    in_cols=tuple(new_in_cols), values=new_values,
+                    in_cols=tuple(group_cols), values=dedup_values,
                     out_size=B, in_size=op.in_size,
                 ), n)
+            return _densify_if_wider_than_dense(BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), values=new_values,
+                out_size=B, in_size=op.in_size,
+            ), n)
     # BEllpack row-sum: accumulate per-column values via scatter-add.
     # Returns a 1D (in_size,) ndarray linear form — the Jacobian
     # coefficients of the resulting scalar-aval variable. Avoids the
