@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax._src.interpreters.partial_eval import DynamicJaxprTracer
 import numpy as np
 from jax import lax
 from jax.experimental import sparse
@@ -367,8 +368,11 @@ def _(op, *, n, **params):
     return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
 
 
-# Handle the jax.Array dense linear-form path for broadcast_in_dim.
+# Register both jax.Array (eager) and DynamicJaxprTracer (JIT): singledispatch
+# uses MRO not isinstance, so JIT tracers don't hit the jax.Array registration
+# even though isinstance(tracer, jax.Array) is True.
 @broadcast_in_dim_op.register(jax.Array)
+@broadcast_in_dim_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
     shape = params["shape"]
     broadcast_dimensions = params["broadcast_dimensions"]
