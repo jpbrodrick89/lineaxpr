@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import jax.numpy as jnp
-from jax import core
 from jax.experimental import sparse
 
 from .base import negate, scale_per_out_row, scale_scalar
@@ -24,9 +23,9 @@ class ConstantDiagonal:
     def shape(self):
         return (self.n, self.n)
 
-    def primal_aval(self):
-        v = jnp.asarray(self.value)
-        return core.ShapedArray((self.n,), v.dtype)
+    @property
+    def dtype(self):
+        return jnp.asarray(self.value).dtype
 
     def todense(self):
         if isinstance(self.value, float) and self.value == 1.0:
@@ -63,8 +62,9 @@ class Diagonal:
     def shape(self):
         return (self.n, self.n)
 
-    def primal_aval(self):
-        return core.ShapedArray((self.n,), self.values.dtype)
+    @property
+    def dtype(self):
+        return self.values.dtype
 
     def todense(self):
         # `where(eye_bool, v[:, None], 0)` — same shape family as

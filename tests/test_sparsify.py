@@ -159,20 +159,14 @@ def test_multi_output_linear_fn_rejected():
         sparsify(lin)(Identity(4, dtype=jnp.float64))
 
 
-def test_non_1d_input_rejected():
-    """The walker currently requires a 1D input invar."""
-    def lin(x):
-        return x.flatten()
-
-    with pytest.raises(NotImplementedError, match="non-1D"):
-        # Seed with a LinOp whose primal_aval is 2D — synthesize via a
-        # BEllpack of the right shape? Easiest: use a 1D seed but pass a
-        # linear_fn that trace-expects 2D. Do that via a wrapper.
-        class Fake:
-            def primal_aval(self):
-                import jax
-                return jax.core.ShapedArray((3, 3), jnp.float64)
-        sparsify(lin)(Fake())
+def test_seed_uses_shape_and_dtype():
+    """_walk_with_seed reads seed.shape[-1] and seed.dtype, not primal_aval."""
+    seed = Identity(4, dtype=jnp.float32)
+    assert seed.shape[-1] == 4
+    assert seed.dtype == jnp.float32
+    # Verify sparsify actually uses these — result in_size matches.
+    result = sparsify(lambda x: x)(seed)
+    assert result.shape[-1] == 4
 
 
 # ----------------------- shape-witness correctness -----------------------

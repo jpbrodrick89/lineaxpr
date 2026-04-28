@@ -20,23 +20,24 @@ from functools import singledispatch
 from typing import Any, Protocol
 
 import jax.numpy as jnp
-from jax import core
 
 
 class LinOpProtocol(Protocol):
     """Minimal interface shared by all walk-compatible formats.
 
-    Satisfied by duck-typing: jax.experimental.sparse.BCOO, BCSR, and our
-    own ConstantDiagonal / Diagonal / BEllpack all satisfy this without any
-    adapter code (modulo to_bcoo, which BCOO handles via _to_bcoo()).
+    Satisfied by duck-typing: jax.experimental.sparse.BCOO, BCSR, plain
+    ndarrays, and our own ConstantDiagonal / Diagonal / BEllpack all have
+    shape and dtype. todense() is required for format conversion at the
+    materialize boundary.
     """
 
     @property
     def shape(self) -> tuple[int, ...]: ...
 
-    def todense(self) -> jnp.ndarray: ...
+    @property
+    def dtype(self): ...
 
-    def primal_aval(self) -> core.ShapedArray: ...
+    def todense(self) -> jnp.ndarray: ...
 
 
 @singledispatch

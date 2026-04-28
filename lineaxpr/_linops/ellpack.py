@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
-from jax import core
 from jax.experimental import sparse
 
 from .base import negate, scale_per_out_row, scale_scalar
@@ -96,9 +95,6 @@ class BEllpack:
     @property
     def dtype(self):
         return self.values.dtype
-
-    def primal_aval(self):
-        return core.ShapedArray((self.in_size,), self.dtype)
 
     def todense(self):
         # K=1 retains the old single-scatter form (already optimal — no

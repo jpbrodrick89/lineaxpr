@@ -9,7 +9,6 @@ from __future__ import annotations
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jax import core
 from jax.experimental import sparse
 
 from lineaxpr import ConstantDiagonal, Diagonal, BEllpack, Identity
@@ -28,9 +27,8 @@ def test_identity_is_constant_diagonal_with_value_one():
 
 def test_identity_dtype_propagates():
     I = Identity(5, dtype=jnp.float32)
-    aval = I.primal_aval()
-    assert aval.shape == (5,)
-    assert aval.dtype == jnp.float32
+    assert I.shape[-1] == 5
+    assert I.dtype == jnp.float32
 
 
 def test_constant_diagonal_to_dense_identity():
@@ -69,12 +67,10 @@ def test_constant_diagonal_scale_per_out_row():
     np.testing.assert_array_equal(np.asarray(result.todense()), expected)
 
 
-def test_constant_diagonal_primal_aval():
+def test_constant_diagonal_shape_and_dtype():
     cd = ConstantDiagonal(7, value=jnp.asarray(1.0, dtype=jnp.float64))
-    aval = cd.primal_aval()
-    assert isinstance(aval, core.ShapedArray)
-    assert aval.shape == (7,)
-    assert aval.dtype == jnp.float64
+    assert cd.shape[-1] == 7
+    assert cd.dtype == jnp.float64
 
 
 # ---------------------------- Diagonal -----------------------------------
@@ -113,11 +109,10 @@ def test_diagonal_scale_per_out_row():
     np.testing.assert_array_equal(np.asarray(d.todense()), np.diag([2.0, 4.0, 6.0]))
 
 
-def test_diagonal_primal_aval():
+def test_diagonal_shape_and_dtype():
     d = Diagonal(jnp.asarray([1.0, 2.0], dtype=jnp.float32))
-    aval = d.primal_aval()
-    assert aval.shape == (2,)
-    assert aval.dtype == jnp.float32
+    assert d.shape[-1] == 2
+    assert d.dtype == jnp.float32
 
 
 # ---------------------------- BEllpack ------------------------------------
@@ -362,12 +357,10 @@ def test_ellpack_intra_row_duplicate_cols_sum():
     np.testing.assert_array_equal(np.asarray(e.todense()), expected)
 
 
-def test_ellpack_primal_aval():
+def test_ellpack_shape_and_dtype():
     e = _simple_ellpack()
-    aval = e.primal_aval()
-    assert isinstance(aval, core.ShapedArray)
-    assert aval.shape == (4,)
-    assert aval.dtype == e.dtype
+    assert e.shape[-1] == 4
+    assert e.dtype == jnp.float64
 
 
 # ---------------------------- invariants ---------------------------------

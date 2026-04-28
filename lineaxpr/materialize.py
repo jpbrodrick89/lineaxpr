@@ -2494,16 +2494,13 @@ def _walk_jaxpr(jaxpr, env, n):
 def _walk_with_seed(linear_fn, seed_linop):
     """Trace `linear_fn` with the aval implied by `seed_linop`, walk the
     jaxpr, return the output LinOp."""
-    aval = seed_linop.primal_aval()
-    placeholder = jax.ShapeDtypeStruct(aval.shape, aval.dtype)
+    placeholder = jax.ShapeDtypeStruct((seed_linop.shape[-1],), seed_linop.dtype)
     cj = jax.make_jaxpr(linear_fn)(placeholder)
     jaxpr = cj.jaxpr
 
     if len(jaxpr.invars) != 1:
         raise NotImplementedError("multi-input linear_fn not yet handled")
     (invar,) = jaxpr.invars
-    if invar.aval.ndim != 1:
-        raise NotImplementedError("non-1D input not yet handled")
     n = invar.aval.size
 
     env: dict = {v: (False, c) for v, c in zip(jaxpr.constvars, cj.consts)}
