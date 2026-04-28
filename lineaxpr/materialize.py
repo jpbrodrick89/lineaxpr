@@ -101,9 +101,7 @@ def _neg_rule(invals, traced, n, **params):
     (t,) = traced
     if not t:
         return None
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        return op.negate()
-    if isinstance(op, sparse.BCOO):
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack, sparse.BCOO)):
         return negate(op)
     return -op
 

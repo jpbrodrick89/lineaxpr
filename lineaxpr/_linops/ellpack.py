@@ -202,38 +202,6 @@ class BEllpack:
     def to_bcoo(self):
         return _ellpack_to_bcoo(self)
 
-    def negate(self):
-        return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       -self.values, self.out_size, self.in_size,
-                       batch_shape=self.batch_shape)
-
-    def scale_scalar(self, s):
-        return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       s * self.values, self.out_size, self.in_size,
-                       batch_shape=self.batch_shape)
-
-    def scale_per_out_row(self, v):
-        v_arr = jnp.asarray(v)
-        # For batched BEllpack, `v` comes from a closure at the output
-        # aval's shape (`*batch_shape, out_size`); slice the trailing
-        # axis to the active row range. For unbatched, same shape
-        # convention (v_arr is 1D).
-        if self.n_batch > 0:
-            v_slice = v_arr[..., self.start_row:self.end_row]
-        elif v_arr.shape[0] == self.nrows:
-            v_slice = v_arr
-        else:
-            v_slice = v_arr[self.start_row:self.end_row]
-        # values shape: (*batch, nrows) for k=1, (*batch, nrows, k) for k>=2.
-        # v_slice shape: (*batch, nrows). For k>=2 broadcast a trailing axis.
-        if self.values.ndim == self.n_batch + 1:  # k=1
-            scaled = v_slice * self.values
-        else:
-            scaled = v_slice[..., None] * self.values
-        return BEllpack(self.start_row, self.end_row, self.in_cols,
-                       scaled, self.out_size, self.in_size,
-                       batch_shape=self.batch_shape)
-
     def pad_rows(self, before: int, after: int):
         """Pad along the out_size axis. Negative before/after truncates."""
         new_out_size = self.out_size + before + after
@@ -695,14 +663,37 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
 
 @negate.register(BEllpack)
 def _(op):
-    return op.negate()
+    return BEllpack(op.start_row, op.end_row, op.in_cols,
+                   -op.values, op.out_size, op.in_size,
+                   batch_shape=op.batch_shape)
 
 
 @scale_scalar.register(BEllpack)
 def _(op, s):
-    return op.scale_scalar(s)
+    return BEllpack(op.start_row, op.end_row, op.in_cols,
+                   s * op.values, op.out_size, op.in_size,
+                   batch_shape=op.batch_shape)
 
 
 @scale_per_out_row.register(BEllpack)
 def _(op, v):
-    return op.scale_per_out_row(v)
+    v_arr = jnp.asarray(v)
+    # For batched BEllpack, `v` comes from a closure at the output
+    # aval's shape (`*batch_shape, out_size`); slice the trailing
+    # axis to the active row range. For unbatched, same shape
+    # convention (v_arr is 1D).
+    if op.n_batch > 0:
+        v_slice = v_arr[..., op.start_row:op.end_row]
+    elif v_arr.shape[0] == op.nrows:
+        v_slice = v_arr
+    else:
+        v_slice = v_arr[op.start_row:op.end_row]
+    # values shape: (*batch, nrows) for k=1, (*batch, nrows, k) for k>=2.
+    # v_slice shape: (*batch, nrows). For k>=2 broadcast a trailing axis.
+    if op.values.ndim == op.n_batch + 1:  # k=1
+        scaled = v_slice * op.values
+    else:
+        scaled = v_slice[..., None] * op.values
+    return BEllpack(op.start_row, op.end_row, op.in_cols,
+                   scaled, op.out_size, op.in_size,
+                   batch_shape=op.batch_shape)

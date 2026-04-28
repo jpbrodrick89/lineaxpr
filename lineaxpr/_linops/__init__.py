@@ -94,10 +94,8 @@ def _to_bcoo(op, n: int):
     promote mixed-form operands to a common BCOO before concatenation)."""
     if isinstance(op, sparse.BCOO):
         return op
-    if isinstance(op, (ConstantDiagonal, Diagonal)):
-        return _diag_to_bcoo(op)
-    if isinstance(op, BEllpack):
-        return _ellpack_to_bcoo(op)
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
+        return op.to_bcoo()
     return op  # plain ndarray — caller will keep dense
 
 

@@ -13,6 +13,7 @@ from jax import core
 from jax.experimental import sparse
 
 from lineaxpr import ConstantDiagonal, Diagonal, BEllpack, Identity
+from lineaxpr._linops import negate, scale_per_out_row, scale_scalar
 
 
 # ---------------------------- Identity / ConstantDiagonal -----------------
@@ -51,18 +52,18 @@ def test_constant_diagonal_to_bcoo_roundtrip():
 
 
 def test_constant_diagonal_negate():
-    cd = ConstantDiagonal(3, 2.0).negate()
+    cd = negate(ConstantDiagonal(3, 2.0))
     np.testing.assert_array_equal(np.asarray(cd.todense()), -2.0 * np.eye(3))
 
 
 def test_constant_diagonal_scale_scalar():
-    cd = ConstantDiagonal(3, 2.0).scale_scalar(jnp.asarray(4.0))
+    cd = scale_scalar(ConstantDiagonal(3, 2.0), jnp.asarray(4.0))
     np.testing.assert_array_equal(np.asarray(cd.todense()), 8.0 * np.eye(3))
 
 
 def test_constant_diagonal_scale_per_out_row():
     v = jnp.asarray([1.0, 2.0, 3.0])
-    result = ConstantDiagonal(3, value=2.0).scale_per_out_row(v)
+    result = scale_per_out_row(ConstantDiagonal(3, value=2.0), v)
     assert isinstance(result, Diagonal)
     expected = np.diag([2.0, 4.0, 6.0])
     np.testing.assert_array_equal(np.asarray(result.todense()), expected)
@@ -94,20 +95,20 @@ def test_diagonal_to_bcoo_roundtrip():
 
 
 def test_diagonal_negate():
-    d = Diagonal(jnp.asarray([1.0, -2.0, 3.0])).negate()
+    d = negate(Diagonal(jnp.asarray([1.0, -2.0, 3.0])))
     np.testing.assert_array_equal(
         np.asarray(d.todense()), np.diag([-1.0, 2.0, -3.0])
     )
 
 
 def test_diagonal_scale_scalar():
-    d = Diagonal(jnp.asarray([1.0, 2.0])).scale_scalar(jnp.asarray(3.0))
+    d = scale_scalar(Diagonal(jnp.asarray([1.0, 2.0])), jnp.asarray(3.0))
     np.testing.assert_array_equal(np.asarray(d.todense()), np.diag([3.0, 6.0]))
 
 
 def test_diagonal_scale_per_out_row():
-    d = Diagonal(jnp.asarray([1.0, 2.0, 3.0])).scale_per_out_row(
-        jnp.asarray([2.0, 2.0, 2.0])
+    d = scale_per_out_row(
+        Diagonal(jnp.asarray([1.0, 2.0, 3.0])), jnp.asarray([2.0, 2.0, 2.0])
     )
     np.testing.assert_array_equal(np.asarray(d.todense()), np.diag([2.0, 4.0, 6.0]))
 
@@ -169,14 +170,14 @@ def test_ellpack_to_bcoo_roundtrip():
 
 
 def test_ellpack_negate():
-    e = _simple_ellpack().negate()
+    e = negate(_simple_ellpack())
     np.testing.assert_array_equal(
         np.asarray(e.todense()), -_ellpack_expected_dense()
     )
 
 
 def test_ellpack_scale_scalar():
-    e = _simple_ellpack().scale_scalar(jnp.asarray(2.0))
+    e = scale_scalar(_simple_ellpack(), jnp.asarray(2.0))
     np.testing.assert_array_equal(
         np.asarray(e.todense()), 2.0 * _ellpack_expected_dense()
     )
@@ -184,7 +185,7 @@ def test_ellpack_scale_scalar():
 
 def test_ellpack_scale_per_out_row_nrows_length():
     e = _simple_ellpack()
-    scaled = e.scale_per_out_row(jnp.asarray([10.0, 100.0, 1000.0]))
+    scaled = scale_per_out_row(e, jnp.asarray([10.0, 100.0, 1000.0]))
     expected = _ellpack_expected_dense() * np.array([[10.0], [100.0], [1000.0]])
     np.testing.assert_array_equal(np.asarray(scaled.todense()), expected)
 
@@ -198,7 +199,7 @@ def test_ellpack_scale_per_out_row_out_size_length():
         out_size=4, in_size=3,
     )
     # Scale vector is length out_size = 4; only entries at rows 1 and 2 hit.
-    scaled = e.scale_per_out_row(jnp.asarray([1.0, 10.0, 100.0, 1000.0]))
+    scaled = scale_per_out_row(e, jnp.asarray([1.0, 10.0, 100.0, 1000.0]))
     expected = np.zeros((4, 3))
     expected[1, 0] = 50.0
     expected[2, 2] = 700.0
@@ -400,8 +401,8 @@ def test_to_bcoo_dense_agreement(op_factory):
 )
 def test_negate_then_scale_minus_one_agree(op_factory):
     op = op_factory()
-    neg_direct = op.negate().todense()
-    neg_via_scale = op.scale_scalar(jnp.asarray(-1.0)).todense()
+    neg_direct = negate(op).todense()
+    neg_via_scale = scale_scalar(op, jnp.asarray(-1.0)).todense()
     np.testing.assert_allclose(np.asarray(neg_direct), np.asarray(neg_via_scale))
 
 

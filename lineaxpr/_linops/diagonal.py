@@ -34,17 +34,7 @@ class ConstantDiagonal:
         return self.value * jnp.eye(self.n)
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self)
-
-    def negate(self):
-        return ConstantDiagonal(self.n, -self.value)
-
-    def scale_scalar(self, s):
-        return ConstantDiagonal(self.n, s * self.value)
-
-    def scale_per_out_row(self, v):
-        # value * diag(v) = Diagonal(value * v)
-        return Diagonal(self.value * jnp.asarray(v))
+        return _diag_to_bcoo(self.n, jnp.full((self.n,), self.value))
 
 
 def Identity(n: int, dtype=None):
@@ -101,48 +91,44 @@ class Diagonal:
         )
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self)
-
-    def negate(self):
-        return Diagonal(-self.values)
-
-    def scale_scalar(self, s):
-        return Diagonal(s * self.values)
-
-    def scale_per_out_row(self, v):
-        return Diagonal(self.values * jnp.asarray(v))
+        return _diag_to_bcoo(self.n, self.values)
 
 
-def _diag_to_bcoo(d, n=None) -> sparse.BCOO:
-    """Convert a (Constant)Diagonal to BCOO."""
-    idx = jnp.arange(d.n)
+def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
+    """Convert a length-n diagonal values array to an (n, n) BCOO."""
+    idx = jnp.arange(n)
     indices = jnp.stack([idx, idx], axis=1)
-    if isinstance(d, ConstantDiagonal):
-        v = jnp.asarray(d.value)
-        data = jnp.broadcast_to(v, (d.n,))
-    elif isinstance(d, Diagonal):
-        data = d.values
-    else:
-        raise TypeError(f"_diag_to_bcoo expected diagonal LinOp, got {type(d)}")
-    return sparse.BCOO((data, indices), shape=(d.n, d.n),
+    return sparse.BCOO((values, indices), shape=(n, n),
                        indices_sorted=True, unique_indices=True)
 
 
 # ---- singledispatch registrations ----
 
 @negate.register(ConstantDiagonal)
+def _(op):
+    return ConstantDiagonal(op.n, -op.value)
+
+
 @negate.register(Diagonal)
 def _(op):
-    return op.negate()
+    return Diagonal(-op.values)
 
 
 @scale_scalar.register(ConstantDiagonal)
+def _(op, s):
+    return ConstantDiagonal(op.n, s * op.value)
+
+
 @scale_scalar.register(Diagonal)
 def _(op, s):
-    return op.scale_scalar(s)
+    return Diagonal(s * op.values)
 
 
 @scale_per_out_row.register(ConstantDiagonal)
+def _(op, v):
+    return Diagonal(op.value * jnp.asarray(v))
+
+
 @scale_per_out_row.register(Diagonal)
 def _(op, v):
-    return op.scale_per_out_row(v)
+    return Diagonal(op.values * jnp.asarray(v))
