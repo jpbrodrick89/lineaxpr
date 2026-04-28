@@ -21,6 +21,15 @@ repos:
     hooks:
       - id: ruff
 
+  - repo: local
+    hooks:
+      - id: pyrefly-check
+        name: Pyrefly (type checking)
+        language: system
+        entry: uv run pyrefly check lineaxpr/
+        pass_filenames: false
+        types: [python]
+
   - repo: https://github.com/pasteurlabs/mirrors-prettier
     rev: v3.7.4
     hooks:

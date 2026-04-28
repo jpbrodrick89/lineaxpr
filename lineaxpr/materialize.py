@@ -172,10 +172,12 @@ def _mul_rule(invals, traced, n, **params):
                 new_in_cols.append(c)
             elif isinstance(c, np.ndarray):
                 if c.ndim == 1:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)
                 elif c.shape[:len(traced_op.batch_shape)] == traced_op.batch_shape \
                         and all(t == 1 for t in traced_op.batch_shape):
                     new_in_cols.append(
+                        # pyrefly: ignore [bad-argument-type]
                         np.broadcast_to(c, new_batch + c.shape[-1:]).copy()
                     )
                 else:
@@ -233,11 +235,13 @@ def _mul_rule(invals, traced, n, **params):
             elif isinstance(c, np.ndarray):
                 if c.ndim == traced_op.n_batch + 1:  # (*batch, 1) per-batch
                     new_in_cols.append(
+                        # pyrefly: ignore [bad-argument-type]
                         np.broadcast_to(
                             c, traced_op.batch_shape + (new_out,)
                         ).copy()
                     )
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)
             else:
                 # Traced cols — would need jnp broadcast; keep simple by
@@ -398,11 +402,13 @@ def _broadcast_be_to_batch(be, target_batch_shape):
             new_in_cols.append(c)
         elif isinstance(c, np.ndarray):
             if c.ndim == 1:
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(c)  # shared across batch
             elif c.ndim == src_ndim + 1:
                 # Per-batch cols: broadcast along new batch axes.
                 pad = (1,) * pad_ndim + c.shape
                 new_in_cols.append(
+                    # pyrefly: ignore [bad-argument-type]
                     np.broadcast_to(c.reshape(pad),
                                     target_batch_shape + c.shape[-1:]).copy()
                 )
@@ -472,6 +478,7 @@ def _bcoo_concat(bcoo_vals, shape):
             [v.indices for v in bcoo_vals], axis=n_batch
         )
     data = jnp.concatenate([v.data for v in bcoo_vals], axis=n_batch)
+    # pyrefly: ignore [bad-argument-type]
     return sparse.BCOO((data, indices), shape=shape)
 
 
@@ -498,8 +505,10 @@ def _tile_1row_bellpack(ep, target_rows):
             new_in_cols.append(col)
         elif isinstance(col, np.ndarray):
             # col has shape (1,); broadcast to (target_rows,).
+            # pyrefly: ignore [bad-argument-type]
             new_in_cols.append(np.broadcast_to(col, (target_rows,)))
         else:
+            # pyrefly: ignore [bad-argument-type]
             new_in_cols.append(jnp.broadcast_to(col, (target_rows,)))
     if k == 1:
         new_values = jnp.broadcast_to(ep.values, (target_rows,))
@@ -804,6 +813,7 @@ def _add_rule(invals, traced, n, **params):
                     if all(isinstance(c, np.ndarray) for c in band_rows):
                         new_in_cols.append(np.concatenate(band_rows, axis=0))
                     else:
+                        # pyrefly: ignore [bad-argument-type]
                         new_in_cols.append(jnp.concatenate(
                             [jnp.asarray(c) for c in band_rows], axis=0))
                 return _densify_if_wider_than_dense(BEllpack(
@@ -1228,6 +1238,7 @@ def _slice_rule(invals, traced, n, **params):
             )
             new_data = jnp.take(operand.data, jnp.asarray(keep))
             return sparse.BCOO(
+                # pyrefly: ignore [bad-argument-type]
                 (new_data, new_indices), shape=(k, operand.shape[1]),
             )
         rows = operand.indices[:, 0]
@@ -1352,8 +1363,10 @@ def _pad_rule(invals, traced, n, **params):
             elif hasattr(c, "ndim") and c.ndim > 1:
                 pad_cfg = batch_pads + ((0, 0),)
                 if isinstance(c, np.ndarray):
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(np.pad(c, pad_cfg, constant_values=-1))
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(jnp.pad(c, pad_cfg, constant_values=-1))
             else:
                 new_in_cols.append(c)  # 1D shared cols — broadcast OK
@@ -1613,6 +1626,7 @@ def _reshape_rule(invals, traced, n, **params):
                     ca = jnp.broadcast_to(
                         ca, op.batch_shape + (op.nrows,)
                     )
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(ca.reshape(total))
         return BEllpack(
             start_row=0, end_row=total,
@@ -1650,6 +1664,7 @@ def _reshape_rule(invals, traced, n, **params):
             elif isinstance(c, np.ndarray):
                 new_in_cols.append(c.reshape(A, B_out))
             else:
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(jnp.asarray(c).reshape(A, B_out))
         return BEllpack(
             start_row=0, end_row=B_out,
@@ -1679,14 +1694,18 @@ def _reshape_rule(invals, traced, n, **params):
                 new_in_cols.append(c)
             elif isinstance(c, np.ndarray):
                 if c.ndim == 1:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c)  # 1D shared cols
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(c.reshape(prefix + c.shape))
             else:
                 ca = jnp.asarray(c)
                 if ca.ndim == 1:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(ca)
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(ca.reshape(prefix + ca.shape))
         return BEllpack(
             start_row=op.start_row, end_row=op.end_row,
@@ -1717,8 +1736,10 @@ def _reshape_rule(invals, traced, n, **params):
             if isinstance(c, slice):
                 new_in_cols.append(c)
             elif isinstance(c, np.ndarray):
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(c.reshape(new_batch + (1,) + c.shape[1:]))
             else:
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(jnp.asarray(c).reshape(
                     new_batch + (1,) + c.shape[1:]))
         return BEllpack(
@@ -1809,6 +1830,7 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             elif isinstance(c, np.ndarray):
                 new_in_cols.append(np.broadcast_to(c, (N,)).copy())
             else:
+                # pyrefly: ignore [bad-argument-type]
                 new_in_cols.append(jnp.broadcast_to(c, (N,)))
         return BEllpack(
             start_row=0, end_row=N,
@@ -2007,6 +2029,7 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
             elif isinstance(c, np.ndarray):
                 reshape_c = (N,) + (1,) * (len(new_batch) - 1) + (1,) + c.shape[1:]
                 new_in_cols.append(
+                    # pyrefly: ignore [bad-argument-type]
                     np.broadcast_to(c.reshape(reshape_c),
                                     new_batch + (new_out,) + c.shape[1:])
                 )
@@ -2014,6 +2037,7 @@ def _broadcast_in_dim_rule(invals, traced, n, **params):
                 ca = jnp.asarray(c)
                 reshape_c = (N,) + (1,) * (len(new_batch) - 1) + (1,) + c.shape[1:]
                 new_in_cols.append(
+                    # pyrefly: ignore [bad-argument-type]
                     jnp.broadcast_to(ca.reshape(reshape_c),
                                      new_batch + (new_out,) + c.shape[1:])
                 )
@@ -2199,6 +2223,7 @@ def _reduce_sum_rule(invals, traced, n, **params):
                         # jnp tracer cols — 1D shared or (*batch, nrows).
                         c_full = c if c.ndim >= 2 else jnp.broadcast_to(
                             c, op.batch_shape + (op.nrows,))
+                        # pyrefly: ignore [bad-argument-type]
                         new_in_cols.append(c_full[:, r])
             if K == 1:
                 # (B, O) already in natural r-major order, k=O.
@@ -2384,6 +2409,7 @@ def _concatenate_rule(invals, traced, n, **params):
                                 if isinstance(c, np.ndarray):
                                     norm.append(np.broadcast_to(c, shape))
                                 else:
+                                    # pyrefly: ignore [bad-argument-type]
                                     norm.append(jnp.broadcast_to(c, shape))
                             if all(isinstance(c, np.ndarray) for c in norm):
                                 new_in_cols.append(
@@ -2445,6 +2471,7 @@ def _concatenate_rule(invals, traced, n, **params):
                 if all(isinstance(c, np.ndarray) for c in band_parts):
                     new_in_cols.append(np.concatenate(band_parts, axis=axis))
                 else:
+                    # pyrefly: ignore [bad-argument-type]
                     new_in_cols.append(jnp.concatenate(
                         [jnp.asarray(c) for c in band_parts], axis=axis))
             total_out = sum(v.out_size for v in invals)
@@ -2533,10 +2560,12 @@ def _split_rule(invals, traced, n, **params):
                 else:
                     arr_j = jnp.asarray(arr)
                     if arr_j.ndim == 1:
+                        # pyrefly: ignore [bad-argument-type]
                         new_in_cols.append(arr_j[start:end])
                     else:
                         slc = [slice(None)] * arr_j.ndim
                         slc[nb] = slice(start, end)
+                        # pyrefly: ignore [bad-argument-type]
                         new_in_cols.append(arr_j[tuple(slc)])
             out.append(BEllpack(
                 0, sz_i, tuple(new_in_cols), new_values,
@@ -2568,6 +2597,7 @@ def _split_rule(invals, traced, n, **params):
             be_end = min(operand.end_row - start, sz_i)
             if be_end <= be_start:
                 out.append(sparse.BCOO(
+                    # pyrefly: ignore [bad-argument-type]
                     (jnp.zeros((0,), operand.values.dtype),
                      np.zeros((0, 2), np.int32)),
                     shape=(sz_i, operand.in_size),
@@ -2589,6 +2619,7 @@ def _split_rule(invals, traced, n, **params):
                 be_start, be_end, tuple(new_in_cols), new_values,
                 sz_i, operand.in_size,
             )
+            # pyrefly: ignore [bad-argument-type]
             out.append(chunk_be)
             start = end
         return out
@@ -2779,6 +2810,7 @@ def _select_n_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (new_data, t_case.indices), shape=t_case.shape
             )
+    # pyrefly: ignore [unbound-name]
     if sum(case_traced) == 1 and isinstance(t_case, BEllpack):
         # pred has the BE's aval shape `(*batch_shape, out_size)`;
         # slice the last axis to the active row range. mask is
@@ -2787,9 +2819,11 @@ def _select_n_rule(invals, traced, n, **params):
         # uniformly — skip the slice.
         pred_arr = jnp.asarray(pred)
         if pred_arr.ndim == 0:
+            # pyrefly: ignore [unbound-name]
             mask = (pred_arr == t_idx)
         else:
             pred_slice = pred_arr[..., t_case.start_row:t_case.end_row]
+            # pyrefly: ignore [unbound-name]
             mask = (pred_slice == t_idx)
             if t_case.k >= 2:
                 mask = mask[..., None]
@@ -3625,6 +3659,7 @@ def _demo():
         H_ref = jax.vmap(hvp)(jnp.eye(p.n)).T
         H_ours = materialize(hvp, y)
         err = float(jnp.max(jnp.abs(H_ours - H_ref)))
+        # pyrefly: ignore [unsupported-operation]
         sym = float(jnp.max(jnp.abs(H_ours - H_ours.T)))
         print(
             f"{cls.__name__:6s}  n={p.n:3d}  "

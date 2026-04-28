@@ -108,3 +108,8 @@ module = [
   "asdex.*",
 ]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pyrefly>=0.63.0",
+]

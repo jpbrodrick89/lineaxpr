@@ -597,10 +597,12 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         if isinstance(cols_b, np.ndarray):
             if (cols_b >= 0).all():
                 indices = np.stack([rows_1d, cols_b], axis=1)
+                # pyrefly: ignore [bad-argument-type]
                 return sparse.BCOO((e.values, indices), shape=e.shape,
                                    indices_sorted=True, unique_indices=True)
             keep = np.nonzero(cols_b >= 0)[0]
             indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
+            # pyrefly: ignore [bad-argument-type]
             return sparse.BCOO((jnp.take(e.values, keep), indices),
                                shape=e.shape,
                                indices_sorted=True, unique_indices=True)
@@ -639,9 +641,11 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         mask = cols_flat >= 0
         if mask.all():
             indices = np.stack([rows_flat, cols_flat], axis=1)
+            # pyrefly: ignore [bad-argument-type]
             return sparse.BCOO((vals_flat, indices), shape=e.shape)
         keep = np.nonzero(mask)[0]
         indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
+        # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((jnp.take(vals_flat, keep), indices),
                            shape=e.shape)
     # Traced cols — gate by k.
