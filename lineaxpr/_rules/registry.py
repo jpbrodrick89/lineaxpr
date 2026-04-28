@@ -14,12 +14,11 @@ from .add import _add_rule, BELLPACK_DEDUP_LIMIT, BELLPACK_DEDUP_VECTORISED_MIN
 from .mul import _mul_rule
 from .multilinear import _sub_rule, _dot_general_rule, _div_rule
 from .control_flow import (
-    _concatenate_rule,
-    _split_rule,
     _cond_rule,
     _jit_rule,
     _select_n_rule,
 )
+from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
     _to_dense,
@@ -32,6 +31,7 @@ from .._linops import (
     rev_op,
     scatter_add_op,
     slice_op,
+    split_op,
     squeeze_op,
 )
 from .._linops.base import negate as _negate_dispatch
@@ -201,7 +201,7 @@ materialize_rules[lax.reshape_p] = _unary_rule(reshape_op)
 materialize_rules[lax.broadcast_in_dim_p] = _unary_rule(broadcast_in_dim_op)
 materialize_rules[lax.reduce_sum_p] = _unary_rule(reduce_sum_op)
 materialize_rules[lax.concatenate_p] = _concatenate_rule
-materialize_rules[lax.split_p] = _split_rule
+materialize_rules[lax.split_p] = _unary_rule(split_op)
 
 try:
     from jax._src.lax.control_flow.conditionals import cond_p

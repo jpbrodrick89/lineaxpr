@@ -196,3 +196,19 @@ def scatter_add_op(updates, *, n, operand, scatter_indices, **params):
     flat_updates = updates_dense.reshape(-1, n)
     return (jnp.zeros((out_size, n), flat_updates.dtype)
             .at[out_idx_flat].add(flat_updates))
+
+
+@singledispatch
+def split_op(op, *, n, **params):
+    """Split output axis. Dense fallback — returns a list of arrays."""
+    sizes = params["sizes"]
+    axis = params["axis"]
+    dense = _to_dense_base(op, n)
+    out = []
+    start = 0
+    for sz in sizes:
+        slc = [slice(None)] * dense.ndim
+        slc[axis] = slice(int(start), int(start) + int(sz))
+        out.append(dense[tuple(slc)])
+        start += int(sz)
+    return out

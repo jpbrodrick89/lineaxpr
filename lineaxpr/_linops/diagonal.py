@@ -18,6 +18,7 @@ from .base import (
     scale_per_out_row,
     scale_scalar,
     slice_op,
+    split_op,
     squeeze_op,
 )
 
@@ -452,6 +453,46 @@ def _(op, *, n, start_indices, **params):
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
     )
+
+
+@split_op.register(ConstantDiagonal)  # pyrefly: ignore [bad-argument-type]
+@split_op.register(Diagonal)  # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    sizes = params["sizes"]
+    axis = params["axis"]
+    if axis == 0:
+        from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
+        from jax.experimental import sparse as _sparse  # noqa: PLC0415
+        import jax.numpy as _jnp  # noqa: PLC0415
+        bcoo = _to_bcoo(op, n)
+        rows = bcoo.indices[:, 0]
+        out = []
+        start = 0
+        for sz in sizes:
+            end = start + int(sz)
+            in_range = (rows >= start) & (rows < end)
+            new_rows = _jnp.where(in_range, rows - start, 0)
+            new_data = _jnp.where(in_range, bcoo.data,
+                                  _jnp.zeros((), bcoo.data.dtype))
+            new_indices = _jnp.stack(
+                [new_rows, bcoo.indices[:, 1]], axis=1
+            )
+            out.append(_sparse.BCOO(
+                (new_data, new_indices), shape=(int(sz), bcoo.shape[1])
+            ))
+            start = end
+        return out
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    import jax.numpy as _jnp  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    out = []
+    start = 0
+    for sz in sizes:
+        slc = [slice(None)] * dense.ndim
+        slc[axis] = slice(int(start), int(start) + int(sz))
+        out.append(dense[tuple(slc)])
+        start += int(sz)
+    return out
 
 
 @gather_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]

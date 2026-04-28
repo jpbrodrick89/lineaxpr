@@ -20,6 +20,7 @@ from .base import (
     scale_per_out_row,
     scale_scalar,
     slice_op,
+    split_op,
 )
 
 
@@ -165,6 +166,40 @@ def _(op: sparse.BCOO, *, n, **params):
     from lineaxpr._linops import _to_dense  # noqa: PLC0415
     dense = _to_dense(op, n)
     return jnp.sum(dense, axis=tuple(axes))
+
+
+@split_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
+def _(op: sparse.BCOO, *, n, **params):
+    sizes = params["sizes"]
+    axis = params["axis"]
+    if axis == 0 and op.n_batch == 0:
+        rows = op.indices[:, 0]
+        out = []
+        start = 0
+        for sz in sizes:
+            end = start + int(sz)
+            in_range = (rows >= start) & (rows < end)
+            new_rows = jnp.where(in_range, rows - start, 0)
+            new_data = jnp.where(in_range, op.data,
+                                 jnp.zeros((), op.data.dtype))
+            new_indices = jnp.stack(
+                [new_rows, op.indices[:, 1]], axis=1
+            )
+            out.append(sparse.BCOO(
+                (new_data, new_indices), shape=(int(sz), op.shape[1])
+            ))
+            start = end
+        return out
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    out = []
+    start = 0
+    for sz in sizes:
+        slc = [slice(None)] * dense.ndim
+        slc[axis] = slice(int(start), int(start) + int(sz))
+        out.append(dense[tuple(slc)])
+        start += int(sz)
+    return out
 
 
 def _bcoo_concat(bcoo_vals, shape):

@@ -11,14 +11,23 @@ from .registry import (
     materialize_rules,
 )
 from .multilinear import _sub_rule, _dot_general_rule, _div_rule
+from .structural import _concatenate_rule
 from .control_flow import (
-    _concatenate_rule,
-    _split_rule,
     _cond_rule,
     _jit_rule,
     _squeeze_leading_ones,
     _select_n_rule,
 )
+from .._linops import split_op as _split_op
+
+# Backward-compat shim: _split_rule is now _unary_rule(split_op) in registry.py.
+# Expose it here so any external code that imported _split_rule still works.
+def _split_rule(invals, traced, n, **params):
+    (op,) = invals
+    (t,) = traced
+    if not t:
+        return None
+    return _split_op(op, n=n, **params)
 from .._linops import (
     slice_op as _slice_rule,
     pad_op as _pad_rule_dispatch,

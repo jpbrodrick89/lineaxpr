@@ -17,6 +17,7 @@ from .base import (
     cumsum_op,
     reduce_sum_op,
     reshape_op,
+    split_op,
 )
 from .ellpack import BEllpack, _bellpack_unbatch
 
@@ -567,3 +568,137 @@ def _(op, *, n, **params):
     from lineaxpr._linops import _to_dense  # noqa: PLC0415
     dense = _to_dense(op, n)
     return lax.cumsum(dense, axis=axis, reverse=reverse)
+
+
+# ---------------------------------------------------------------------------
+# split_op registrations
+# ---------------------------------------------------------------------------
+
+@split_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
+def _(op, *, n, **params):
+    sizes = params["sizes"]
+    axis = params["axis"]
+    # Structural path: batched BE split along the out-axis (== n_batch).
+    # Slice values and each band's cols along the out axis; keep batch_shape.
+    # Requires full out coverage so each chunk's rows map to [0, sz) cleanly.
+    if (op.n_batch >= 1
+            and axis == op.n_batch
+            and op.start_row == 0
+            and op.end_row == op.out_size):
+        nb = op.n_batch
+        out = []
+        start = 0
+        for sz in sizes:
+            sz_i = int(sz)
+            end = start + sz_i
+            val_slc = [slice(None)] * op.values.ndim
+            val_slc[nb] = slice(start, end)
+            new_values = op.values[tuple(val_slc)]
+            new_in_cols = []
+            for c in op.in_cols:
+                arr = c
+                if isinstance(arr, np.ndarray):
+                    if arr.ndim == 1:
+                        new_in_cols.append(arr[start:end])
+                    else:
+                        slc = [slice(None)] * arr.ndim
+                        slc[nb] = slice(start, end)
+                        new_in_cols.append(arr[tuple(slc)])
+                else:
+                    arr_j = jnp.asarray(arr)
+                    if arr_j.ndim == 1:
+                        # pyrefly: ignore [bad-argument-type]
+                        new_in_cols.append(arr_j[start:end])
+                    else:
+                        slc = [slice(None)] * arr_j.ndim
+                        slc[nb] = slice(start, end)
+                        # pyrefly: ignore [bad-argument-type]
+                        new_in_cols.append(arr_j[tuple(slc)])
+            out.append(BEllpack(
+                0, sz_i, tuple(new_in_cols), new_values,
+                sz_i, op.in_size, batch_shape=op.batch_shape,
+            ))
+            start = end
+        return out
+    # Structural path: split along output axis 0 (the "out_size" dim).
+    # For an unbatched BEllpack with static cols we slice the BE
+    # per-chunk (row range + per-band-col row-slice) and emit one
+    # proper BCOO per chunk. Going through `_to_bcoo` on the full BE
+    # and then masking out-of-range rows to `(row=0, value=0)` would
+    # leave zero-valued entries clogging row 0 of every chunk — those
+    # count as BCOO nse and manufacture "duplicates" at row 0 that
+    # propagate through every downstream add/concat (observed as
+    # COATING's 4.5× final nse bloat).
+    if (axis == 0
+            and op.n_batch == 0
+            and all(isinstance(c, np.ndarray) or isinstance(c, slice)
+                    for c in op.in_cols)):
+        out = []
+        start = 0
+        for sz in sizes:
+            sz_i = int(sz)
+            end = start + sz_i
+            # Row range [start, end) intersected with BE's own
+            # [start_row, end_row). Slice cols/values along the row axis.
+            be_start = max(op.start_row - start, 0)
+            be_end = min(op.end_row - start, sz_i)
+            if be_end <= be_start:
+                out.append(sparse.BCOO(
+                    # pyrefly: ignore [bad-argument-type]
+                    (jnp.zeros((0,), op.values.dtype),
+                     np.zeros((0, 2), np.int32)),
+                    shape=(sz_i, op.in_size),
+                ))
+                start = end
+                continue
+            row_lo = max(start, op.start_row) - op.start_row
+            row_hi = min(end, op.end_row) - op.start_row
+            new_in_cols = []
+            for c in op.in_cols:
+                if isinstance(c, slice):
+                    c = c
+                new_in_cols.append(c[row_lo:row_hi])
+            if op.k == 1:
+                new_values = op.values[row_lo:row_hi]
+            else:
+                new_values = op.values[row_lo:row_hi, :]
+            chunk_be = BEllpack(
+                be_start, be_end, tuple(new_in_cols), new_values,
+                sz_i, op.in_size,
+            )
+            # pyrefly: ignore [bad-argument-type]
+            out.append(chunk_be)
+            start = end
+        return out
+    # Fall through to BCOO-based split (handled in bcoo_extend.py for
+    # ConstantDiagonal/Diagonal/BCOO; for BEllpack fall through to dense).
+    from lineaxpr._linops import _to_bcoo  # noqa: PLC0415
+    if axis == 0:
+        bcoo = _to_bcoo(op, n)
+        rows = bcoo.indices[:, 0]
+        out = []
+        start = 0
+        for sz in sizes:
+            end = start + int(sz)
+            in_range = (rows >= start) & (rows < end)
+            new_rows = jnp.where(in_range, rows - start, 0)
+            new_data = jnp.where(in_range, bcoo.data,
+                                 jnp.zeros((), bcoo.data.dtype))
+            new_indices = jnp.stack(
+                [new_rows, bcoo.indices[:, 1]], axis=1
+            )
+            out.append(sparse.BCOO(
+                (new_data, new_indices), shape=(int(sz), bcoo.shape[1])
+            ))
+            start = end
+        return out
+    from lineaxpr._linops import _to_dense  # noqa: PLC0415
+    dense = _to_dense(op, n)
+    out = []
+    start = 0
+    for sz in sizes:
+        slc = [slice(None)] * dense.ndim
+        slc[axis] = slice(int(start), int(start) + int(sz))
+        out.append(dense[tuple(slc)])
+        start += int(sz)
+    return out

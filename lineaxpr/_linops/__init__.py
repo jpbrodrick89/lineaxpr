@@ -50,6 +50,7 @@ from .base import (
     scale_scalar,
     scatter_add_op,
     slice_op,
+    split_op,
     squeeze_op,
 
 )
@@ -86,6 +87,7 @@ __all__ = [
     "reduce_sum_op",
     "gather_op",
     "scatter_add_op",
+    "split_op",
     "ConstantDiagonal",
     "Diagonal",
     "Identity",
