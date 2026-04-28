@@ -35,7 +35,6 @@ from .materialize import (
     materialize,
     materialize_rules,
     sparsify,
-    _SMALL_N_VMAP_THRESHOLD,
 )
 
 from ._linops import (
@@ -63,6 +62,4 @@ __all__ = [
     "Diagonal",
     "BEllpack",
     "Identity",
-    # Internal threshold exposed for tests that want to override it
-    "_SMALL_N_VMAP_THRESHOLD",
 ]

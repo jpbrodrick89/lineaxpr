@@ -151,13 +151,6 @@ def sparsify(linear_fn):
     return inner
 
 
-_SMALL_N_VMAP_THRESHOLD = 16
-"""Deprecated: shortcut removed — all problems exercise the structural
-walk. Threshold retained as a sentinel so the `lineaxpr` re-export stays
-valid; no live code path uses it. Formerly: below this n,
-`vmap(linear_fn)(eye)` emits less HLO than the structural walk
-on most problems. Above it the walk's structure exploitation dominates."""
-
 
 _VALID_FORMATS = ("dense", "bcoo")
 
