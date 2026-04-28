@@ -51,7 +51,7 @@ from .base import (
     scatter_add_op,
     slice_op,
     squeeze_op,
-    transpose_op,
+
 )
 from .diagonal import ConstantDiagonal, Diagonal, Identity, _diag_to_bcoo
 from .ellpack import (
@@ -79,7 +79,7 @@ __all__ = [
     "slice_op",
     "pad_op",
     "cumsum_op",
-    "transpose_op",
+
     "reshape_op",
     "broadcast_in_dim_op",
     "reduce_sum_op",

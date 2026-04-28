@@ -15,7 +15,6 @@ from .base import (
     scale_scalar,
     slice_op,
     squeeze_op,
-    transpose_op,
 )
 
 
@@ -888,9 +887,3 @@ def _(op, *, n, **params):
     from lineaxpr._linops import _to_dense  # noqa: PLC0415
     dense = _to_dense(op, n)
     return lax.rev(dense, dimensions)
-
-
-@transpose_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
-def _(op, *, n, **params):
-    permutation = tuple(params["permutation"])
-    return op.transpose(permutation)

@@ -46,6 +46,8 @@ class LinOpProtocol(Protocol):
 
     def todense(self) -> jnp.ndarray: ...
 
+    def transpose(self, permutation): ...
+
 
 @singledispatch
 def negate(op) -> Any:
@@ -136,12 +138,6 @@ def cumsum_op(op, *, n, **params):
     return lax.cumsum(dense, axis=axis, reverse=reverse)
 
 
-@singledispatch
-def transpose_op(op, *, n, **params):
-    """Transpose output axes. Dense fallback."""
-    permutation = tuple(params["permutation"])
-    dense = _to_dense_base(op, n)
-    return lax.transpose(dense, permutation + (len(permutation),))
 
 
 @singledispatch

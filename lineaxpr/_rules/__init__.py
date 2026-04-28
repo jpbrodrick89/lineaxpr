@@ -28,7 +28,7 @@ from .._linops import (
     broadcast_in_dim_op as _broadcast_in_dim_rule,
     reduce_sum_op as _reduce_sum_rule,
     cumsum_op as _cumsum_rule,
-    transpose_op as _transpose_rule,
+
     gather_op as _gather_rule_dispatch,
     scatter_add_op as _scatter_add_rule_dispatch,
 )
@@ -52,5 +52,5 @@ __all__ = [
     "_jit_rule",
     "_squeeze_leading_ones",
     "_select_n_rule",
-    "_bellpack_row_sum", "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule", "_transpose_rule",
+    "_bellpack_row_sum", "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
 ]

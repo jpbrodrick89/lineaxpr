@@ -33,7 +33,6 @@ from .._linops import (
     scatter_add_op,
     slice_op,
     squeeze_op,
-    transpose_op,
 )
 from .._linops.base import negate as _negate_dispatch
 
@@ -219,6 +218,19 @@ except ImportError:
 materialize_rules[lax.select_n_p] = _select_n_rule
 materialize_rules[lax.cumsum_p] = _unary_rule(cumsum_op)
 materialize_rules[lax.div_p] = _div_rule
-materialize_rules[lax.transpose_p] = _unary_rule(transpose_op)
+def _transpose_rule(invals, traced, n, **params):
+    (op,) = invals
+    (t,) = traced
+    if not t:
+        return None
+    permutation = tuple(int(p) for p in params["permutation"])
+    from .._linops import LinOpProtocol, _to_dense  # noqa: PLC0415
+    from jax import lax as _lax  # noqa: PLC0415
+    if isinstance(op, LinOpProtocol):
+        return op.transpose(permutation)
+    dense = _to_dense(op, n)
+    return _lax.transpose(dense, permutation + (len(permutation),))
+
+materialize_rules[lax.transpose_p] = _transpose_rule
 materialize_rules[lax.gather_p] = _gather_rule
 materialize_rules[_slicing.scatter_add_p] = _scatter_add_rule

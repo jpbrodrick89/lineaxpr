@@ -47,6 +47,9 @@ class ConstantDiagonal:
     def to_bcoo(self):
         return _diag_to_bcoo(self.n, jnp.full((self.n,), self.value))
 
+    def transpose(self, permutation):
+        return self  # symmetric
+
 
 def Identity(n: int, dtype=None):
     """The n×n identity as a ConstantDiagonal(n, 1.0).
@@ -104,6 +107,9 @@ class Diagonal:
 
     def to_bcoo(self):
         return _diag_to_bcoo(self.n, self.values)
+
+    def transpose(self, permutation):
+        return self  # symmetric
 
 
 def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
