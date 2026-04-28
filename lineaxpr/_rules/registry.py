@@ -224,7 +224,7 @@ def _transpose_rule(invals, traced, n, **params):
         return None
     permutation = tuple(int(p) for p in params["permutation"])
     if isinstance(op, LinOpProtocol):
-        return op.transpose(permutation)
+        return op.transpose(axes=permutation)
     return lax.transpose(op, permutation + (len(permutation),))
 
 materialize_rules[lax.transpose_p] = _transpose_rule

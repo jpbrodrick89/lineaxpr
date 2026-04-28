@@ -263,7 +263,7 @@ class BEllpack:
                        new_out_size, self.in_size,
                        batch_shape=self.batch_shape)
 
-    def transpose(self, permutation):
+    def transpose(self, axes: tuple[int, ...] | None = None):
         """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.
 
         The returned BEllpack is structurally equivalent to
@@ -271,7 +271,7 @@ class BEllpack:
         without densifying.
         """
         nb = self.n_batch
-        permutation = tuple(int(p) for p in permutation)
+        permutation = tuple(int(p) for p in axes) if axes is not None else tuple(range(nb + 1))[::-1]
         assert len(permutation) == nb + 1
         old_sizes = self.batch_shape + (self.out_size,)
         new_sizes = tuple(old_sizes[p] for p in permutation)

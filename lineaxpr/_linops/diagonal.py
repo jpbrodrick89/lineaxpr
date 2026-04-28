@@ -54,7 +54,7 @@ class ConstantDiagonal:
     def to_bcoo(self):
         return _diag_to_bcoo(self.n, jnp.full((self.n,), self.value))
 
-    def transpose(self, permutation):
+    def transpose(self, axes: tuple[int, ...] | None = None):
         return self  # symmetric
 
 

@@ -7,7 +7,7 @@ to BCOO or ndarray at the public API boundary (`materialize`).
 
 1. Define the class in the appropriate module under `_linops/`. Give it the
    standard interface: `.shape`, `.dtype`, `.todense()`, `.to_bcoo()`,
-   `.transpose(permutation)`.
+   `.transpose(axes)`.
 2. Register singledispatch implementations for any ops it supports.
 3. Export the class from `lineaxpr/__init__.py`.
 4. In `_rules/`, `_add_rule`'s kind-dispatch uses `v.shape` directly.

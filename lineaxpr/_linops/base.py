@@ -21,7 +21,7 @@ bcoo_extend.py. The bases are plain-array fallbacks with no isinstance checks.
 from __future__ import annotations
 
 from functools import singledispatch
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -47,7 +47,7 @@ class LinOpProtocol(Protocol):
 
     def todense(self) -> jnp.ndarray: ...
 
-    def transpose(self, permutation): ...
+    def transpose(self, axes: Sequence[int] | None = None): ...
 
 
 @singledispatch
