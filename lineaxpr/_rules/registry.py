@@ -328,8 +328,28 @@ def _reshape_rule(invals, traced, n, **params):
 
 
 materialize_rules[lax.reshape_p] = _reshape_rule
-materialize_rules[lax.broadcast_in_dim_p] = _vmap_unary_rule(broadcast_in_dim_op,
-    strip=_vmap_strip(shape=_drop, broadcast_dimensions=_drop_decr))
+def _broadcast_in_dim_rule(invals, traced, n, **params):
+    """Translate jaxpr broadcast_in_dim params (n at jaxpr-output 0) to
+    walk-frame (n at -1)."""
+    (op,), (t,) = invals, traced
+    if not t:
+        return None
+    params.pop("_vmap_avals", None)
+    jaxpr_shape = tuple(params["shape"])
+    jaxpr_bd = tuple(int(d) for d in params["broadcast_dimensions"])
+    walk_shape = jaxpr_shape[1:] + (n,)
+    # jaxpr output dim d → walk dim: d==0 → ndim-1 (n at end); d>0 → d-1.
+    # vmap puts operand's n at jaxpr operand axis 0, mapped via bd[0] to
+    # jaxpr output axis 0 (always). Reorder so walk operand axes are
+    # (jaxpr operand 1+ then jaxpr operand 0).
+    walk_bd = tuple(b - 1 for b in jaxpr_bd[1:]) + (len(walk_shape) - 1,)
+    return broadcast_in_dim_op(
+        op, n=n,
+        **{**params, "shape": walk_shape, "broadcast_dimensions": walk_bd},
+    )
+
+
+materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
 materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op,
     strip=_vmap_strip(axes=_decr))
 materialize_rules[lax.concatenate_p] = _concatenate_rule_vmap

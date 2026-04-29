@@ -97,11 +97,13 @@ def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
 @broadcast_in_dim_op.register(jax.Array)
 @broadcast_in_dim_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
-    # Dense linear-form (n,)-ndarray broadcast to shape (1,) with empty bd:
+    # Walk-frame: shape ends in n, bd ends in n's mapping (== ndim_out-1).
+    # Strip both trailing entries for the spatial-only structural checks.
+    shape = tuple(params["shape"])[:-1]
+    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
+    # Dense linear-form (n,)-ndarray broadcast to spatial-shape (1,):
     # recover BCOO form so downstream rules see structure, not a dense row.
-    if broadcast_dimensions == () and tuple(shape) == (1,):
+    if broadcast_dimensions == () and shape == (1,):
         if op.ndim == 1 and op.shape[0] == n:
             zeros_row = jnp.zeros((n,), dtype=jnp.int32)
             cols = jnp.arange(n, dtype=jnp.int32)

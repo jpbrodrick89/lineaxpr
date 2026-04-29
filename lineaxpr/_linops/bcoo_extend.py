@@ -25,6 +25,7 @@ from .base import (
     split_op,
     squeeze_op,
 )
+from .dense import _bid_with_extra_batch
 
 
 @scale_scalar.register(sparse.BCOO)
@@ -213,11 +214,8 @@ def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
 
 @broadcast_in_dim_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
+    # for the spatial-only call to _bid_with_extra_batch.
+    shape = tuple(params["shape"])[:-1]
+    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)

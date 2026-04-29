@@ -26,6 +26,7 @@ from .base import (
     split_op,
     squeeze_op,
 )
+from .dense import _bid_with_extra_batch
 
 
 class ConstantDiagonal:
@@ -287,8 +288,10 @@ def _(op, *, n, **params):
 
 @broadcast_in_dim_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
+    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
+    # for the spatial-only structural checks below.
+    shape = tuple(params["shape"])[:-1]
+    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
     # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where all
     # non-n axes are size-1.
     if (len(broadcast_dimensions) == 1
@@ -328,18 +331,15 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
 @broadcast_in_dim_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
+    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
+    # for the spatial-only structural checks below.
+    shape = tuple(params["shape"])[:-1]
+    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
     if (len(broadcast_dimensions) == 1
             and shape[broadcast_dimensions[0]] == op.n
             and all(s == 1 for i, s in enumerate(shape)
@@ -377,12 +377,7 @@ def _(op, *, n, **params):
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
 @reduce_sum_op.register(ConstantDiagonal)

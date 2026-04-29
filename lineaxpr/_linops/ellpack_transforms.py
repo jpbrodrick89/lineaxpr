@@ -210,8 +210,10 @@ def _(op, *, n, **params):
 
 @broadcast_in_dim_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
+    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
+    # for the spatial-only structural checks below.
+    shape = tuple(params["shape"])[:-1]
+    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
 
     # Linear form (aval ()) broadcast to shape (1,): pass through BE row-vector.
     if (broadcast_dimensions == () and tuple(shape) == (1,)
