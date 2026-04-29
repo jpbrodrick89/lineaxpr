@@ -14,20 +14,6 @@ from .._linops import (
     LinOpProtocol,
 )
 from .mul import _mul_rule
-from .._linops.base import LinOpProtocol as _LinOpProtocol
-from .._linops.base import negate as _negate_dispatch
-
-
-def _neg_rule(invals, traced, n, **params):
-    """Local neg rule copy (avoids circular import with registry)."""
-    del params, n
-    (op,) = invals
-    (t,) = traced
-    if not t:
-        return None
-    if isinstance(op, _LinOpProtocol):
-        return _negate_dispatch(op)
-    return -op
 
 
 def _bcast(arr, shape):
@@ -83,13 +69,13 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
     remaining = letters[:c_be] + letters[c_be + 1:]
     k_let = "K" if k_old > 1 else ""
     eq = f"{letters}{k_let},{ctr}J->{remaining}J{k_let}{ctr}"
-    new_vals = jnp.einsum(eq, be.values, M_AB)
+    new_vals = jnp.einsum(eq, be.data, M_AB)
     if k_old > 1:
         new_vals = new_vals.reshape(new_aval + (k_old * A,))
 
     out_be = BEllpack(
         start_row=0, end_row=new_out,
-        in_cols=new_in_cols, values=new_vals,
+        in_cols=new_in_cols, data=new_vals,
         out_size=new_out, in_size=in_size, batch_shape=new_batch,
     )
     if not traced_is_first:
@@ -120,7 +106,7 @@ def _dot_general_rule(invals, traced, n, **params):
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
         if isinstance(traced_op, ConstantDiagonal):
-            return ConstantDiagonal(traced_op.n, M * traced_op.value)
+            return ConstantDiagonal(traced_op.n, M * traced_op.data)
         return M * traced_op
     if len(c_tr) == 0 and len(c_M) == 0:
         # Outer product. BE's trailing `n` axis stays last.
@@ -135,7 +121,7 @@ def _dot_general_rule(invals, traced, n, **params):
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
         tensor = lax.transpose(M, remaining + c_M)
-        return traced_op.value * tensor
+        return traced_op.data * tensor
 
     # vmap walk: jaxpr contraction dims are shifted by the vmap batch position
     # (bdim).  Translate to walk-space dims before delegating to dispatch/dense.
@@ -186,11 +172,8 @@ def _sub_rule(invals, traced, n, **params):
         # a is traced, b is closure. a - b is still linear with same A as a.
         return a if ta else None
     if not ta:
-        # -b only. Negate via _neg_rule equivalent.
-        return _neg_rule([b], [True], n)
-    # both traced
-    neg_b = _neg_rule([b], [True], n)
-    return _add_rule([a, neg_b], [True, True], n)
+        return -b
+    return _add_rule([a, -b], [True, True], n)
 
 
 def _div_rule(invals, traced, n, **params):

@@ -14,11 +14,10 @@ from .ellpack import BEllpack
 
 from .base import (
     broadcast_in_dim_op,
-    cumsum_op,
     gather_op,
-    negate,
     pad_op,
     reduce_sum_op,
+    replace_slots,
     reshape_op,
     rev_op,
     scale_per_out_row,
@@ -32,11 +31,11 @@ from .base import (
 class ConstantDiagonal:
     """Diagonal matrix with all entries equal to `value`."""
 
-    __slots__ = ("n", "value")
+    __slots__ = ("n", "data")
 
-    def __init__(self, n: int, value: Any = 1.0):
+    def __init__(self, n: int, data: Any = 1.0):
         self.n = n
-        self.value = value
+        self.data = data
 
     @property
     def shape(self):
@@ -44,18 +43,21 @@ class ConstantDiagonal:
 
     @property
     def dtype(self):
-        return jnp.asarray(self.value).dtype
+        return jnp.asarray(self.data).dtype
 
     def todense(self):
-        if isinstance(self.value, float) and self.value == 1.0:
+        if isinstance(self.data, float) and self.data == 1.0:
             return jnp.eye(self.n)
-        return self.value * jnp.eye(self.n)
+        return self.data * jnp.eye(self.n)
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self.n, jnp.full((self.n,), self.value))
+        return _diag_to_bcoo(self.n, jnp.full((self.n,), self.data))
 
     def transpose(self, axes: tuple[int, ...] | None = None):
         return self  # symmetric
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
 
 def Identity(n: int, dtype=None):
@@ -64,21 +66,21 @@ def Identity(n: int, dtype=None):
     The standard seed for `lineaxpr.sparsify` when extracting the full
     Jacobian of a linear function.
     """
-    value = jnp.asarray(1.0, dtype=dtype) if dtype is not None else 1.0
-    return ConstantDiagonal(n, value)
+    data = jnp.asarray(1.0, dtype=dtype) if dtype is not None else 1.0
+    return ConstantDiagonal(n, data)
 
 
 class Diagonal:
     """Diagonal matrix `diag(values)` for a length-n vector."""
 
-    __slots__ = ("values",)
+    __slots__ = ("data",)
 
-    def __init__(self, values):
-        self.values = values
+    def __init__(self, data):
+        self.data = data
 
     @property
     def n(self):
-        return self.values.shape[0]
+        return self.data.shape[0]
 
     @property
     def shape(self):
@@ -86,7 +88,7 @@ class Diagonal:
 
     @property
     def dtype(self):
-        return self.values.dtype
+        return self.data.dtype
 
     def todense(self):
         # `where(eye_bool, v[:, None], 0)` — same shape family as
@@ -108,15 +110,18 @@ class Diagonal:
         # numbers disagree; trust the clean Linux container.
         return jnp.where(
             jnp.eye(self.n, dtype=jnp.bool_),
-            self.values[:, None],
-            jnp.zeros((), self.values.dtype),
+            self.data[:, None],
+            jnp.zeros((), self.data.dtype),
         )
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self.n, self.values)
+        return _diag_to_bcoo(self.n, self.data)
 
     def transpose(self, axes: tuple[int, ...] | None = None):
         return self  # symmetric
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
 
 def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
@@ -129,34 +134,24 @@ def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
 
 # ---- singledispatch registrations ----
 
-@negate.register(ConstantDiagonal)
-def _(op):
-    return ConstantDiagonal(op.n, -op.value)
-
-
-@negate.register(Diagonal)
-def _(op):
-    return Diagonal(-op.values)
-
-
 @scale_scalar.register(ConstantDiagonal)
 def _(op, s):
-    return ConstantDiagonal(op.n, s * op.value)
+    return ConstantDiagonal(op.n, s * op.data)
 
 
 @scale_scalar.register(Diagonal)
 def _(op, s):
-    return Diagonal(s * op.values)
+    return Diagonal(s * op.data)
 
 
 @scale_per_out_row.register(ConstantDiagonal)
 def _(op, v):
-    return Diagonal(op.value * jnp.asarray(v))
+    return Diagonal(op.data * jnp.asarray(v))
 
 
 @scale_per_out_row.register(Diagonal)
 def _(op, v):
-    return Diagonal(op.values * jnp.asarray(v))
+    return Diagonal(op.data * jnp.asarray(v))
 
 
 # ---- unary structural op registrations ----
@@ -172,10 +167,10 @@ def _(op, *, n, **params):
         stride = strides[0]
         cols = np.arange(s, e, stride)
         k_out = len(cols)
-        values_b = jnp.broadcast_to(jnp.asarray(op.value), (k_out,))
+        data_b = jnp.broadcast_to(jnp.asarray(op.data), (k_out,))
         return BEllpack(
             start_row=0, end_row=k_out,
-            in_cols=(cols,), values=values_b,
+            in_cols=(cols,), data=data_b,
             out_size=k_out, in_size=op.n,
         )
     # Multi-dim: dense fallback
@@ -199,7 +194,7 @@ def _(op, *, n, **params):
         k_out = len(cols)
         return BEllpack(
             start_row=0, end_row=k_out,
-            in_cols=(cols,), values=op.values[s:e:stride],
+            in_cols=(cols,), data=op.data[s:e:stride],
             out_size=k_out, in_size=op.n,
         )
     dense = op.todense()
@@ -215,10 +210,10 @@ def _(op, *, n, **params):
     if not dimensions:
         return op
     if op.n == 1 and dimensions == (0,):
-        val = jnp.asarray(op.value).reshape(1)
+        val = jnp.asarray(op.data).reshape(1)
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(np.asarray([0]),), values=val,
+            in_cols=(np.asarray([0]),), data=val,
             out_size=1, in_size=1,
         )
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
@@ -232,7 +227,7 @@ def _(op, *, n, **params):
     if op.n == 1 and dimensions == (0,):
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(np.asarray([0]),), values=op.values,
+            in_cols=(np.asarray([0]),), data=op.data,
             out_size=1, in_size=1,
         )
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
@@ -247,7 +242,7 @@ def _(op, *, n, **params):
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
     if dimensions == (0,):
-        return Diagonal(op.values[::-1])
+        return Diagonal(op.data[::-1])
     return op
 
 
@@ -258,10 +253,10 @@ def _(op, *, n, **params):
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
         flat_idx = np.arange(op.n).reshape(new_sizes)
-        values = jnp.broadcast_to(jnp.asarray(op.value), new_sizes)
+        data = jnp.broadcast_to(jnp.asarray(op.data), new_sizes)
         return BEllpack(
             start_row=0, end_row=nrows,
-            in_cols=(flat_idx,), values=values,
+            in_cols=(flat_idx,), data=data,
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
@@ -276,10 +271,10 @@ def _(op, *, n, **params):
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
         flat_idx = np.arange(op.n).reshape(new_sizes)
-        values = op.values.reshape(new_sizes)
+        data = op.data.reshape(new_sizes)
         return BEllpack(
             start_row=0, end_row=nrows,
-            in_cols=(flat_idx,), values=values,
+            in_cols=(flat_idx,), data=data,
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
@@ -300,7 +295,7 @@ def _(op, *, n, **params):
         bcast_axis = broadcast_dimensions[0]
         leading_singletons = tuple(shape[:bcast_axis])
         trailing_singletons = tuple(shape[bcast_axis + 1:])
-        v = jnp.broadcast_to(jnp.asarray(op.value), (op.n,))
+        v = jnp.broadcast_to(jnp.asarray(op.data), (op.n,))
         if not trailing_singletons:
             cols = (np.arange(op.n),)
             new_values = jnp.broadcast_to(
@@ -309,7 +304,7 @@ def _(op, *, n, **params):
             )
             return BEllpack(
                 start_row=0, end_row=op.n,
-                in_cols=cols, values=new_values,
+                in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
             )
@@ -326,7 +321,7 @@ def _(op, *, n, **params):
         ).reshape(new_batch + (1,))
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(cols_full[..., None],), values=new_values,
+            in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
@@ -349,7 +344,7 @@ def _(op, *, n, **params):
         bcast_axis = broadcast_dimensions[0]
         leading_singletons = tuple(shape[:bcast_axis])
         trailing_singletons = tuple(shape[bcast_axis + 1:])
-        v = op.values
+        v = op.data
         if not trailing_singletons:
             cols = (np.arange(op.n),)
             new_values = jnp.broadcast_to(
@@ -358,7 +353,7 @@ def _(op, *, n, **params):
             )
             return BEllpack(
                 start_row=0, end_row=op.n,
-                in_cols=cols, values=new_values,
+                in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
             )
@@ -375,7 +370,7 @@ def _(op, *, n, **params):
         ).reshape(new_batch + (1,))
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(cols_full[..., None],), values=new_values,
+            in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
         )
@@ -415,19 +410,19 @@ def _(op, *, n, start_indices, **params):
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
-    vals = jnp.broadcast_to(jnp.asarray(op.value), batch_shape + (N,))
+    vals = jnp.broadcast_to(jnp.asarray(op.data), batch_shape + (N,))
     if point_gather_kept:
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=(row_idx[..., None],),
-            values=vals[..., None],
+            data=vals[..., None],
             out_size=1, in_size=op.n,
             batch_shape=batch_shape + (N,),
         )
     return BEllpack(
         start_row=0, end_row=N,
         in_cols=(row_idx,),
-        values=vals,
+        data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
     )
@@ -480,19 +475,19 @@ def _(op, *, n, start_indices, **params):
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
-    vals = jnp.take(op.values, row_idx)
+    vals = jnp.take(op.data, row_idx)
     if point_gather_kept:
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=(row_idx[..., None],),
-            values=vals[..., None],
+            data=vals[..., None],
             out_size=1, in_size=op.n,
             batch_shape=batch_shape + (N,),
         )
     return BEllpack(
         start_row=0, end_row=N,
         in_cols=(row_idx,),
-        values=vals,
+        data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
     )
@@ -505,10 +500,3 @@ def _(op, *, n, padding_value, **params) -> jax.Array:
     dense = op.todense()
     full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
     return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
-
-
-@cumsum_op.register(ConstantDiagonal)
-@cumsum_op.register(Diagonal)
-def _(op, *, n, **params) -> jax.Array:
-    return lax.cumsum(op.todense(), axis=params["axis"],
-                      reverse=params.get("reverse", False))

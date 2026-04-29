@@ -31,11 +31,8 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
-    ConstantDiagonal,
-    Diagonal,
     LinOpProtocol,
     broadcast_in_dim_op,
-    cumsum_op,
     gather_op,
     pad_op,
     reduce_sum_op,
@@ -45,8 +42,11 @@ from .._linops import (
     slice_op,
     split_op,
     squeeze_op,
+    replace_slots,
 )
-from .._linops.base import negate as _negate_dispatch
+from jax.experimental.sparse.transform import (
+    _zero_preserving_linear_unary_primitives,
+)
 
 __all__ = [
     "materialize_rules",
@@ -97,20 +97,24 @@ def _vmap_unary_rule(dispatch_fn, strip=None):
 # Unchanged rules (no axis params)
 # ---------------------------------------------------------------------------
 
-def _identity_rule(invals, traced, n, **params):
-    del params
-    (op,), (t,) = invals, traced
-    return op if t else None
+def _make_zero_preserving_linear_unary_rule(prim):
+    """Mirror of `jax.experimental.sparse.transform._zero_preserving_unary_op`.
 
-
-def _neg_rule(invals, traced, n, **params):
-    del params, n
-    (op,), (t,) = invals, traced
-    if not t:
-        return None
-    if isinstance(op, LinOpProtocol):
-        return _negate_dispatch(op)
-    return -op
+    Pushes a primitive through any LinOp by applying it to `op.data`
+    and rebuilding the same form via `replace_slots` (which handles
+    both our `__slots__` LinOps and BCOO's `__dict__`-backed storage
+    uniformly).
+    """
+    def rule(invals, traced, n, **params):
+        del n
+        params.pop("_vmap_avals", None)
+        (op,), (t,) = invals, traced
+        if not t:
+            return None
+        if isinstance(op, LinOpProtocol):
+            return replace_slots(op, data=prim.bind(op.data, **params))
+        return prim.bind(op, **params)
+    return rule
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +291,17 @@ try:
 except ImportError:
     pass
 
-materialize_rules[lax.convert_element_type_p] = _identity_rule
-materialize_rules[lax.copy_p] = _identity_rule
-materialize_rules[lax.neg_p] = _neg_rule
+# Bulk-register the zero-preserving linear unary family (neg, copy, conj,
+# real, imag — whatever the upstream sparsify list contains). Each rule
+# applies the primitive to `.data` and rebuilds the LinOp via `replace_slots`.
+# Mirrors the upstream pattern at jax.experimental.sparse.transform:539–541.
+for _prim in _zero_preserving_linear_unary_primitives:
+    materialize_rules[_prim] = _make_zero_preserving_linear_unary_rule(_prim)
+# convert_element_type_p has a `new_dtype` param and isn't in upstream's
+# list, but the same body works (data dtype follows the primitive output).
+materialize_rules[lax.convert_element_type_p] = (
+    _make_zero_preserving_linear_unary_rule(lax.convert_element_type_p)
+)
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
 materialize_rules[lax.slice_p] = _vmap_unary_rule(slice_op,
@@ -322,11 +334,38 @@ except ImportError:
     pass
 
 materialize_rules[lax.select_n_p] = _select_n_rule
-materialize_rules[lax.cumsum_p] = _vmap_unary_rule(cumsum_op,
-    strip=_vmap_strip(axis=_decr))
+
+
+def _cumsum_rule(invals, traced, n, **params):
+    """cumsum: densify any LinOp and call lax.cumsum.
+
+    No structural sparsity-preserving path exists; every prior format
+    registration was identical to this dense fallback, so they were
+    deleted along with the cumsum_op singledispatch.
+    """
+    del n
+    (op,), (t,) = invals, traced
+    if not t:
+        return None
+    params.pop("_vmap_avals", None)
+    if isinstance(op, LinOpProtocol):
+        op = op.todense()
+    return lax.cumsum(op, axis=int(params["axis"]) - 1,
+                      reverse=params.get("reverse", False))
+
+
+materialize_rules[lax.cumsum_p] = _cumsum_rule
 materialize_rules[lax.div_p] = _div_rule
 
 def _transpose_rule(invals, traced, n, **params):
+    """Translate a jaxpr permutation to walk-frame, then dispatch to `.transpose`.
+
+    Walk frame fixes n at dim -1; jaxpr can have it at `bdim` (usually 0
+    after vmap, but `dot_general` can shift it). We rewrite perm into
+    walk axes so n's output dim disappears (it's appended at -1), then
+    every form (LinOp, BCOO, jax.Array) handles `.transpose(walk_perm)`
+    uniformly — BEllpack auto-strips the trailing in-axis identity entry.
+    """
     (op,), (t,) = invals, traced
     if not t:
         return None
@@ -334,54 +373,37 @@ def _transpose_rule(invals, traced, n, **params):
     perm = tuple(int(p) for p in params["permutation"])
     ndim = len(perm)
 
-    # Find bdim: which jaxpr dim holds n.  Normally 0 (vmap prepends n),
-    # but dot_general can leave n at a non-zero position.
     traced_aval = vmap_avals[0] if vmap_avals else None
     bdim = 0
     if traced_aval is not None:
-        try:
-            bdim = next(i for i, s in enumerate(traced_aval) if int(s) == n)
-        except StopIteration:
-            bdim = 0
+        bdim = next((i for i, s in enumerate(traced_aval) if int(s) == n), 0)
 
-    # General algorithm: translate jaxpr permutation → walk permutation.
-    #
-    # The jaxpr permutation acts on (dim_0, ..., n_at_bdim, ..., dim_{ndim-1}).
-    # Our walk has n at dim -1: (non_n_dims..., n).
-    #
-    # Mapping jaxpr dim d → walk dim:
-    #   d < bdim  →  d          (unchanged)
-    #   d == bdim →  ndim-1     (n is at last in walk)
-    #   d > bdim  →  d - 1      (shift down past the missing bdim slot)
-    #
-    # walk_perm[j] = walk_dim(perm[jaxpr_output_pos])
-    # where the jaxpr output positions excluding n's output position
-    # map in order to walk output positions 0..ndim-2, with n at ndim-1.
+    # jaxpr dim → walk dim: bdim → ndim-1, others shift down past bdim.
+    def to_walk(d):
+        return ndim - 1 if d == bdim else d - (d > bdim)
 
-    def jaxpr_to_walk_dim(d):
-        if d == bdim:
-            return ndim - 1
-        return d if d < bdim else d - 1
-
-    n_out_jaxpr = perm.index(bdim)  # which jaxpr output dim receives n
-    walk_perm_list = []
-    for j in range(ndim):
-        if j == n_out_jaxpr:
-            continue  # n's output slot — handled by appending ndim-1 at end
-        walk_perm_list.append(jaxpr_to_walk_dim(perm[j]))
-    walk_perm_list.append(ndim - 1)  # n always last in walk
-    walk_perm = tuple(walk_perm_list)
+    n_out = perm.index(bdim)
+    walk_perm = tuple(to_walk(perm[j]) for j in range(ndim) if j != n_out) + (ndim - 1,)
 
     if walk_perm == tuple(range(ndim)):
-        return op  # identity
-
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        # BEllpack.transpose takes permutation of (*batch, out) only — no n.
-        return op.transpose(axes=walk_perm[:-1])
-    dense = op.todense() if isinstance(op, LinOpProtocol) else op
-    if len(walk_perm) == dense.ndim:
-        return lax.transpose(dense, walk_perm)
-    return lax.transpose(dense, walk_perm + (len(walk_perm),))
+        return op
+    # BCOO's native transpose disallows permutations that mix batch/sparse/
+    # dense axes (see jax.experimental.sparse.bcoo._validate_permutation).
+    # Use it when allowed, densify only when the perm crosses a boundary.
+    # TODO: once the internal Csr LinOp lands (docs/TODO.md §2), route this
+    # densify branch through BCOO → Csr → relabeled transpose to preserve
+    # sparsity for cross-boundary perms.
+    if isinstance(op, sparse.BCOO):
+        n_batch = op.indices.ndim - 2
+        n_sparse = op.indices.shape[-1]
+        batch_ok = (not n_batch
+                    or tuple(sorted(walk_perm[:n_batch])) == tuple(range(n_batch)))
+        dense_ok = (len(walk_perm) == n_batch + n_sparse
+                    or tuple(sorted(walk_perm[n_batch + n_sparse:]))
+                       == tuple(range(n_batch + n_sparse, len(walk_perm))))
+        if not (batch_ok and dense_ok):
+            op = op.todense()
+    return op.transpose(walk_perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 
 materialize_rules[lax.gather_p] = _gather_rule

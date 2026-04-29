@@ -56,7 +56,7 @@ def test_constant_diagonal_seed_scales_output():
         return 3.0 * x
 
     out_identity = _to_dense(sparsify(lin)(Identity(n, dtype=jnp.float64)))
-    out_scaled = _to_dense(sparsify(lin)(ConstantDiagonal(n, value=2.0)))
+    out_scaled = _to_dense(sparsify(lin)(ConstantDiagonal(n, data=2.0)))
     np.testing.assert_allclose(
         np.asarray(out_scaled), 2.0 * np.asarray(out_identity), atol=1e-12
     )

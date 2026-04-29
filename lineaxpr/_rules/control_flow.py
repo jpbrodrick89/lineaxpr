@@ -133,12 +133,12 @@ def _select_n_rule(invals, traced, n, **params):
         if isinstance(t_case, ConstantDiagonal):
             t_case = BEllpack(
                 0, t_case.n, (np.arange(t_case.n),),
-                jnp.broadcast_to(jnp.asarray(t_case.value), (t_case.n,)),
+                jnp.broadcast_to(jnp.asarray(t_case.data), (t_case.n,)),
                 t_case.n, t_case.n,
             )
         elif isinstance(t_case, Diagonal):
             t_case = BEllpack(
-                0, t_case.n, (np.arange(t_case.n),), t_case.values,
+                0, t_case.n, (np.arange(t_case.n),), t_case.data,
                 t_case.n, t_case.n,
             )
         # BCOO: mask data entries by row-predicate.
@@ -164,7 +164,7 @@ def _select_n_rule(invals, traced, n, **params):
                 mask = (pred_slice == t_idx)
                 if t_case.k >= 2:
                     mask = mask[..., None]
-            new_values = jnp.where(mask, t_case.values,
+            new_values = jnp.where(mask, t_case.data,
                                    jnp.zeros((), t_case.dtype))
             return BEllpack(
                 t_case.start_row, t_case.end_row, t_case.in_cols,
@@ -199,14 +199,14 @@ def _select_n_rule(invals, traced, n, **params):
                 pred_b = pred_arr
             else:
                 pred_slice = pred_arr[first.start_row:first.end_row]
-                pred_b = pred_slice[:, None] if first.values.ndim > 1 else pred_slice
+                pred_b = pred_slice[:, None] if first.data.ndim > 1 else pred_slice
             # select_n with bool pred: cases[0] when pred is False, cases[1] when True
             # (matching lax.select_n semantics for 2-case).
             if len(cases) == 2:
-                new_values = jnp.where(pred_b, cases[1].values, cases[0].values)
+                new_values = jnp.where(pred_b, cases[1].data, cases[0].data)
             else:
                 # N-way: use lax.select_n on stacked values.
-                stacked = jnp.stack([c.values for c in cases], axis=0)
+                stacked = jnp.stack([c.data for c in cases], axis=0)
                 new_values = lax.select_n(pred_b, *[stacked[i] for i in range(len(cases))])
             return BEllpack(
                 first.start_row, first.end_row, first.in_cols,

@@ -13,8 +13,8 @@ from jax.experimental import sparse
 ColArr = np.ndarray | jax.Array
 
 from .base import (
-    negate,
     pad_op,
+    replace_slots,
     rev_op,
     scale_per_out_row,
     scale_scalar,
@@ -61,28 +61,28 @@ class BEllpack:
     output (downstream `segment_sum` dedups).
     """
 
-    __slots__ = ("start_row", "end_row", "in_cols", "values",
+    __slots__ = ("start_row", "end_row", "in_cols", "data",
                  "out_size", "in_size", "batch_shape")
 
     start_row: int
     end_row: int
     in_cols: tuple[ColArr, ...]
-    values: jax.Array
+    data: jax.Array
     out_size: int
     in_size: int
     batch_shape: tuple[int, ...]
 
     def __init__(self, start_row: int, end_row: int,
                  in_cols: tuple[ColArr, ...] | list[ColArr],
-                 values: jax.Array,
+                 data: jax.Array,
                  out_size: int, in_size: int,
                  batch_shape: tuple[int, ...] = ()):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
         self.batch_shape = tuple(int(d) for d in batch_shape)
-        self.values = _normalize_values(
-            values, len(self.in_cols), self.batch_shape,
+        self.data = _normalize_data(
+            data, len(self.in_cols), self.batch_shape,
             self.end_row - self.start_row,
         )
         self.out_size = int(out_size)
@@ -118,15 +118,15 @@ class BEllpack:
         return self.nrows * self.k
 
     @property
-    def values_2d(self):
-        """values always in (*batch, nrows, k) shape regardless of k."""
-        if self.values.ndim == self.n_batch + 1:  # k==1
-            return self.values[..., None]
-        return self.values
+    def data_2d(self):
+        """data always in (*batch, nrows, k) shape regardless of k."""
+        if self.data.ndim == self.n_batch + 1:  # k==1
+            return self.data[..., None]
+        return self.data
 
     @property
     def dtype(self):
-        return self.values.dtype
+        return self.data.dtype
 
     def todense(self):
         # K=1 retains the old single-scatter form (already optimal — no
@@ -147,10 +147,10 @@ class BEllpack:
             cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
                 return dense.at[rows_1d, cols_b].add(
-                    self.values, unique_indices=True, indices_are_sorted=True)
+                    self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_b >= 0
             safe_cols = jnp.where(mask, cols_b, 0)
-            safe_vals = jnp.where(mask, self.values,
+            safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
             return dense.at[rows_1d, safe_cols].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
@@ -164,10 +164,10 @@ class BEllpack:
             static_ok = False
         rows_nk = np.broadcast_to(rows_1d[:, None], (self.nrows, k))
         if static_ok:
-            return dense.at[rows_nk, cols_nk].add(self.values)
+            return dense.at[rows_nk, cols_nk].add(self.data)
         mask = cols_nk >= 0
         safe_cols = jnp.where(mask, cols_nk, 0)
-        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
+        safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
         return dense.at[rows_nk, safe_cols].add(safe_vals)
 
     def _todense_batched(self):
@@ -189,10 +189,10 @@ class BEllpack:
                 cols_nd = jnp.asarray(cols_b)
             if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
                 return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(
-                    self.values, unique_indices=True, indices_are_sorted=True)
+                    self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_nd >= 0
             safe_cols = jnp.where(mask, cols_nd, 0)
-            safe_vals = jnp.where(mask, self.values,
+            safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
             return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
@@ -221,11 +221,14 @@ class BEllpack:
         batch_idx_k = tuple(_expand(a) for a in batch_idx_arrays)
         row_idx_k = _expand(row_idx)
         if static_ok:
-            return out.at[batch_idx_k + (row_idx_k, cols_ndk)].add(self.values)
+            return out.at[batch_idx_k + (row_idx_k, cols_ndk)].add(self.data)
         mask = cols_ndk >= 0
         safe_cols = jnp.where(mask, cols_ndk, 0)
-        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
+        safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
         return out.at[batch_idx_k + (row_idx_k, safe_cols)].add(safe_vals)
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
     def to_bcoo(self):
         return _ellpack_to_bcoo(self)
@@ -239,7 +242,7 @@ class BEllpack:
         trim_top = max(0, -new_start)
         trim_bottom = max(0, new_end - new_out_size)
         if trim_top == 0 and trim_bottom == 0:
-            return BEllpack(new_start, new_end, self.in_cols, self.values,
+            return BEllpack(new_start, new_end, self.in_cols, self.data,
                            new_out_size, self.in_size,
                            batch_shape=self.batch_shape)
         nrows_old = self.nrows
@@ -255,9 +258,9 @@ class BEllpack:
         new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
         # Slice values along the nrows axis (after batch dims).
         if self.n_batch == 0:
-            new_values = self.values[lo:hi]
+            new_values = self.data[lo:hi]
         else:
-            new_values = self.values[(slice(None),) * self.n_batch + (slice(lo, hi),)]
+            new_values = self.data[(slice(None),) * self.n_batch + (slice(lo, hi),)]
         return BEllpack(new_start + lo, new_end - trim_bottom,
                        new_in_cols, new_values,
                        new_out_size, self.in_size,
@@ -266,12 +269,19 @@ class BEllpack:
     def transpose(self, axes: tuple[int, ...] | None = None):
         """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.
 
-        The returned BEllpack is structurally equivalent to
-        `jnp.transpose(self.todense(), permutation + (ndim-1,))` but
-        without densifying.
+        Accepts `axes` of length `n_batch + 1` (just `(*batch, out)`) or
+        the full `n_batch + 2` (with the trailing in-axis), in which case
+        the last entry must already be that in-axis (n stays last). The
+        returned BEllpack is structurally equivalent to
+        `jnp.transpose(self.todense(), axes)` without densifying.
         """
         nb = self.n_batch
         permutation = tuple(int(p) for p in axes) if axes is not None else tuple(range(nb + 1))[::-1]
+        if len(permutation) == nb + 2:
+            assert permutation[-1] == nb + 1, (
+                f"BEllpack.transpose: in-axis must stay last, got {permutation}"
+            )
+            permutation = permutation[:-1]
         assert len(permutation) == nb + 1
         old_sizes = self.batch_shape + (self.out_size,)
         new_sizes = tuple(old_sizes[p] for p in permutation)
@@ -286,7 +296,7 @@ class BEllpack:
                 val_perm = batch_perm + (nb,)
             else:
                 val_perm = batch_perm + (nb, nb + 1)
-            new_values = jnp.transpose(self.values, val_perm)
+            new_values = jnp.transpose(self.data, val_perm)
             new_in_cols = tuple(
                 _transpose_col_batch(c, batch_perm) for c in self.in_cols
             )
@@ -302,11 +312,11 @@ class BEllpack:
         pad_after = out_size - self.end_row
         if self.k == 1:
             val_pad = [(0, 0)] * nb + [(pad_before, pad_after)]
-            values_full = jnp.pad(self.values, val_pad)
+            values_full = jnp.pad(self.data, val_pad)
             new_values = jnp.transpose(values_full, permutation)
         else:
             val_pad = [(0, 0)] * nb + [(pad_before, pad_after), (0, 0)]
-            values_full = jnp.pad(self.values, val_pad)
+            values_full = jnp.pad(self.data, val_pad)
             new_values = jnp.transpose(values_full, permutation + (nb + 1,))
 
         new_in_cols = tuple(
@@ -364,8 +374,8 @@ def _transpose_col_full(col, batch_shape, start_row, end_row, out_size,
     return jnp.transpose(padded, permutation)
 
 
-def _normalize_values(values, k: int, batch_shape=(), nrows=None):
-    """Coerce a user-supplied `values` into the canonical hybrid layout.
+def _normalize_data(data, k: int, batch_shape=(), nrows=None):
+    """Coerce a user-supplied `data` into the canonical hybrid layout.
 
     Accepts:
       - 1D `jnp.ndarray` (only when k==1 and batch_shape==()).
@@ -376,23 +386,23 @@ def _normalize_values(values, k: int, batch_shape=(), nrows=None):
         `(*B, nrows, k)` when k>=2, or a tuple of k `(*B, nrows)` arrays.
     """
     n_batch = len(batch_shape)
-    if isinstance(values, tuple):
+    if isinstance(data, tuple):
         if k == 1:
-            assert len(values) == 1, f"k=1 but got {len(values)} bands"
-            return jnp.asarray(values[0])
-        assert len(values) == k, f"k={k} but got {len(values)} bands"
+            assert len(data) == 1, f"k=1 but got {len(data)} bands"
+            return jnp.asarray(data[0])
+        assert len(data) == k, f"k={k} but got {len(data)} bands"
         # Each band has shape (*batch_shape, nrows) → stack on last axis.
-        return jnp.stack(list(values), axis=-1)
-    arr = jnp.asarray(values)
+        return jnp.stack(list(data), axis=-1)
+    arr = jnp.asarray(data)
     if k == 1:
         assert arr.ndim == n_batch + 1, (
-            f"k=1 with batch_shape={batch_shape} needs ndim={n_batch+1} values, "
+            f"k=1 with batch_shape={batch_shape} needs ndim={n_batch+1} data, "
             f"got shape {arr.shape}"
         )
     else:
         assert arr.ndim == n_batch + 2 and arr.shape[-1] == k, (
             f"k={k} with batch_shape={batch_shape} needs "
-            f"(*batch, nrows, k) values, got shape {arr.shape}"
+            f"(*batch, nrows, k) data, got shape {arr.shape}"
         )
     return arr
 
@@ -434,19 +444,19 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
             if (cols_b >= 0).all():
                 indices = np.stack([rows_1d, cols_b], axis=1)
                 # pyrefly: ignore [bad-argument-type]
-                return sparse.BCOO((e.values, indices), shape=e.shape,
+                return sparse.BCOO((e.data, indices), shape=e.shape,
                                    indices_sorted=True, unique_indices=True)
             keep = np.nonzero(cols_b >= 0)[0]
             indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
             # pyrefly: ignore [bad-argument-type]
-            return sparse.BCOO((jnp.take(e.values, keep), indices),
+            return sparse.BCOO((jnp.take(e.data, keep), indices),
                                shape=e.shape,
                                indices_sorted=True, unique_indices=True)
         # Traced cols — mask values.
         cols_j = jnp.asarray(cols_b)
         mask = cols_j >= 0
         cols_safe = jnp.where(mask, cols_j, 0)
-        vals_safe = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        vals_safe = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
         indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
         return sparse.BCOO((vals_safe, indices), shape=e.shape,
                            indices_sorted=True, unique_indices=True)
@@ -473,7 +483,7 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         # Static cols: always vectorize (any K, any nrows).
         rows_flat = np.concatenate([rows_1d] * k)
         cols_flat = np.concatenate(per_band_cols)
-        vals_flat = e.values.T.reshape(-1)
+        vals_flat = e.data.T.reshape(-1)
         mask = cols_flat >= 0
         if mask.all():
             indices = np.stack([rows_flat, cols_flat], axis=1)
@@ -493,7 +503,7 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
             mask = cols_j >= 0
             rows_parts.append(jnp.asarray(rows_1d))
             cols_parts.append(jnp.where(mask, cols_j, 0))
-            vals_parts.append(jnp.where(mask, e.values[:, b],
+            vals_parts.append(jnp.where(mask, e.data[:, b],
                                         jnp.zeros((), e.dtype)))
         rows_flat = jnp.concatenate(rows_parts)
         cols_flat = jnp.concatenate(cols_parts)
@@ -506,7 +516,7 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     # intermediate stack+reshape.
     rows_flat_np = np.concatenate([rows_1d] * k)
     cols_flat = jnp.concatenate(per_band_cols)             # band-major
-    vals_flat = e.values.T.reshape(-1)                     # band-major
+    vals_flat = e.data.T.reshape(-1)                     # band-major
     mask = cols_flat >= 0
     cols_safe = jnp.where(mask, cols_flat, 0)
     vals_safe = jnp.where(mask, vals_flat, jnp.zeros((), e.dtype))
@@ -582,10 +592,10 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
             safe_cols = np.where(sentinel_mask, 0, cols_bb)
             # Values in band-major order to match `cols_bb`.
             if k == 1:
-                vals_bb = e.values
+                vals_bb = e.data
             else:
                 nb = len(B)
-                vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+                vals_bb = jnp.moveaxis(e.data, -1, nb).reshape(
                     B + (nrows * k,)
                 )
             safe_vals = jnp.where(
@@ -613,10 +623,10 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         residual_mask = cols_pruned < 0
         safe_cols_pruned = np.where(residual_mask, 0, cols_pruned)
         if k == 1:
-            vals_bb = e.values
+            vals_bb = e.data
         else:
             nb = len(B)
-            vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+            vals_bb = jnp.moveaxis(e.data, -1, nb).reshape(
                 B + (nrows * k,)
             )
         vals_pruned = jnp.take_along_axis(
@@ -654,7 +664,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         cols = resolve_to_batch(per_band[0])
         mask = cols >= 0
         safe_cols = jnp.where(mask, cols, 0)
-        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        safe_vals = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
         rows_per_batch = jnp.asarray(rows_broad)
         indices = jnp.stack([rows_per_batch, safe_cols], axis=-1)
         data = safe_vals
@@ -666,7 +676,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         )
         mask = cols_stacked >= 0
         safe_cols = jnp.where(mask, cols_stacked, 0)
-        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        safe_vals = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
         indices = jnp.stack(
             [rows_stacked.reshape(B + (nse,)),
              safe_cols.reshape(B + (nse,))],
@@ -683,17 +693,10 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
 
 # ---- singledispatch registrations ----
 
-@negate.register(BEllpack)
-def _(op):
-    return BEllpack(op.start_row, op.end_row, op.in_cols,
-                   -op.values, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
-
-
 @scale_scalar.register(BEllpack)
 def _(op, s):
     return BEllpack(op.start_row, op.end_row, op.in_cols,
-                   s * op.values, op.out_size, op.in_size,
+                   s * op.data, op.out_size, op.in_size,
                    batch_shape=op.batch_shape)
 
 
@@ -712,10 +715,10 @@ def _(op, v):
         v_slice = v_arr[op.start_row:op.end_row]
     # values shape: (*batch, nrows) for k=1, (*batch, nrows, k) for k>=2.
     # v_slice shape: (*batch, nrows). For k>=2 broadcast a trailing axis.
-    if op.values.ndim == op.n_batch + 1:  # k=1
-        scaled = v_slice * op.values
+    if op.data.ndim == op.n_batch + 1:  # k=1
+        scaled = v_slice * op.data
     else:
-        scaled = v_slice[..., None] * op.values
+        scaled = v_slice[..., None] * op.data
     return BEllpack(op.start_row, op.end_row, op.in_cols,
                    scaled, op.out_size, op.in_size,
                    batch_shape=op.batch_shape)
@@ -742,8 +745,8 @@ def _(op, *, n, **params):
         batch_slicer = tuple(slice(int(s), int(e))
                              for s, e in zip(starts[:-1], limits[:-1]))
         out_start, out_limit = int(starts[-1]), int(limits[-1])
-        tail = (slice(None),) * (op.values.ndim - op.n_batch)
-        new_values = op.values[batch_slicer + tail]
+        tail = (slice(None),) * (op.data.ndim - op.n_batch)
+        new_values = op.data[batch_slicer + tail]
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if hasattr(c, "ndim") and c.ndim > 1:
@@ -787,8 +790,8 @@ def _(op, *, n, padding_value, **params):
         new_batch_shape = tuple(
             b + s + a for (b, a), s in zip(batch_pads, op.batch_shape)
         )
-        tail_pad = ((0, 0),) * (op.values.ndim - op.n_batch)
-        new_values = jnp.pad(op.values, batch_pads + tail_pad)
+        tail_pad = ((0, 0),) * (op.data.ndim - op.n_batch)
+        new_values = jnp.pad(op.data, batch_pads + tail_pad)
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if hasattr(c, "ndim") and c.ndim > 1:
@@ -837,9 +840,9 @@ def _(op, *, n, **params):
             and dimensions == (op.n_batch,)):
         B = int(np.prod(op.batch_shape))
         if op.k == 1:
-            new_values = op.values.reshape(B)
+            new_values = op.data.reshape(B)
         else:
-            new_values = op.values.reshape(B, op.k)
+            new_values = op.data.reshape(B, op.k)
         new_in_cols: list[ColArr] = []
         ok = True
         for c in op.in_cols:
@@ -863,7 +866,7 @@ def _(op, *, n, **params):
         if ok:
             return BEllpack(
                 start_row=0, end_row=B,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=B, in_size=op.in_size,
             )
     # Densify (sparse → (out_size, in_size)) then squeeze.
@@ -877,7 +880,7 @@ def _(op, *, n, **params):
     if op.n_batch == 0 and dimensions == (0,):
         new_start = op.out_size - op.end_row
         new_end = op.out_size - op.start_row
-        new_values = jnp.flip(op.values, axis=0)
+        new_values = jnp.flip(op.data, axis=0)
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if isinstance(c, np.ndarray):
@@ -886,7 +889,7 @@ def _(op, *, n, **params):
                 new_in_cols.append(jnp.flip(c, axis=0))  # pyrefly: ignore [bad-argument-type]
         return BEllpack(
             start_row=new_start, end_row=new_end,
-            in_cols=tuple(new_in_cols), values=new_values,
+            in_cols=tuple(new_in_cols), data=new_values,
             out_size=op.out_size, in_size=op.in_size,
         )
     dense = op.todense()
@@ -905,8 +908,8 @@ def _bellpack_unbatch(bep):
     assert bep.n_batch >= 1, "use only when n_batch > 0"
     if bep.n_batch > 1:
         prod_B = int(np.prod(bep.batch_shape))
-        trailing = bep.values.shape[bep.n_batch:]
-        flat_values = bep.values.reshape((prod_B,) + trailing)
+        trailing = bep.data.shape[bep.n_batch:]
+        flat_values = bep.data.reshape((prod_B,) + trailing)
         flat_cols: list[ColArr] = []
         for c in bep.in_cols:
             if c.ndim == 1:
@@ -915,7 +918,7 @@ def _bellpack_unbatch(bep):
                 flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))
         bep = BEllpack(
             start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=tuple(flat_cols), values=flat_values,
+            in_cols=tuple(flat_cols), data=flat_values,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(prod_B,),
         )
@@ -924,10 +927,10 @@ def _bellpack_unbatch(bep):
     for b in range(B):
         in_cols_b = tuple(c[b] if hasattr(c, "ndim") and c.ndim >= 2 else c
                           for c in bep.in_cols)
-        values_b = bep.values[b]
+        values_b = bep.data[b]
         result.append(BEllpack(
             start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=in_cols_b, values=values_b,
+            in_cols=in_cols_b, data=values_b,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(),
         ))

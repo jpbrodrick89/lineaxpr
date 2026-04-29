@@ -72,9 +72,9 @@ def _mul_rule(invals, traced, n, **params):
         new_batch = scale.shape[:-1]
         scale_arr = jnp.asarray(scale)
         if traced_op.k == 1:
-            new_values = scale_arr * traced_op.values
+            new_values = scale_arr * traced_op.data
         else:
-            new_values = scale_arr[..., None] * traced_op.values
+            new_values = scale_arr[..., None] * traced_op.data
         new_in_cols: list[ColArr] = []
         can_emit = True
         for c in traced_op.in_cols:
@@ -95,7 +95,7 @@ def _mul_rule(invals, traced, n, **params):
         if can_emit:
             return BEllpack(
                 start_row=traced_op.start_row, end_row=traced_op.end_row,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=traced_op.out_size, in_size=traced_op.in_size,
                 batch_shape=new_batch,
             )
@@ -130,10 +130,10 @@ def _mul_rule(invals, traced, n, **params):
         if traced_op.k == 1:
             # traced values (*batch, 1). scale (*batch, new_out).
             # Result (*batch, new_out).
-            new_values = scale_arr * traced_op.values
+            new_values = scale_arr * traced_op.data
         else:
             # traced values (*batch, 1, k). Insert new_out axis then mul.
-            new_values = scale_arr[..., None] * traced_op.values
+            new_values = scale_arr[..., None] * traced_op.data
         new_in_cols: list[ColArr] = []
         can_emit2 = True
         for c in traced_op.in_cols:
@@ -152,7 +152,7 @@ def _mul_rule(invals, traced, n, **params):
         if can_emit2:
             return BEllpack(
                 start_row=0, end_row=new_out,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=new_out, in_size=traced_op.in_size,
                 batch_shape=traced_op.batch_shape,
             )

@@ -18,11 +18,9 @@ from __future__ import annotations
 from .base import (
     LinOpProtocol,
     broadcast_in_dim_op,
-    cumsum_op,
     gather_op,
-    identity_op,
-    negate,
     pad_op,
+    replace_slots,
     reduce_sum_op,
     reshape_op,
     rev_op,
@@ -36,21 +34,20 @@ from .base import (
 from .diagonal import ConstantDiagonal, Diagonal, Identity
 from .ellpack import BEllpack, ColArr, _ellpack_to_bcoo_batched
 from .bcoo_extend import _bcoo_concat
+from . import dense as _dense  # noqa: F401 — registers jax.Array / DynamicJaxprTracer dispatchers
 from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
 from . import ellpack_transforms as _ellpack_transforms  # noqa: F401 — registers BE transform dispatchers
 from . import ellpack_indexing as _ellpack_indexing  # noqa: F401 — registers BE indexing dispatchers
 
 __all__ = [
     "LinOpProtocol",
-    "negate",
+    "replace_slots",
     "scale_scalar",
     "scale_per_out_row",
-    "identity_op",
     "squeeze_op",
     "rev_op",
     "slice_op",
     "pad_op",
-    "cumsum_op",
     "reshape_op",
     "broadcast_in_dim_op",
     "reduce_sum_op",

@@ -47,7 +47,7 @@ def _concatenate_rule(invals, traced, n, **params):
                 pass  # fall through to dense fallback (k mismatch rare
                       # on batch-axis concat; avoid complexity)
             else:
-                new_values = jnp.concatenate([v.values for v in invals], axis=dimension)
+                new_values = jnp.concatenate([v.data for v in invals], axis=dimension)
                 new_in_cols: list[ColArr] = []
                 for b in range(invals[0].k):
                     parts = []
@@ -119,8 +119,8 @@ def _concatenate_rule(invals, traced, n, **params):
             max_k = max(v.k for v in invals)
             def _widen_values(v):
                 if max_k == 1:
-                    return v.values
-                vals = v.values if v.values.ndim == nb + 2 else v.values[..., None]
+                    return v.data
+                vals = v.data if v.data.ndim == nb + 2 else v.data[..., None]
                 if v.k < max_k:
                     pad = [(0, 0)] * vals.ndim
                     pad[-1] = (0, max_k - v.k)
@@ -182,12 +182,12 @@ def _concatenate_rule(invals, traced, n, **params):
         if isinstance(op, ConstantDiagonal):
             op = BEllpack(
                 0, op.n, (np.arange(op.n),),
-                jnp.broadcast_to(jnp.asarray(op.value), (op.n,)),
+                jnp.broadcast_to(jnp.asarray(op.data), (op.n,)),
                 op.n, op.n,
             )
         elif isinstance(op, Diagonal):
             op = BEllpack(
-                0, op.n, (np.arange(op.n),), op.values, op.n, op.n,
+                0, op.n, (np.arange(op.n),), op.data, op.n, op.n,
             )
         if isinstance(op, BEllpack) and op.n_batch == 0:
             return op.pad_rows(left_total, right_total)

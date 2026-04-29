@@ -113,10 +113,10 @@ def _broadcast_be_to_batch(be, target_batch_shape):
         return None
     # Broadcast values.
     if be.k == 1:
-        new_values = jnp.broadcast_to(be.values, target_batch_shape + (be.nrows,))
+        new_values = jnp.broadcast_to(be.data, target_batch_shape + (be.nrows,))
     else:
         new_values = jnp.broadcast_to(
-            be.values, target_batch_shape + (be.nrows, be.k))
+            be.data, target_batch_shape + (be.nrows, be.k))
     # Broadcast cols.
     new_in_cols: list[ColArr] = []
     for c in be.in_cols:
@@ -133,7 +133,7 @@ def _broadcast_be_to_batch(be, target_batch_shape):
             )
     return BEllpack(
         start_row=be.start_row, end_row=be.end_row,
-        in_cols=tuple(new_in_cols), values=new_values,
+        in_cols=tuple(new_in_cols), data=new_values,
         out_size=be.out_size, in_size=be.in_size,
         batch_shape=target_batch_shape,
     )
@@ -159,16 +159,16 @@ def _tile_1row_bellpack(ep, target_rows):
     """Tile a 1-row BEllpack (out_size=1) to have `target_rows` output rows.
 
     All rows share the same column pattern (ep.in_cols). Values broadcast
-    by repeating ep.values `target_rows` times along the row axis.
+    by repeating ep.data `target_rows` times along the row axis.
     Returns a BEllpack with start_row=0, end_row=target_rows.
     """
     assert ep.out_size == 1 and ep.n_batch == 0
     # k=1: values shape (1,) → (target_rows,) via broadcast.
     # k>=2: values shape (1, k) → (target_rows, k).
     if ep.k == 1:
-        new_values = jnp.broadcast_to(ep.values, (target_rows,))
+        new_values = jnp.broadcast_to(ep.data, (target_rows,))
     else:
-        new_values = jnp.broadcast_to(ep.values, (target_rows, ep.k))
+        new_values = jnp.broadcast_to(ep.data, (target_rows, ep.k))
     # Cols: 1D (nrows=1,) → broadcast to (target_rows,).
     new_in_cols: list[ColArr] = []
     for c in ep.in_cols:
@@ -180,7 +180,7 @@ def _tile_1row_bellpack(ep, target_rows):
             new_in_cols.append(jnp.broadcast_to(jnp.asarray(c), (target_rows,)))
     return BEllpack(
         start_row=0, end_row=target_rows,
-        in_cols=tuple(new_in_cols), values=new_values,
+        in_cols=tuple(new_in_cols), data=new_values,
         out_size=target_rows, in_size=ep.in_size,
     )
 
@@ -194,10 +194,10 @@ def _slice_be_rows(ep, lo, hi):
         for c in ep.in_cols
     )
     if ep.n_batch == 0:
-        new_values = ep.values[rel_lo:rel_hi] if ep.k == 1 else ep.values[rel_lo:rel_hi, :]
+        new_values = ep.data[rel_lo:rel_hi] if ep.k == 1 else ep.data[rel_lo:rel_hi, :]
     else:
         sl = (slice(None),) * ep.n_batch + (slice(rel_lo, rel_hi),)
-        new_values = ep.values[sl]
+        new_values = ep.data[sl]
     return BEllpack(lo, hi, new_in_cols, new_values,
                    ep.out_size, ep.in_size, batch_shape=ep.batch_shape)
 
@@ -270,7 +270,7 @@ def _add_be_dedup(vals, first, n):
             s1 = bool(np.all(np.diff(order1) >= 0)) if len(order1) > 1 else True
             s2 = bool(np.all(np.diff(order2) >= 0)) if len(order2) > 1 else True
             def _ov(v):
-                return v.values_2d
+                return v.data_2d
             v1r = _ov(v1).at[..., order1].get(
                 unique_indices=True, indices_are_sorted=s1)
             v2r = _ov(v2).at[..., order2].get(
@@ -297,7 +297,7 @@ def _add_be_dedup(vals, first, n):
     band_idx = 0
     for v in vals:
         for b in range(v.k):
-            vals_b = v.values_2d[..., b]
+            vals_b = v.data_2d[..., b]
             g = int(inverse[band_idx])
             if group_values[g] is None:
                 group_values[g] = vals_b
@@ -349,8 +349,8 @@ def _add_be_overlap_merge(ep1, ep2, n):
             extra_cols = tuple(
                 np.full(p.nrows, -1, dtype=np.intp) for _ in range(extra_k)
             )
-            extra_vals = jnp.zeros((p.nrows, extra_k), dtype=p.values.dtype)
-            base = p.values_2d
+            extra_vals = jnp.zeros((p.nrows, extra_k), dtype=p.data.dtype)
+            base = p.data_2d
             padded.append(BEllpack(
                 p.start_row, p.end_row,
                 p.in_cols + extra_cols,
@@ -410,17 +410,17 @@ def _add_rule(invals, traced, n, **params):
 
     # All-ConstantDiagonal with matching n: sum the scalar values.
     if kinds == {ConstantDiagonal} and all(v.n == vals[0].n for v in vals):
-        return ConstantDiagonal(vals[0].n, sum(v.value for v in vals))
+        return ConstantDiagonal(vals[0].n, sum(v.data for v in vals))
 
     # Subset of {ConstantDiagonal, Diagonal} with matching n: emit Diagonal.
     if kinds <= {ConstantDiagonal, Diagonal} and all(v.n == vals[0].n for v in vals):
-        dtype = next((v.values.dtype for v in vals if isinstance(v, Diagonal)),
+        dtype = next((v.data.dtype for v in vals if isinstance(v, Diagonal)),
                      jnp.result_type(float))
         total = jnp.zeros(vals[0].n, dtype=dtype)
         for v in vals:
             total = total + (
-                jnp.broadcast_to(v.value, (v.n,))
-                if isinstance(v, ConstantDiagonal) else v.values
+                jnp.broadcast_to(v.data, (v.n,))
+                if isinstance(v, ConstantDiagonal) else v.data
             )
         return Diagonal(total)
 
@@ -473,9 +473,9 @@ def _add_rule(invals, traced, n, **params):
                 for v in vals[1:]
             )
             if same_cols:
-                summed_values = vals[0].values
+                summed_values = vals[0].data
                 for v in vals[1:]:
-                    summed_values = summed_values + v.values
+                    summed_values = summed_values + v.data
                 return BEllpack(first.start_row, first.end_row,
                                first.in_cols, summed_values,
                                first.out_size, first.in_size,
@@ -497,7 +497,7 @@ def _add_rule(invals, traced, n, **params):
             # Values shape for n_batch=0 is (nrows,) for k=1 or (nrows, k)
             # for k>=2; concat along the band axis (axis=1 i.e. the k dim).
             # For batched values (n_batch>0) the band axis is n_batch+1.
-            parts = [v.values_2d for v in vals]
+            parts = [v.data_2d for v in vals]
             new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
             return _densify_if_wider_than_dense(BEllpack(
                 first.start_row, first.end_row,
@@ -524,10 +524,10 @@ def _add_rule(invals, traced, n, **params):
             if abut:
                 k_new = first.k
                 if k_new == 1:
-                    parts = [v.values_2d[..., 0] for v in sorted_vals]
+                    parts = [v.data_2d[..., 0] for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 else:
-                    parts = [v.values for v in sorted_vals]
+                    parts = [v.data for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 new_in_cols: list[ColArr] = []
                 for b in range(k_new):
@@ -580,12 +580,12 @@ def _add_rule(invals, traced, n, **params):
                     if isinstance(v, ConstantDiagonal):
                         ep_vals.append(BEllpack(
                             0, n_sq, (arange_n,),
-                            jnp.broadcast_to(jnp.asarray(v.value), (n_sq,)),
+                            jnp.broadcast_to(jnp.asarray(v.data), (n_sq,)),
                             n_sq, n_sq,
                         ))
                     elif isinstance(v, Diagonal):
                         ep_vals.append(BEllpack(
-                            0, n_sq, (arange_n,), v.values, n_sq, n_sq,
+                            0, n_sq, (arange_n,), v.data, n_sq, n_sq,
                         ))
                     else:
                         ep_vals.append(v)

@@ -12,7 +12,7 @@ import pytest
 from jax.experimental import sparse
 
 from lineaxpr import ConstantDiagonal, Diagonal, BEllpack, Identity
-from lineaxpr._linops import negate, scale_per_out_row, scale_scalar
+from lineaxpr._linops import scale_per_out_row, scale_scalar
 
 
 # ---------------------------- Identity / ConstantDiagonal -----------------
@@ -22,7 +22,7 @@ def test_identity_is_constant_diagonal_with_value_one():
     I = Identity(5)
     assert isinstance(I, ConstantDiagonal)
     assert I.n == 5
-    assert float(jnp.asarray(I.value)) == 1.0
+    assert float(jnp.asarray(I.data)) == 1.0
 
 
 def test_identity_dtype_propagates():
@@ -37,12 +37,12 @@ def test_constant_diagonal_to_dense_identity():
 
 
 def test_constant_diagonal_to_dense_scaled():
-    out = ConstantDiagonal(3, value=2.5).todense()
+    out = ConstantDiagonal(3, data=2.5).todense()
     np.testing.assert_array_equal(np.asarray(out), 2.5 * np.eye(3))
 
 
 def test_constant_diagonal_to_bcoo_roundtrip():
-    cd = ConstantDiagonal(4, value=3.0)
+    cd = ConstantDiagonal(4, data=3.0)
     b = cd.to_bcoo()
     assert isinstance(b, sparse.BCOO)
     assert b.shape == (4, 4)
@@ -50,7 +50,7 @@ def test_constant_diagonal_to_bcoo_roundtrip():
 
 
 def test_constant_diagonal_negate():
-    cd = negate(ConstantDiagonal(3, 2.0))
+    cd = -ConstantDiagonal(3, 2.0)
     np.testing.assert_array_equal(np.asarray(cd.todense()), -2.0 * np.eye(3))
 
 
@@ -61,14 +61,14 @@ def test_constant_diagonal_scale_scalar():
 
 def test_constant_diagonal_scale_per_out_row():
     v = jnp.asarray([1.0, 2.0, 3.0])
-    result = scale_per_out_row(ConstantDiagonal(3, value=2.0), v)
+    result = scale_per_out_row(ConstantDiagonal(3, data=2.0), v)
     assert isinstance(result, Diagonal)
     expected = np.diag([2.0, 4.0, 6.0])
     np.testing.assert_array_equal(np.asarray(result.todense()), expected)
 
 
 def test_constant_diagonal_shape_and_dtype():
-    cd = ConstantDiagonal(7, value=jnp.asarray(1.0, dtype=jnp.float64))
+    cd = ConstantDiagonal(7, data=jnp.asarray(1.0, dtype=jnp.float64))
     assert cd.shape[-1] == 7
     assert cd.dtype == jnp.float64
 
@@ -91,7 +91,7 @@ def test_diagonal_to_bcoo_roundtrip():
 
 
 def test_diagonal_negate():
-    d = negate(Diagonal(jnp.asarray([1.0, -2.0, 3.0])))
+    d = -Diagonal(jnp.asarray([1.0, -2.0, 3.0]))
     np.testing.assert_array_equal(
         np.asarray(d.todense()), np.diag([-1.0, 2.0, -3.0])
     )
@@ -127,7 +127,7 @@ def _simple_ellpack():
         start_row=0,
         end_row=3,
         in_cols=(np.array([1, 0, 3]), np.array([2, 3, 2])),
-        values=(jnp.asarray([5.0, 6.0, 7.0]),
+        data=(jnp.asarray([5.0, 6.0, 7.0]),
                 jnp.asarray([50.0, 60.0, 70.0])),
         out_size=3,
         in_size=4,
@@ -165,7 +165,7 @@ def test_ellpack_to_bcoo_roundtrip():
 
 
 def test_ellpack_negate():
-    e = negate(_simple_ellpack())
+    e = -_simple_ellpack()
     np.testing.assert_array_equal(
         np.asarray(e.todense()), -_ellpack_expected_dense()
     )
@@ -190,7 +190,7 @@ def test_ellpack_scale_per_out_row_out_size_length():
     e = BEllpack(
         start_row=1, end_row=3,
         in_cols=(np.array([0, 2]),),
-        values=(jnp.asarray([5.0, 7.0]),),
+        data=(jnp.asarray([5.0, 7.0]),),
         out_size=4, in_size=3,
     )
     # Scale vector is length out_size = 4; only entries at rows 1 and 2 hit.
@@ -248,7 +248,7 @@ def test_ellpack_transpose_batched_batch_only_permutation():
     values = jnp.arange(B0 * B1 * O, dtype=jnp.float64).reshape(B0, B1, O) + 1.0
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols,), values=values,
+        in_cols=(cols,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B0, B1),
     )
@@ -265,7 +265,7 @@ def test_ellpack_transpose_batched_out_to_batch_swap():
     values = jnp.arange(B * O, dtype=jnp.float64).reshape(B, O) + 1.0
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols,), values=values,
+        in_cols=(cols,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -283,7 +283,7 @@ def test_ellpack_transpose_compressed_row_range():
     values = jnp.arange(B * 3, dtype=jnp.float64).reshape(B, 3) + 1.0
     ep = BEllpack(
         start_row=1, end_row=4,
-        in_cols=(cols,), values=values,
+        in_cols=(cols,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -301,7 +301,7 @@ def test_ellpack_transpose_k2_out_swap():
     values = jnp.arange(B * O * 2, dtype=jnp.float64).reshape(B, O, 2) + 1.0
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols0, cols1), values=values,
+        in_cols=(cols0, cols1), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -318,7 +318,7 @@ def test_ellpack_transpose_per_batch_cols_out_swap():
     values = jnp.ones((B, O), dtype=jnp.float64) * jnp.asarray([[1.0], [10.0]])
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols_per_batch,), values=values,
+        in_cols=(cols_per_batch,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -332,7 +332,7 @@ def test_ellpack_minus_one_sentinel_masks_slot():
     e = BEllpack(
         start_row=0, end_row=3,
         in_cols=(np.array([0, 1, 2]), np.array([2, -1, 0])),
-        values=(jnp.asarray([1.0, 2.0, 3.0]),
+        data=(jnp.asarray([1.0, 2.0, 3.0]),
                 jnp.asarray([10.0, 20.0, 30.0])),
         out_size=3, in_size=3,
     )
@@ -349,7 +349,7 @@ def test_ellpack_intra_row_duplicate_cols_sum():
     e = BEllpack(
         start_row=0, end_row=1,
         in_cols=(np.array([0]), np.array([0])),
-        values=(jnp.asarray([3.0]), jnp.asarray([4.0])),
+        data=(jnp.asarray([3.0]), jnp.asarray([4.0])),
         out_size=1, in_size=2,
     )
     expected = np.zeros((1, 2))
@@ -394,7 +394,7 @@ def test_to_bcoo_dense_agreement(op_factory):
 )
 def test_negate_then_scale_minus_one_agree(op_factory):
     op = op_factory()
-    neg_direct = negate(op).todense()
+    neg_direct = (-op).todense()
     neg_via_scale = scale_scalar(op, jnp.asarray(-1.0)).todense()
     np.testing.assert_allclose(np.asarray(neg_direct), np.asarray(neg_via_scale))
 
@@ -410,7 +410,7 @@ def test_batched_ellpack_to_bcoo_k1_shared_cols():
     values = jnp.arange(B * O, dtype=jnp.float64).reshape(B, O) + 1.0
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols,), values=values,
+        in_cols=(cols,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -429,7 +429,7 @@ def test_batched_ellpack_to_bcoo_k1_per_batch_cols():
     values = jnp.ones((B, O), dtype=jnp.float64) * jnp.asarray([[1.0], [10.0]])
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols_per_batch,), values=values,
+        in_cols=(cols_per_batch,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -452,7 +452,7 @@ def test_batched_ellpack_to_bcoo_k2_and_sentinels():
     values = jnp.arange(B * O * 2, dtype=jnp.float64).reshape(B, O, 2) + 1.0
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols_b0, cols_b1), values=values,
+        in_cols=(cols_b0, cols_b1), data=values,
         out_size=O, in_size=N,
         batch_shape=(B,),
     )
@@ -474,7 +474,7 @@ def test_batched_ellpack_to_bcoo_2d_batch():
     values = jnp.arange(B1 * B2 * O, dtype=jnp.float64).reshape(B1, B2, O)
     ep = BEllpack(
         start_row=0, end_row=O,
-        in_cols=(cols,), values=values,
+        in_cols=(cols,), data=values,
         out_size=O, in_size=N,
         batch_shape=(B1, B2),
     )

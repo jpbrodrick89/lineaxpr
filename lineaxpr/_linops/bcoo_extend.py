@@ -1,6 +1,6 @@
 """Non-densifying singledispatch registrations for jax.experimental.sparse.BCOO.
 
-These extend the negate/scale_scalar/scale_per_out_row interface to BCOO
+These extend the scale_scalar/scale_per_out_row interface to BCOO
 without subclassing or monkeypatching the JAX class.
 Also registers BCOO-specific implementations for unary structural ops.
 """
@@ -16,8 +16,6 @@ from jax.experimental import sparse
 from .ellpack import BEllpack
 from .base import (
     broadcast_in_dim_op,
-    cumsum_op,
-    negate,
     pad_op,
     reduce_sum_op,
     rev_op,
@@ -27,11 +25,6 @@ from .base import (
     split_op,
     squeeze_op,
 )
-
-
-@negate.register(sparse.BCOO)
-def _(op: sparse.BCOO) -> sparse.BCOO:
-    return sparse.BCOO((-op.data, op.indices), shape=op.shape)
 
 
 @scale_scalar.register(sparse.BCOO)
@@ -151,14 +144,14 @@ def _(op: sparse.BCOO, *, n, **params):
                     return BEllpack(
                         start_row=0, end_row=1,
                         in_cols=(np.asarray([uniq[0]], dtype=uniq.dtype),),
-                        values=summed.reshape(1),
+                        data=summed.reshape(1),
                         out_size=1, in_size=in_size,
                     )
                 return BEllpack(
                     start_row=0, end_row=1,
                     in_cols=tuple(np.asarray([c], dtype=uniq.dtype)
                                   for c in uniq),
-                    values=summed.reshape(1, n_groups),
+                    data=summed.reshape(1, n_groups),
                     out_size=1, in_size=in_size,
                 )
     dense = op.todense()
@@ -216,12 +209,6 @@ def _bcoo_concat(bcoo_vals, shape):
 @squeeze_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
     return lax.squeeze(op.todense(), params["dimensions"])
-
-
-@cumsum_op.register(sparse.BCOO)
-def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
-    return lax.cumsum(op.todense(), axis=params["axis"],
-                      reverse=params.get("reverse", False))
 
 
 @broadcast_in_dim_op.register(sparse.BCOO)

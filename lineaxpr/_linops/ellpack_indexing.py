@@ -46,14 +46,14 @@ def _(op, *, n, start_indices, **params):
                 if not idx_static and isinstance(c_full, np.ndarray):
                     c_full = jnp.asarray(c_full)
                 new_in_cols.append(c_full[row_flat, col_flat].reshape(leading))
-            vals = op.values[row_flat, col_flat]
+            vals = op.data[row_flat, col_flat]
             if op.k == 1:
                 vals = vals.reshape(leading)
             else:
                 vals = vals.reshape(leading + (op.k,))
             return BEllpack(
                 start_row=0, end_row=new_out,
-                in_cols=tuple(new_in_cols), values=vals,
+                in_cols=tuple(new_in_cols), data=vals,
                 out_size=new_out, in_size=op.in_size,
                 batch_shape=new_batch,
             )
@@ -96,20 +96,20 @@ def _(op, *, n, start_indices, **params):
                 gathered = jnp.asarray(cr)[ridx_flat].reshape(batch_shape + (N,))
             new_in_cols.append(gathered)
         if op.k == 1:
-            vals = op.values[ridx_flat].reshape(batch_shape + (N,))
+            vals = op.data[ridx_flat].reshape(batch_shape + (N,))
         else:
-            vals = op.values[ridx_flat].reshape(batch_shape + (N, op.k))
+            vals = op.data[ridx_flat].reshape(batch_shape + (N, op.k))
         if point_gather_kept:
             return BEllpack(
                 start_row=0, end_row=1,
                 in_cols=tuple(c[..., None] for c in new_in_cols),
-                values=vals[..., None] if op.k == 1 else vals[..., None, :],
+                data=vals[..., None] if op.k == 1 else vals[..., None, :],
                 out_size=1, in_size=op.in_size,
                 batch_shape=batch_shape + (N,),
             )
         return BEllpack(
             start_row=0, end_row=N,
-            in_cols=tuple(new_in_cols), values=vals,
+            in_cols=tuple(new_in_cols), data=vals,
             out_size=N, in_size=op.in_size,
             batch_shape=batch_shape,
         )
@@ -174,13 +174,13 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 c.reshape(c.shape[:-1]) for c in updates.in_cols
             )
             if updates.k == 1:
-                new_values = updates.values.reshape(updates.values.shape[:-1])
+                new_values = updates.data.reshape(updates.data.shape[:-1])
             else:
-                shape = updates.values.shape
-                new_values = updates.values.reshape(shape[:-2] + shape[-1:])
+                shape = updates.data.shape
+                new_values = updates.data.reshape(shape[:-2] + shape[-1:])
             updates = BEllpack(
                 start_row=0, end_row=inner,
-                in_cols=squeezed_cols, values=new_values,
+                in_cols=squeezed_cols, data=new_values,
                 out_size=inner, in_size=updates.in_size,
                 batch_shape=new_batch,
             )
@@ -243,9 +243,9 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 static_ok = False
                 break
             if ep.k == 1:
-                new_vals = ep.values[order]
+                new_vals = ep.data[order]
             else:
-                new_vals = ep.values[order].reshape(n_unique, dup * ep.k)
+                new_vals = ep.data[order].reshape(n_unique, dup * ep.k)
             start = int(unique_out[0])
             be_pieces.append(BEllpack(
                 start, start + n_unique, tuple(new_in_cols), new_vals,
