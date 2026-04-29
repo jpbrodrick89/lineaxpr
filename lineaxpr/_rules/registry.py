@@ -316,8 +316,18 @@ materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op,
     strip=_vmap_strip(dimensions=_decr))
 materialize_rules[lax.rev_p] = _vmap_unary_rule(rev_op,
     strip=_vmap_strip(dimensions=_decr))
-materialize_rules[lax.reshape_p] = _vmap_unary_rule(reshape_op,
-    strip=_vmap_strip(new_sizes=_drop))
+def _reshape_rule(invals, traced, n, **params):
+    """Translate jaxpr-frame `new_sizes` (n at 0) to walk-frame (n at -1)."""
+    (op,), (t,) = invals, traced
+    if not t:
+        return None
+    params.pop("_vmap_avals", None)
+    sizes = tuple(int(s) for s in params["new_sizes"])
+    walk_sizes = sizes[1:] + (n,)
+    return reshape_op(op, n=n, **{**params, "new_sizes": walk_sizes})
+
+
+materialize_rules[lax.reshape_p] = _reshape_rule
 materialize_rules[lax.broadcast_in_dim_p] = _vmap_unary_rule(broadcast_in_dim_op,
     strip=_vmap_strip(shape=_drop, broadcast_dimensions=_drop_decr))
 materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op,

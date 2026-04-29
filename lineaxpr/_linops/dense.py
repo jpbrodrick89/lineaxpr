@@ -66,8 +66,11 @@ def _(op, *, n, padding_value, **params):
 @reshape_op.register(jax.Array)
 @reshape_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
-    return lax.reshape(op, tuple(new_sizes) + (n,))
+    # `sharding` (jaxpr) → `out_sharding` (lax); pass explicitly to avoid
+    # name mismatch when forwarding **params.
+    return lax.reshape(op, params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):

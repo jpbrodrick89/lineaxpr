@@ -27,7 +27,8 @@ from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 
 @reshape_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    # Walk-frame new_sizes has n at -1; structural shape is the prefix.
+    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
 
     # Pass-through: unbatched BCOO already the target shape.
     # (handled separately via BCOO base; this path won't fire for BEllpack)
@@ -160,14 +161,15 @@ def _(op, *, n, **params):
         )
 
     # Dense fallback.
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 # BCOO batched → flat reshape registration.
 @reshape_op.register(sparse.BCOO)
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
 
     # Pass-through: already the target shape.
     if (op.n_batch == 0
@@ -197,8 +199,9 @@ def _(op, *, n, **params):
             shape=(int(new_sizes[0]), in_size),
         )
 
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 # ---------------------------------------------------------------------------

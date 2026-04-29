@@ -248,7 +248,8 @@ def _(op, *, n, **params):
 
 @reshape_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    # Walk-frame new_sizes has n at -1; structural shape is the prefix.
+    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -260,13 +261,14 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 @reshape_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -278,8 +280,9 @@ def _(op, *, n, **params):
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 @broadcast_in_dim_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
