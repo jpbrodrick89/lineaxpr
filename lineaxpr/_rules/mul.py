@@ -28,6 +28,14 @@ def _mul_rule(invals, traced, n, **params):
     else:
         raise NotImplementedError("mul of two traced operands — not linear")
 
+    # vmap inserts broadcast_in_dim on scalar closures, giving them shape
+    # (1, k) instead of (k,). Squeeze leading (1,) dims so the existing
+    # scale_ok / scale_per_out_row paths see the expected shape.
+    if hasattr(scale, "shape") and hasattr(traced_op, "shape"):
+        target_ndim = len(traced_op.shape) - 1  # (*batch, out)
+        while hasattr(scale, "shape") and len(scale.shape) > target_ndim and scale.shape[0] == 1:
+            scale = scale[0]
+
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
         s = jnp.asarray(scale).reshape(())

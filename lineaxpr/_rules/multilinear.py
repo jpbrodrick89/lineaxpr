@@ -101,6 +101,7 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
 
 
 def _dot_general_rule(invals, traced, n, **params):
+    vmap_avals = params.pop("_vmap_avals", None)
     x, y = invals
     tx, ty = traced
     (contract, batch) = params["dimension_numbers"]
@@ -136,6 +137,19 @@ def _dot_general_rule(invals, traced, n, **params):
         tensor = lax.transpose(M, remaining + c_M)
         return traced_op.value * tensor
 
+    # vmap walk: jaxpr contraction dims are shifted by the vmap batch position
+    # (bdim).  Translate to walk-space dims before delegating to dispatch/dense.
+    # Non-vmap walk: vmap_avals is None, c_tr_use == c_tr (no shift).
+    if vmap_avals is not None:
+        traced_aval = vmap_avals[0] if tx else vmap_avals[1]
+        try:
+            bdim = next(i for i, s in enumerate(traced_aval) if int(s) == n)
+        except StopIteration:
+            bdim = 0
+        c_tr_use = [c if c < bdim else c - 1 for c in c_tr]
+    else:
+        c_tr_use = c_tr
+
     # Structural BEllpack × closure-matrix path (see
     # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
     # falls through to dense).
@@ -145,7 +159,7 @@ def _dot_general_rule(invals, traced, n, **params):
             and traced_op.start_row == 0
             and traced_op.end_row == traced_op.out_size):
         be_result = _be_dot_closure_matrix(
-            traced_op, M, c_tr[0], c_M[0], traced_is_first,
+            traced_op, M, c_tr_use[0], c_M[0], traced_is_first,
         )
         if be_result is not None:
             return be_result
@@ -153,12 +167,12 @@ def _dot_general_rule(invals, traced, n, **params):
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
         out = lax.dot_general(
-            dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))
+            dense, M, ((tuple(c_tr_use), tuple(c_M)), ((), ()))
         )
         # dense's trailing `n` axis is never contracted; dot_general's
-        # output places it at `len(traced_shape) - len(c_tr)`. Move to end.
-        return jnp.moveaxis(out, len(traced_shape) - len(c_tr), -1)
-    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr)), ((), ())))
+        # output places it at `len(traced_shape) - len(c_tr_use)`. Move to end.
+        return jnp.moveaxis(out, len(traced_shape) - len(c_tr_use), -1)
+    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr_use)), ((), ())))
 
 
 def _sub_rule(invals, traced, n, **params):

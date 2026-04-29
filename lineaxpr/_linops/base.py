@@ -162,6 +162,12 @@ def gather_op(op, *, n, start_indices, **params) -> LinOpProtocol | sparse.BCOO 
     row_idx = start_indices[..., 0]
     if point_gather_kept:
         return op[row_idx][..., None, :]
+    # 2D point-gather: select (row, col) pairs from a matrix.
+    if (dnums.offset_dims == ()
+            and dnums.collapsed_slice_dims == (0, 1)
+            and dnums.start_index_map == (0, 1)):
+        col_idx = start_indices[..., 1]
+        return op[row_idx, col_idx]
     return op[row_idx]
 
 

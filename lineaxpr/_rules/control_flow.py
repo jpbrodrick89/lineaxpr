@@ -272,10 +272,17 @@ def _select_n_rule(invals, traced, n, **params):
         else d[(0,) * (d.ndim - min_ndim)]
         for d in case_dense
     ]
+    # Broadcast all cases to a common shape (handles vmap-accumulated batch dims).
+    target_shape = case_dense[0].shape
+    for d in case_dense[1:]:
+        target_shape = jnp.broadcast_shapes(target_shape, d.shape)
+    case_dense = [jnp.broadcast_to(d, target_shape) for d in case_dense]
 
     pred_arr = jnp.asarray(pred)
-    # pred has shape (*var_shape,); broadcast it to (*var_shape, n) so each
-    # row across the input-coord axis is selected the same way.
-    target_shape = case_dense[0].shape
+    target_shape = case_dense[0].shape  # (*var_shape, n)
+    # pred has shape (*var_shape,); vmap may prepend a batch dim from a
+    # prior broadcast_in_dim, so squeeze until pred_arr.ndim == len(target_shape)-1.
+    while pred_arr.ndim >= len(target_shape):
+        pred_arr = pred_arr[0]
     pred_b = jnp.broadcast_to(pred_arr[..., None], target_shape)
     return lax.select_n(pred_b, *case_dense)

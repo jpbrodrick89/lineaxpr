@@ -23,6 +23,25 @@ from .base import (
 from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 
 
+def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
+    """Shared tail for broadcast_in_dim_op dense fallbacks.
+
+    Handles extra leading batch dims that vmap may have accumulated before the
+    strip rules see the tensor (n_extra == 0 in the normal non-vmap path).
+    """
+    expected_ndim = len(broadcast_dimensions) + 1
+    while dense.ndim > expected_ndim and dense.shape[0] == 1:
+        dense = dense[0]
+    n_extra = dense.ndim - expected_ndim
+    if n_extra > 0:
+        adj_shape = tuple(dense.shape[:n_extra]) + tuple(shape)
+        adj_bds = tuple(range(n_extra)) + tuple(b + n_extra for b in broadcast_dimensions)
+    else:
+        adj_shape, adj_bds = tuple(shape), tuple(broadcast_dimensions)
+    out_dims = adj_bds + (len(adj_shape),)
+    return lax.broadcast_in_dim(dense, adj_shape + (n,), out_dims)
+
+
 # ---------------------------------------------------------------------------
 # reshape_op registrations
 # ---------------------------------------------------------------------------
@@ -360,12 +379,7 @@ def _(op, *, n, **params):
         )
 
     # Dense fallback.
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
 # Register both jax.Array (eager) and DynamicJaxprTracer (JIT): singledispatch
@@ -384,12 +398,7 @@ def _(op, *, n, **params):
             indices = jnp.stack([zeros_row, cols], axis=1)
             return sparse.BCOO((op, indices), shape=(1, n))
     # General dense fallback.
-    dense = op
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    return _bid_with_extra_batch(op, shape, broadcast_dimensions, n)
 
 
 # ---------------------------------------------------------------------------

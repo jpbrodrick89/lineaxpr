@@ -1,4 +1,14 @@
-"""Primitive rule registry — maps jax.lax primitives to rule functions."""
+"""Primitive rule registry — maps jax.lax primitives to rule functions.
+
+PoC strategy: axis-stripping wrappers strip the vmap batch entry from params
+then delegate unchanged to the existing LinOp singledispatch functions, which
+retain all BEllpack structural paths without densification.
+
+Migration path (after PoC confirmed): remove wrappers one op at a time,
+update each dispatch function to natively handle the correct number of batch
+dims, and loop until no wrappers remain.  The end state: every op below that
+currently strips just calls its dispatch function directly with no wrapper.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +22,7 @@ from jax.extend import core
 
 from .add import _add_rule, BELLPACK_DEDUP_LIMIT, BELLPACK_DEDUP_VECTORISED_MIN
 from .mul import _mul_rule
-from .multilinear import _sub_rule, _dot_general_rule, _div_rule
+from .multilinear import _sub_rule, _div_rule, _dot_general_rule
 from .control_flow import (
     _cond_rule,
     _jit_rule,
@@ -38,7 +48,6 @@ from .._linops import (
 )
 from .._linops.base import negate as _negate_dispatch
 
-# Re-export constants so callers can reach them via materialize.BELLPACK_*
 __all__ = [
     "materialize_rules",
     "BELLPACK_DEDUP_LIMIT",
@@ -47,32 +56,56 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Generic adapters
+# Axis-strip primitives and generic rule factory
 # ---------------------------------------------------------------------------
 
-def _unary_rule(dispatch_fn):
-    """Wrap a singledispatch unary op into the rule signature."""
+def _drop(v):
+    """Drop the leading element (the vmap batch entry); no-op for None."""
+    return v[1:] if v is not None else v
+
+def _decr(v):
+    """Subtract 1 from every element; works on int or tuple."""
+    if hasattr(v, "__iter__"):
+        return tuple(int(x) - 1 for x in v)
+    return int(v) - 1
+
+def _drop_decr(v):
+    """Drop the leading element then decrement the rest."""
+    return tuple(int(x) - 1 for x in v[1:])
+
+
+def _vmap_strip(**ops):
+    """Return a (params, n) → params function that applies one strip op per key."""
+    def strip(params, n):
+        return {**params, **{k: f(params[k]) for k, f in ops.items() if k in params}}
+    return strip
+
+
+def _vmap_unary_rule(dispatch_fn, strip=None):
+    """Generic unary axis-stripping rule: strip params, call dispatch op."""
     def rule(invals, traced, n, **params):
-        (op,) = invals
-        (t,) = traced
+        (op,), (t,) = invals, traced
         if not t:
             return None
+        if strip:
+            params = strip(params, n)
         return dispatch_fn(op, n=n, **params)
     return rule
 
 
+# ---------------------------------------------------------------------------
+# Unchanged rules (no axis params)
+# ---------------------------------------------------------------------------
+
 def _identity_rule(invals, traced, n, **params):
-    """For primitives that don't change value (convert_element_type, copy)."""
     del params
-    (op,) = invals
-    (t,) = traced
+    (op,), (t,) = invals, traced
     return op if t else None
 
 
 def _neg_rule(invals, traced, n, **params):
     del params, n
-    (op,) = invals
-    (t,) = traced
+    (op,), (t,) = invals, traced
     if not t:
         return None
     if isinstance(op, LinOpProtocol):
@@ -81,7 +114,7 @@ def _neg_rule(invals, traced, n, **params):
 
 
 # ---------------------------------------------------------------------------
-# Pad rule (two-operand: operand + padding_value)
+# Two-input rules that need custom signatures
 # ---------------------------------------------------------------------------
 
 def _pad_rule(invals, traced, n, **params):
@@ -93,11 +126,20 @@ def _pad_rule(invals, traced, n, **params):
         return None
     if hasattr(padding_value, "shape") and padding_value.shape != ():
         raise NotImplementedError("pad with non-scalar padding_value")
-    return pad_op(operand, n=n, padding_value=padding_value, **params)
+    # vmap prepends (0,0,0) for the batch dim; drop it.
+    return pad_op(operand, n=n, padding_value=padding_value,
+                  **_vmap_strip(padding_config=_drop)(params, n))
+
+
+def _concatenate_rule_vmap(invals, traced, n, **params):
+    # dimension is shifted +1 by vmap; subtract 1.
+    return _concatenate_rule(invals, traced, n,
+                              **_vmap_strip(dimension=_decr)(params, n))
+
 
 
 # ---------------------------------------------------------------------------
-# Gather rule (two-operand: operand + start_indices)
+# Gather — vmap shifts the gather dimension numbers
 # ---------------------------------------------------------------------------
 
 def _gather_rule(invals, traced, n, **params):
@@ -107,15 +149,29 @@ def _gather_rule(invals, traced, n, **params):
         raise NotImplementedError("gather with traced indices")
     if not to:
         return None
-    params["dimension_numbers"]
-    # For non-BEllpack BCOO operand, use BCOO-specific fallback.
     if isinstance(operand, sparse.BCOO):
         raise NotImplementedError("gather on BCOO operand")
+    dn = params["dimension_numbers"]
+    # vmap wraps N-D point-gather-collapsed as:
+    #   offset_dims=(0,), collapsed=(k1,...), start_index_map=(k1,...)  where all ki > 0
+    # Convert by stripping the batch dim: decrement each ki by 1, drop batch slice_size.
+    if (len(dn.offset_dims) == 1 and dn.offset_dims[0] == 0
+            and 1 <= len(dn.collapsed_slice_dims) <= 2
+            and all(int(k) > 0 for k in dn.collapsed_slice_dims)
+            and dn.start_index_map == dn.collapsed_slice_dims):
+        new_collapsed = tuple(int(k) - 1 for k in dn.collapsed_slice_dims)
+        base_dn = _slicing.GatherDimensionNumbers(
+            offset_dims=(), collapsed_slice_dims=new_collapsed,
+            start_index_map=new_collapsed,
+            operand_batching_dims=(), start_indices_batching_dims=(),
+        )
+        params = dict(params, dimension_numbers=base_dn,
+                      slice_sizes=tuple(params["slice_sizes"])[1:])
     return gather_op(operand, n=n, start_indices=start_indices, **params)
 
 
 # ---------------------------------------------------------------------------
-# Scatter-add rule (three-operand: operand + scatter_indices + updates)
+# Scatter-add — vmap shifts the scatter dimension numbers
 # ---------------------------------------------------------------------------
 
 def _scatter_add_rule(invals, traced, n, **params):
@@ -128,6 +184,32 @@ def _scatter_add_rule(invals, traced, n, **params):
     if not tu:
         return None
     dnums = params["dimension_numbers"]
+
+    # vmapped form of scatter_collapsed — strip batch dim from dnums and operand.
+    if (dnums.update_window_dims == (0,)
+            and tuple(dnums.inserted_window_dims) == (1,)
+            and tuple(dnums.scatter_dims_to_operand_dims) == (1,)):
+        dnums = _slicing.ScatterDimensionNumbers(
+            update_window_dims=(),
+            inserted_window_dims=(0,),
+            scatter_dims_to_operand_dims=(0,),
+        )
+        params = dict(params, dimension_numbers=dnums)
+        if hasattr(operand, "shape") and len(operand.shape) > 1 and operand.shape[0] == n:
+            operand = operand[0]
+
+    # vmapped 2D point-scatter: vmap adds b as update_window_dim 0 and shifts
+    # inserted/scatter dims up by 1.  Convert to base form and fall through.
+    if (dnums.update_window_dims == (0,)
+            and tuple(dnums.inserted_window_dims) == (1, 2)
+            and tuple(dnums.scatter_dims_to_operand_dims) == (1, 2)
+            and hasattr(operand, "ndim") and operand.ndim == 2):
+        dnums = _slicing.ScatterDimensionNumbers(
+            update_window_dims=(),
+            inserted_window_dims=(0, 1),
+            scatter_dims_to_operand_dims=(0, 1),
+        )
+        params = dict(params, dimension_numbers=dnums)
 
     # 2D point-scatter (HADAMALS-class): inserts updates[k] at
     # operand[scatter_indices[k,0], scatter_indices[k,1]].
@@ -210,15 +292,22 @@ materialize_rules[lax.copy_p] = _identity_rule
 materialize_rules[lax.neg_p] = _neg_rule
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
-materialize_rules[lax.slice_p] = _unary_rule(slice_op)
+materialize_rules[lax.slice_p] = _vmap_unary_rule(slice_op,
+    strip=_vmap_strip(start_indices=_drop, limit_indices=_drop, strides=_drop))
 materialize_rules[lax.pad_p] = _pad_rule
-materialize_rules[lax.squeeze_p] = _unary_rule(squeeze_op)
-materialize_rules[lax.rev_p] = _unary_rule(rev_op)
-materialize_rules[lax.reshape_p] = _unary_rule(reshape_op)
-materialize_rules[lax.broadcast_in_dim_p] = _unary_rule(broadcast_in_dim_op)
-materialize_rules[lax.reduce_sum_p] = _unary_rule(reduce_sum_op)
-materialize_rules[lax.concatenate_p] = _concatenate_rule
-materialize_rules[lax.split_p] = _unary_rule(split_op)
+materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op,
+    strip=_vmap_strip(dimensions=_decr))
+materialize_rules[lax.rev_p] = _vmap_unary_rule(rev_op,
+    strip=_vmap_strip(dimensions=_decr))
+materialize_rules[lax.reshape_p] = _vmap_unary_rule(reshape_op,
+    strip=_vmap_strip(new_sizes=_drop))
+materialize_rules[lax.broadcast_in_dim_p] = _vmap_unary_rule(broadcast_in_dim_op,
+    strip=_vmap_strip(shape=_drop, broadcast_dimensions=_drop_decr))
+materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op,
+    strip=_vmap_strip(axes=_decr))
+materialize_rules[lax.concatenate_p] = _concatenate_rule_vmap
+materialize_rules[lax.split_p] = _vmap_unary_rule(split_op,
+    strip=_vmap_strip(axis=_decr))
 
 try:
     from jax._src.lax.control_flow.conditionals import cond_p
@@ -233,19 +322,67 @@ except ImportError:
     pass
 
 materialize_rules[lax.select_n_p] = _select_n_rule
-materialize_rules[lax.cumsum_p] = _unary_rule(cumsum_op)
+materialize_rules[lax.cumsum_p] = _vmap_unary_rule(cumsum_op,
+    strip=_vmap_strip(axis=_decr))
 materialize_rules[lax.div_p] = _div_rule
+
 def _transpose_rule(invals, traced, n, **params):
-    (op,) = invals
-    (t,) = traced
+    (op,), (t,) = invals, traced
     if not t:
         return None
-    permutation = tuple(int(p) for p in params["permutation"])
-    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
-        return op.transpose(axes=permutation)
-    dense = op.todense() if isinstance(op, LinOpProtocol) else op
-    return lax.transpose(dense, permutation + (len(permutation),))
+    vmap_avals = params.pop("_vmap_avals", None)
+    perm = tuple(int(p) for p in params["permutation"])
+    ndim = len(perm)
 
+    # Find bdim: which jaxpr dim holds n.  Normally 0 (vmap prepends n),
+    # but dot_general can leave n at a non-zero position.
+    traced_aval = vmap_avals[0] if vmap_avals else None
+    bdim = 0
+    if traced_aval is not None:
+        try:
+            bdim = next(i for i, s in enumerate(traced_aval) if int(s) == n)
+        except StopIteration:
+            bdim = 0
+
+    # General algorithm: translate jaxpr permutation → walk permutation.
+    #
+    # The jaxpr permutation acts on (dim_0, ..., n_at_bdim, ..., dim_{ndim-1}).
+    # Our walk has n at dim -1: (non_n_dims..., n).
+    #
+    # Mapping jaxpr dim d → walk dim:
+    #   d < bdim  →  d          (unchanged)
+    #   d == bdim →  ndim-1     (n is at last in walk)
+    #   d > bdim  →  d - 1      (shift down past the missing bdim slot)
+    #
+    # walk_perm[j] = walk_dim(perm[jaxpr_output_pos])
+    # where the jaxpr output positions excluding n's output position
+    # map in order to walk output positions 0..ndim-2, with n at ndim-1.
+
+    def jaxpr_to_walk_dim(d):
+        if d == bdim:
+            return ndim - 1
+        return d if d < bdim else d - 1
+
+    n_out_jaxpr = perm.index(bdim)  # which jaxpr output dim receives n
+    walk_perm_list = []
+    for j in range(ndim):
+        if j == n_out_jaxpr:
+            continue  # n's output slot — handled by appending ndim-1 at end
+        walk_perm_list.append(jaxpr_to_walk_dim(perm[j]))
+    walk_perm_list.append(ndim - 1)  # n always last in walk
+    walk_perm = tuple(walk_perm_list)
+
+    if walk_perm == tuple(range(ndim)):
+        return op  # identity
+
+    if isinstance(op, (ConstantDiagonal, Diagonal, BEllpack)):
+        # BEllpack.transpose takes permutation of (*batch, out) only — no n.
+        return op.transpose(axes=walk_perm[:-1])
+    dense = op.todense() if isinstance(op, LinOpProtocol) else op
+    if len(walk_perm) == dense.ndim:
+        return lax.transpose(dense, walk_perm)
+    return lax.transpose(dense, walk_perm + (len(walk_perm),))
 materialize_rules[lax.transpose_p] = _transpose_rule
+
 materialize_rules[lax.gather_p] = _gather_rule
 materialize_rules[_slicing.scatter_add_p] = _scatter_add_rule

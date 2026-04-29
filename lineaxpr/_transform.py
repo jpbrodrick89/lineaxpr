@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 from jax.experimental import sparse
 from jax.extend import core
 
@@ -65,7 +66,6 @@ def _walk_jaxpr(jaxpr, env, n):
     Literals are read directly from `.val`; traced status comes from the
     invars the caller seeded.
     """
-
     def read(atom):
         if isinstance(atom, core.Literal):
             return (False, atom.val)
@@ -81,6 +81,16 @@ def _walk_jaxpr(jaxpr, env, n):
             # (DUAL, CMPC) — lets the whole walk fold to a trace-time BCOO
             # literal. See docs/RESEARCH_NOTES.md §10.
             concrete_outs = eqn.primitive.bind(*invals, **eqn.params)
+            # In the vmap jaxpr, broadcast_in_dim of a constant may add the
+            # vmap batch dim b=n as a NEW leading dimension — recognisable by
+            # dim 0 not being in broadcast_dimensions (it was added, not mapped).
+            # Strip it so downstream rules see the pre-vmap (structural) shape.
+            if (eqn.primitive is lax.broadcast_in_dim_p
+                    and hasattr(concrete_outs, 'ndim')
+                    and concrete_outs.ndim > 0
+                    and int(concrete_outs.shape[0]) == n
+                    and 0 not in eqn.params.get('broadcast_dimensions', ())):
+                concrete_outs = concrete_outs[0]
             if eqn.primitive.multiple_results:
                 for v, o in zip(eqn.outvars, concrete_outs):
                     env[v] = (False, o)
@@ -101,7 +111,14 @@ def _walk_jaxpr(jaxpr, env, n):
                 f"  Or file an issue at https://github.com/jpbrodrick89/lineaxpr/issues "
                 f"with the minimal f(y) that triggers this."
             )
-        outs = rule(invals, traced, n, **eqn.params)
+        # Pass vmap aval shapes so rules can determine where n sits in each
+        # traced variable (its "batch dim" = the position of n in the vmap
+        # jaxpr's intermediate shape, which may differ from 0 after
+        # dot_general / transpose ops that displace the vmap batch).
+        vmap_avals = tuple(
+            v.aval.shape if hasattr(v, "aval") else None for v in eqn.invars
+        )
+        outs = rule(invals, traced, n, _vmap_avals=vmap_avals, **eqn.params)
         if eqn.primitive.multiple_results:
             for v, o in zip(eqn.outvars, outs):
                 env[v] = (True, o)
@@ -111,18 +128,40 @@ def _walk_jaxpr(jaxpr, env, n):
 
 
 def _walk_with_seed(linear_fn, seed_linop):
-    """Trace `linear_fn` with the aval implied by `seed_linop`, walk the
-    jaxpr, return the output LinOp."""
-    placeholder = jax.ShapeDtypeStruct((seed_linop.shape[-1],), seed_linop.dtype)
-    cj = jax.make_jaxpr(linear_fn)(placeholder)
+    """Trace vmap(linear_fn) with the aval implied by seed_linop, walk the
+    jaxpr, return the output LinOp.
+
+    The jaxpr has one invar of shape seed_linop.shape (= (n, n) for the
+    standard Identity(n) seed).  The vmap batch axis is dim 0; every rule
+    in materialize_rules accounts for this by stripping the +1 axis shift
+    from its params before delegating to the LinOp dispatch functions.
+    """
+    placeholder = jax.ShapeDtypeStruct(seed_linop.shape, seed_linop.dtype)
+    cj = jax.make_jaxpr(jax.vmap(linear_fn))(placeholder)
     jaxpr = cj.jaxpr
 
     if len(jaxpr.invars) != 1:
         raise NotImplementedError("multi-input linear_fn not yet handled")
     (invar,) = jaxpr.invars
-    n = invar.aval.size
+    n = seed_linop.shape[-1]
 
-    env: dict = {v: (False, c) for v, c in zip(jaxpr.constvars, cj.consts)}
+    # Under EAGER_CONSTANT_FOLDING=TRUE, broadcast_in_dim equations that add b=n
+    # as a new leading dim are pre-folded into constvars — our equation-level
+    # strip in _walk_jaxpr never fires for them.  A broadcast-result constvar has
+    # all identical rows (c == c[0]), unlike genuine non-uniform closure data.
+    # Strip those here so the rest of the walk sees the pre-vmap (structural) shape.
+    def _strip_if_broadcast(c):
+        if (hasattr(c, "shape") and len(c.shape) > 1
+                and int(c.shape[0]) == n):
+            try:
+                if jnp.all(c == c[0]):
+                    return c[0]
+            except Exception:
+                pass
+        return c
+
+    env: dict = {v: (False, _strip_if_broadcast(c))
+                 for v, c in zip(jaxpr.constvars, cj.consts)}
     env[invar] = (True, seed_linop)
     _walk_jaxpr(jaxpr, env, n)
 
