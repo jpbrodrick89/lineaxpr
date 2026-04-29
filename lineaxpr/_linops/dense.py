@@ -60,9 +60,7 @@ def _(op, *, n, **params):
 @pad_op.register(jax.Array)
 @pad_op.register(DynamicJaxprTracer)
 def _(op, *, n, padding_value, **params):
-    config = params["padding_config"]
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(op, jnp.asarray(0.0, dtype=op.dtype), full_config)
+    return lax.pad(op, padding_value, **params)
 
 
 @reshape_op.register(jax.Array)

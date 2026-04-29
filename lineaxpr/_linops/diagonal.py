@@ -496,7 +496,4 @@ def _(op, *, n, start_indices, **params):
 @pad_op.register(ConstantDiagonal)
 @pad_op.register(Diagonal)
 def _(op, *, n, padding_value, **params) -> jax.Array:
-    config = params["padding_config"]
-    dense = op.todense()
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
+    return lax.pad(op.todense(), padding_value, **params)

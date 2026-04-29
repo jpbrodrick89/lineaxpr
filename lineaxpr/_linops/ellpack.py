@@ -772,7 +772,9 @@ def _(op, *, n, **params):
 
 @pad_op.register(BEllpack)
 def _(op, *, n, padding_value, **params):
-    config = params["padding_config"]
+    # Walk-frame config has the n identity-pad at -1 (always (0,0,0));
+    # structural logic operates on the spatial entries only.
+    config = params["padding_config"][:-1]
     before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
     before, after = int(before), int(after)
     interior = int(interior)
@@ -823,9 +825,7 @@ def _(op, *, n, padding_value, **params):
         )
 
     # Dense fallback.
-    dense = op.todense()
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
+    return lax.pad(op.todense(), padding_value, **params)
 
 
 @squeeze_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]

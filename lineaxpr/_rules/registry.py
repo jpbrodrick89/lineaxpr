@@ -130,9 +130,14 @@ def _pad_rule(invals, traced, n, **params):
         return None
     if hasattr(padding_value, "shape") and padding_value.shape != ():
         raise NotImplementedError("pad with non-scalar padding_value")
-    # vmap prepends (0,0,0) for the batch dim; drop it.
+    # Translate jaxpr-frame padding_config (vmap put n at position 0) to
+    # walk-frame (n at -1). The leading entry is always (0,0,0) because
+    # vmap doesn't pad its inserted batch axis; drop it from the front
+    # and append at the back to preserve the n identity-pad.
+    cfg = tuple(params["padding_config"])
+    walk_cfg = cfg[1:] + ((0, 0, 0),)
     return pad_op(operand, n=n, padding_value=padding_value,
-                  **_vmap_strip(padding_config=_drop)(params, n))
+                  padding_config=walk_cfg)
 
 
 def _concatenate_rule_vmap(invals, traced, n, **params):
