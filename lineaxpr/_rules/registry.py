@@ -59,19 +59,11 @@ __all__ = [
 # Axis-strip primitives and generic rule factory
 # ---------------------------------------------------------------------------
 
-def _drop(v):
-    """Drop the leading element (the vmap batch entry); no-op for None."""
-    return v[1:] if v is not None else v
-
 def _decr(v):
     """Subtract 1 from every element; works on int or tuple."""
     if hasattr(v, "__iter__"):
         return tuple(int(x) - 1 for x in v)
     return int(v) - 1
-
-def _drop_decr(v):
-    """Drop the leading element then decrement the rest."""
-    return tuple(int(x) - 1 for x in v[1:])
 
 
 def _vmap_strip(**ops):
@@ -309,8 +301,31 @@ materialize_rules[lax.convert_element_type_p] = (
 )
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
-materialize_rules[lax.slice_p] = _vmap_unary_rule(slice_op,
-    strip=_vmap_strip(start_indices=_drop, limit_indices=_drop, strides=_drop))
+def _slice_rule(invals, traced, n, **params):
+    """Translate jaxpr-frame slice params (n at 0) to walk-frame (n at -1).
+
+    vmap puts n at position 0 with start=0, limit=n, stride=1 (the
+    identity slice). Move that triple to the end so walk-frame ops can
+    treat n's slot as an identity at position -1.
+    """
+    (op,), (t,) = invals, traced
+    if not t:
+        return None
+    params.pop("_vmap_avals", None)
+    starts = tuple(params["start_indices"])
+    limits = tuple(params["limit_indices"])
+    walk_params = {
+        **params,
+        "start_indices": starts[1:] + (0,),
+        "limit_indices": limits[1:] + (n,),
+    }
+    strides = params.get("strides")
+    if strides is not None:
+        walk_params["strides"] = tuple(strides)[1:] + (1,)
+    return slice_op(op, n=n, **walk_params)
+
+
+materialize_rules[lax.slice_p] = _slice_rule
 materialize_rules[lax.pad_p] = _pad_rule
 materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op,
     strip=_vmap_strip(dimensions=_decr))

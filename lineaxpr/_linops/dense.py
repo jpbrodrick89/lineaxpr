@@ -47,14 +47,7 @@ def _(op, *, n, **params):
 @slice_op.register(jax.Array)
 @slice_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(op, s_full, l_full, str_full)
+    return lax.slice(op, **params)
 
 
 @pad_op.register(jax.Array)

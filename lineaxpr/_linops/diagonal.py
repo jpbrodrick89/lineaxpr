@@ -159,10 +159,13 @@ def _(op, v):
 
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
+    # Walk-frame: each indices tuple ends with the n identity-slice;
+    # strip the trailing entry for spatial-only structural checks.
+    starts = tuple(int(x) for x in params["start_indices"])[:-1]
+    limits = tuple(int(x) for x in params["limit_indices"])[:-1]
     strides_p = params.get("strides")
-    strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
+    strides = (tuple(int(x) for x in strides_p)[:-1]
+               if strides_p else (1,) * len(starts))
     if len(starts) == 1:
         s, e = starts[0], limits[0]
         stride = strides[0]
@@ -175,19 +178,16 @@ def _(op, *, n, **params):
             out_size=k_out, in_size=op.n,
         )
     # Multi-dim: dense fallback
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @slice_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
+    starts = tuple(int(x) for x in params["start_indices"])[:-1]
+    limits = tuple(int(x) for x in params["limit_indices"])[:-1]
     strides_p = params.get("strides")
-    strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
+    strides = (tuple(int(x) for x in strides_p)[:-1]
+               if strides_p else (1,) * len(starts))
     if len(starts) == 1:
         s, e = starts[0], limits[0]
         stride = strides[0]
@@ -198,11 +198,7 @@ def _(op, *, n, **params):
             in_cols=(cols,), data=op.data[s:e:stride],
             out_size=k_out, in_size=op.n,
         )
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @squeeze_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]

@@ -45,10 +45,13 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
 
 @slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
+    # Walk-frame: each indices tuple ends with the n identity-slice;
+    # strip the trailing entry for spatial-only structural checks.
+    starts = tuple(int(s) for s in params["start_indices"])[:-1]
+    limits = tuple(int(l) for l in params["limit_indices"])[:-1]
     strides_p = params.get("strides")
-    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
+    strides = (tuple(int(s) for s in strides_p)[:-1]
+               if strides_p else (1,) * len(starts))
 
     if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
         s, e = starts[0], limits[0]
@@ -78,11 +81,7 @@ def _(op: sparse.BCOO, *, n, **params):
         return sparse.BCOO((new_data, new_indices), shape=(k, op.shape[1]))
 
     # Dense fallback for other BCOO slice patterns.
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @pad_op.register(sparse.BCOO)

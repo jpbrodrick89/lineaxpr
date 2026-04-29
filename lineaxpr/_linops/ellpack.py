@@ -728,10 +728,14 @@ def _(op, v):
 
 @slice_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
+    # Walk-frame: each indices tuple ends with the n identity-slice
+    # (start=0, limit=n, stride=1). Strip the trailing entry for
+    # spatial-only structural checks.
+    starts = tuple(int(s) for s in params["start_indices"])[:-1]
+    limits = tuple(int(l) for l in params["limit_indices"])[:-1]
     strides_p = params.get("strides")
-    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
+    strides = (tuple(int(s) for s in strides_p)[:-1]
+               if strides_p else (1,) * len(starts))
 
     # Unit-stride 1D slice on unbatched BEllpack.
     if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
@@ -763,11 +767,7 @@ def _(op, *, n, **params):
         return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
 
     # Dense fallback.
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @pad_op.register(BEllpack)
