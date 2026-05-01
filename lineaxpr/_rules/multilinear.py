@@ -123,18 +123,17 @@ def _dot_general_rule(invals, traced, n, **params):
         tensor = lax.transpose(M, remaining + c_M)
         return traced_op.data * tensor
 
-    # vmap walk: jaxpr contraction dims are shifted by the vmap batch position
-    # (bdim).  Translate to walk-space dims before delegating to dispatch/dense.
-    # Non-vmap walk: vmap_avals is None, c_tr_use == c_tr (no shift).
-    if vmap_avals is not None:
-        traced_aval = vmap_avals[0] if tx else vmap_avals[1]
-        try:
-            bdim = next(i for i, s in enumerate(traced_aval) if int(s) == n)
-        except StopIteration:
-            bdim = 0
-        c_tr_use = [c if c < bdim else c - 1 for c in c_tr]
+    # Phase B: vmap(-1, -1) puts V at -1 in jaxpr-frame. Operand-frame V
+    # position depends on the LinOp's `transposed` flag: BE.transposed=True
+    # has V at 0 (so jaxpr axes shift +1 to reach operand frame); everything
+    # else has V at -1 (matching jaxpr; just drop the V slot from c_tr).
+    if isinstance(traced_op, BEllpack) and traced_op.transposed:
+        c_tr_use = [c + 1 for c in c_tr]
     else:
-        c_tr_use = c_tr
+        traced_ndim = (vmap_avals[0 if tx else 1] is not None
+                       and len(vmap_avals[0 if tx else 1])) if vmap_avals else 0
+        bdim = traced_ndim - 1 if traced_ndim else 0
+        c_tr_use = [c if c < bdim else c - 1 for c in c_tr]
 
     # Structural BEllpack × closure-matrix path (see
     # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
