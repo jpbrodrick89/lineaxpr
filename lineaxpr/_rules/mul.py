@@ -156,15 +156,9 @@ def _mul_rule(invals, traced, n, **params):
                 out_size=new_out, in_size=traced_op.in_size,
                 batch_shape=traced_op.batch_shape,
             )
+    # Dense fallback: just trust natural broadcasting. Under vmap, JAX
+    # already wraps scale appropriately so `scale * dense` does the
+    # right thing — manual axis-insertion logic was bogus and silently
+    # dropped axes when scale was a (1, k) closure broadcast row.
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
-    # Phase B: scale's last axis typically aligns with dense's in-axis
-    # (jaxpr's last axis = vmap batch under vmap(-1, -1)). Try natural
-    # broadcasting first; fall back to inserting a trailing axis if
-    # scale aligns with the out-axis instead.
-    scale_arr = jnp.asarray(scale)
-    if scale_arr.ndim >= 1 and dense.ndim >= 2:
-        if scale_arr.shape[-1] == dense.shape[-1]:
-            return scale_arr * dense  # in-axis broadcast (Phase B)
-        if scale_arr.shape[-1] == dense.shape[-2]:
-            return scale_arr[..., None] * dense  # out-axis broadcast
-    return scale_arr * dense
+    return jnp.asarray(scale) * dense
