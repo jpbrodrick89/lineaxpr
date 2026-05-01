@@ -773,27 +773,31 @@ def _(op, v):
 
 @slice_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    # Walk-frame: each indices tuple ends with the n identity-slice
-    # (start=0, limit=n, stride=1). Strip the trailing entry for
-    # spatial-only structural checks.
-    starts = tuple(int(s) for s in params["start_indices"])[:-1]
-    limits = tuple(int(l) for l in params["limit_indices"])[:-1]
+    starts = tuple(int(s) for s in params["start_indices"])
+    limits = tuple(int(l) for l in params["limit_indices"])
     strides_p = params.get("strides")
-    strides = (tuple(int(s) for s in strides_p)[:-1]
+    strides = (tuple(int(s) for s in strides_p)
                if strides_p else (1,) * len(starts))
+    in_axis_noop = (len(starts) >= 2
+                    and starts[-1] == 0
+                    and limits[-1] == op.in_size
+                    and strides[-1] == 1)
 
-    # Unit-stride 1D slice on unbatched BEllpack.
-    if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
+    # Unit-stride 1D primal slice on unbatched BEllpack.
+    if (len(starts) == 2 and in_axis_noop
+            and strides[0] == 1 and op.n_batch == 0):
         s, e = starts[0], limits[0]
         return op.pad_rows(-s, -(op.out_size - e))
 
-    # N-D unit-stride slice on batched BEllpack.
+    # N-D unit-stride slice on batched BEllpack: out_axis is the
+    # second-to-last (preceding the in-axis no-op).
     if (op.n_batch > 0
-            and len(starts) == op.n_batch + 1
-            and all(st == 1 for st in strides)):
+            and in_axis_noop
+            and len(starts) == op.n_batch + 2
+            and all(st == 1 for st in strides[:-1])):
         batch_slicer = tuple(slice(int(s), int(e))
-                             for s, e in zip(starts[:-1], limits[:-1]))
-        out_start, out_limit = int(starts[-1]), int(limits[-1])
+                             for s, e in zip(starts[:-2], limits[:-2]))
+        out_start, out_limit = int(starts[-2]), int(limits[-2])
         tail = (slice(None),) * (op.data.ndim - op.n_batch)
         new_values = op.data[batch_slicer + tail]
         new_in_cols: list[ColArr] = []
@@ -811,29 +815,27 @@ def _(op, *, n, **params):
         )
         return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
 
-    # Dense fallback.
     return lax.slice(op.todense(), **params)
 
 
 @pad_op.register(BEllpack)
 def _(op, *, n, padding_value, **params):
-    # Walk-frame config has the n identity-pad at -1 (always (0,0,0));
-    # structural logic operates on the spatial entries only.
-    config = params["padding_config"][:-1]
-    before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
-    before, after = int(before), int(after)
-    interior = int(interior)
+    config = tuple(params["padding_config"])
+    in_axis_noop = len(config) >= 2 and tuple(config[-1]) == (0, 0, 0)
 
-    # 1D no-interior pad on unbatched BEllpack.
-    if len(config) == 1 and interior == 0 and op.n_batch == 0:
-        return op.pad_rows(before, after)
+    # 1D primal no-interior pad on unbatched BEllpack.
+    if len(config) == 2 and in_axis_noop and op.n_batch == 0:
+        before, after, interior = config[0]
+        if int(interior) == 0:
+            return op.pad_rows(int(before), int(after))
 
     # N-D zero-interior pad on batched BEllpack.
     if (op.n_batch > 0
-            and len(config) == op.n_batch + 1
-            and all(int(c[2]) == 0 for c in config)):
-        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-1])
-        out_before, out_after = int(config[-1][0]), int(config[-1][1])
+            and in_axis_noop
+            and len(config) == op.n_batch + 2
+            and all(int(c[2]) == 0 for c in config[:-1])):
+        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-2])
+        out_before, out_after = int(config[-2][0]), int(config[-2][1])
         new_batch_shape = tuple(
             b + s + a for (b, a), s in zip(batch_pads, op.batch_shape)
         )
@@ -858,16 +860,19 @@ def _(op, *, n, padding_value, **params):
         return padded_batch.pad_rows(out_before, out_after)
 
     # Interior padding — promote to BCOO then shift rows.
-    if len(config) == 1 and interior > 0:
-        bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
-        step = interior + 1
-        old_size = bcoo_op.shape[0]
-        out_size = old_size + before + after + interior * max(old_size - 1, 0)
-        new_rows = bcoo_op.indices[:, 0] * step + before
-        new_indices = jnp.stack([new_rows, bcoo_op.indices[:, 1]], axis=1)
-        return sparse.BCOO(
-            (bcoo_op.data, new_indices), shape=(out_size, bcoo_op.shape[1])
-        )
+    if len(config) == 2 and in_axis_noop:
+        before, after, interior = config[0]
+        before, after, interior = int(before), int(after), int(interior)
+        if interior > 0 and op.n_batch == 0:
+            bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
+            step = interior + 1
+            old_size = bcoo_op.shape[0]
+            out_size = old_size + before + after + interior * max(old_size - 1, 0)
+            new_rows = bcoo_op.indices[:, 0] * step + before
+            new_indices = jnp.stack([new_rows, bcoo_op.indices[:, 1]], axis=1)
+            return sparse.BCOO(
+                (bcoo_op.data, new_indices), shape=(out_size, bcoo_op.shape[1])
+            )
 
     # Dense fallback.
     return lax.pad(op.todense(), padding_value, **params)

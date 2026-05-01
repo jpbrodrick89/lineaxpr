@@ -45,15 +45,19 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
 
 @slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    # Walk-frame: each indices tuple ends with the n identity-slice;
-    # strip the trailing entry for spatial-only structural checks.
-    starts = tuple(int(s) for s in params["start_indices"])[:-1]
-    limits = tuple(int(l) for l in params["limit_indices"])[:-1]
+    starts = tuple(int(s) for s in params["start_indices"])
+    limits = tuple(int(l) for l in params["limit_indices"])
     strides_p = params.get("strides")
-    strides = (tuple(int(s) for s in strides_p)[:-1]
+    strides = (tuple(int(s) for s in strides_p)
                if strides_p else (1,) * len(starts))
+    in_size = op.shape[-1]
+    in_axis_noop = (len(starts) >= 2
+                    and starts[-1] == 0
+                    and limits[-1] == in_size
+                    and strides[-1] == 1)
 
-    if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
+    if (len(starts) == 2 and in_axis_noop
+            and strides[0] == 1 and op.n_batch == 0):
         s, e = starts[0], limits[0]
         k = e - s
         indices_np = None
@@ -86,21 +90,19 @@ def _(op: sparse.BCOO, *, n, **params):
 
 @pad_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, padding_value, **params):
-    # Walk-frame config has the n identity-pad at -1 (always (0,0,0));
-    # structural logic operates on the spatial entries only.
-    config = params["padding_config"][:-1]
-    before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
-    before, after = int(before), int(after)
-    interior = int(interior)
+    config = tuple(params["padding_config"])
+    in_axis_noop = len(config) >= 2 and tuple(config[-1]) == (0, 0, 0)
 
-    if len(config) == 1 and interior == 0:
-        out_size = op.shape[0] + before + after
-        new_rows = op.indices[:, 0] + before
-        new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
-        return sparse.BCOO(
-            (op.data, new_indices), shape=(out_size, op.shape[1])
-        )
-    if len(config) == 1 and interior > 0:
+    if len(config) == 2 and in_axis_noop:
+        before, after, interior = config[0]
+        before, after, interior = int(before), int(after), int(interior)
+        if interior == 0:
+            out_size = op.shape[0] + before + after
+            new_rows = op.indices[:, 0] + before
+            new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
+            return sparse.BCOO(
+                (op.data, new_indices), shape=(out_size, op.shape[1])
+            )
         step = interior + 1
         old_size = op.shape[0]
         out_size = old_size + before + after + interior * max(old_size - 1, 0)
