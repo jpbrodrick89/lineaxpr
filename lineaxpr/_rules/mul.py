@@ -10,6 +10,7 @@ from .._linops import (
     BEllpack,
     ColArr,
     LinOpProtocol,
+    canonicalize,
     scale_per_out_row,
     scale_scalar,
 )
@@ -27,6 +28,11 @@ def _mul_rule(invals, traced, n, **params):
         scale, traced_op = y, x
     else:
         raise NotImplementedError("mul of two traced operands — not linear")
+    # Defensive: rule reads canonical fields (out_size / in_size /
+    # batch_shape) directly, so a transposed=True BE would mismatch
+    # against scale's layout. Canonicalize until this rule learns to
+    # read op.transposed.
+    traced_op = canonicalize(traced_op)
 
     # vmap inserts broadcast_in_dim on scalar closures, giving them shape
     # (1, k) instead of (k,). Squeeze leading (1,) dims so the existing
