@@ -210,8 +210,22 @@ def _(op, *, n, **params):
 
 @broadcast_in_dim_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
-    # for the spatial-only structural checks below.
+    # Inside-vmap (transposed=True): V is at axis 0 in the jaxpr-frame
+    # operand (externally), but BE's batch-at-front structure can't
+    # natively represent V-at-front for rank > 2 outputs. Densify via
+    # op.todense() (which puts V at 0 for transposed 2D BE) and use
+    # lax.broadcast_in_dim — params apply unchanged. Only arises in
+    # 1D→ND primal cases (the bcast+prim grid); sif2jax stays 2D and
+    # falls through to the structural branches below with transposed=False.
+    if op.transposed:
+        return lax.broadcast_in_dim(
+            op.todense(),
+            tuple(params["shape"]),
+            tuple(params["broadcast_dimensions"]),
+        )
+
+    # Walk-frame (transposed=False): shape ends in n, bd ends in n's
+    # mapping. Strip both for the spatial-only structural checks below.
     shape = tuple(params["shape"])[:-1]
     broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
 
