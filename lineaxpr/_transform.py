@@ -224,7 +224,16 @@ def materialize(linear_fn, primal, format: str = "dense"):
     seed = Identity(n, dtype=primal.dtype)
     # vmap config is centralised here so callers (sparsify directly)
     # can supply any vmap configuration via jax.vmap on linear_fn.
-    linop = sparsify(jax.vmap(linear_fn))(seed)
+    #
+    # Convention: (in_axes=0, out_axes=-1) is the layout where dense
+    # `vmap(lin, 0, -1)(eye)` equals J (the Jacobian) directly, with no
+    # post-hoc transpose. Today's walker happens to produce J for any
+    # default-ish vmap because of its walk-frame translation rules,
+    # but the (0, -1) choice is what aligns with the long-term
+    # invariant `sparsify(vmap(lin, ia, oa))(seed) == vmap(lin, ia, oa)(seed_dense)`
+    # — a future Phase B retires the walk-frame translation in rules,
+    # and at that point this default keeps materialize returning J.
+    linop = sparsify(jax.vmap(linear_fn, in_axes=0, out_axes=-1))(seed)
     if format == "dense":
         return linop.todense() if isinstance(linop, LinOpProtocol) else linop
     bcoo = linop.to_bcoo() if hasattr(linop, 'to_bcoo') else linop
