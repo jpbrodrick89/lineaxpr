@@ -157,4 +157,14 @@ def _mul_rule(invals, traced, n, **params):
                 batch_shape=traced_op.batch_shape,
             )
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
-    return scale[..., None] * dense
+    # Phase B: scale's last axis typically aligns with dense's in-axis
+    # (jaxpr's last axis = vmap batch under vmap(-1, -1)). Try natural
+    # broadcasting first; fall back to inserting a trailing axis if
+    # scale aligns with the out-axis instead.
+    scale_arr = jnp.asarray(scale)
+    if scale_arr.ndim >= 1 and dense.ndim >= 2:
+        if scale_arr.shape[-1] == dense.shape[-1]:
+            return scale_arr * dense  # in-axis broadcast (Phase B)
+        if scale_arr.shape[-1] == dense.shape[-2]:
+            return scale_arr[..., None] * dense  # out-axis broadcast
+    return scale_arr * dense
