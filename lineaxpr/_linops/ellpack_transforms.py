@@ -224,10 +224,38 @@ def _(op, *, n, **params):
             tuple(params["broadcast_dimensions"]),
         )
 
+    # Inside-vmap untransposed row-vector BE (out_size=1): the strip
+    # below assumes V at output axis -1, but row-vector chains routed
+    # through transpose+squeeze+mul end up here with V at output axis
+    # bd[0] != ndim_out - 1 (e.g. arrowhead's `bcast(q:(3,), bd=(0,),
+    # shape=(3,1))` where V stays at axis 0). The strip then mis-tiles
+    # the singleton primal axis. Sticking plaster: densify and use
+    # direct lax.broadcast_in_dim. Loses any sparsity we'd have
+    # recovered structurally, but fixes the wrong-shape output.
+    full_bd = tuple(params["broadcast_dimensions"])
+    full_shape = tuple(params["shape"])
+    # Inside-vmap row-vector pattern (e.g. arrowhead's
+    # `bcast(q:(3,), bd=(0,), shape=(3,1))`): jaxpr-frame input is 1D
+    # (V only — the row vector's scalar primal output collapses to no
+    # axis in jaxpr) and bd[0] != ndim_out - 1 means V is NOT at the
+    # output's trailing axis. The `[:-1]` strip below would remove the
+    # wrong slot (the new singleton primal axis instead of V's slot)
+    # and the structural branches would mis-tile. Sticking plaster:
+    # densify and let lax.broadcast_in_dim handle it.
+    if (op.out_size == 1 and op.n_batch == 0
+            and op.start_row == 0 and op.end_row == 1
+            and len(full_bd) == 1
+            and full_bd[0] != len(full_shape) - 1):
+        # BE.todense() shape (1, in_size); squeeze leading singleton to
+        # match jaxpr's 1D input view.
+        return lax.broadcast_in_dim(
+            op.todense().squeeze(axis=0), full_shape, full_bd
+        )
+
     # Walk-frame (transposed=False): shape ends in n, bd ends in n's
     # mapping. Strip both for the spatial-only structural checks below.
-    shape = tuple(params["shape"])[:-1]
-    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
+    shape = full_shape[:-1]
+    broadcast_dimensions = full_bd[:-1]
 
     # Linear form (aval ()) broadcast to shape (1,): pass through BE row-vector.
     if (broadcast_dimensions == () and tuple(shape) == (1,)

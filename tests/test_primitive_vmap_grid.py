@@ -530,3 +530,30 @@ def test_diagonal_of_reshape(seed_kind, in_ax, out_ax):
     y = jnp.linspace(0.4, 0.9, n * n)
     g = jax.grad(lambda y: jnp.sum(jnp.diagonal(y.reshape(n, n)) ** 2))
     _check("diagonal_of_reshape", g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# Arrowhead-pattern row-vector broadcast regression
+#
+# `f(x) = 0.5*sum(x**2) + x[0]*sum(x[1:])` (n=3) emits a chain
+# `slice → reduce_sum → mul → broadcast_in_dim` where the
+# broadcast_in_dim takes a row-vector BE (out_size=1) of shape (1, 3)
+# and applies `bd=(0,) shape=(3, 1)` — V at output axis 0, NOT at -1.
+# The walker's `[:-1]` strip removed the wrong slot (the new singleton
+# primal instead of V), structural "tile to N rows" branch fired, and
+# produced shape (3, 3) where jaxpr expected (3, 1).
+#
+# Sticking-plaster fix: detect this row-vector + V-at-output-front
+# pattern and densify. Loses any structural sparsity for this case
+# (acceptable; broadcast was already losing sparsity broadly).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+def test_arrowhead_pattern(seed_kind, in_ax, out_ax):
+    """Linearised-grad of arrowhead Hessian.
+    Hits the row-vector BE broadcast where V is at output axis 0."""
+    n = 6
+    y = jnp.linspace(0.4, 0.9, n)
+    g = jax.grad(lambda x: 0.5 * jnp.sum(x**2) + x[0] * jnp.sum(x[1:]))
+    _check("arrowhead", g, y, seed_kind, in_ax, out_ax)
