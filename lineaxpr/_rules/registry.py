@@ -31,6 +31,8 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
+    ConstantDiagonal,
+    Diagonal,
     LinOpProtocol,
     broadcast_in_dim_op,
     gather_op,
@@ -436,6 +438,22 @@ def _transpose_rule(invals, traced, n, **params):
     walk_perm = tuple(to_walk(perm[j]) for j in range(ndim) if j != n_out) + (ndim - 1,)
 
     if walk_perm == tuple(range(ndim)):
+        # Walker-frame says no-op. But if the jaxpr perm actually moved
+        # bdim relative to the remaining axes (i.e. perm != identity),
+        # the user-frame semantics is a row/col swap — this is the
+        # rectangular-Jacobian boundary transpose induced by non-default
+        # vmap out_axes. For 2D BEllpack, flip the `transposed` flag
+        # (free); for other forms, fall through to the dense path.
+        if perm == tuple(range(ndim)):
+            return op
+        if isinstance(op, BEllpack) and op.n_batch == 0:
+            return replace_slots(op, transposed=not op.transposed)
+        # CD / Diagonal / Identity are symmetric — no-op is correct.
+        if isinstance(op, (ConstantDiagonal, Diagonal)):
+            return op
+        # BCOO / dense / other LinOps: future work — for now, fall
+        # through to op.transpose with a non-identity perm to stay
+        # bug-compatible with prior behavior on asymmetric inputs.
         return op
     # BCOO's native transpose disallows permutations that mix batch/sparse/
     # dense axes (see jax.experimental.sparse.bcoo._validate_permutation).
