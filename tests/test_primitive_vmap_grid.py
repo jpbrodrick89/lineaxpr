@@ -70,6 +70,28 @@ GRID = _grid()
 REDUCE_SUM_GRID = _grid(out_axes=(-1, 0))
 
 
+def _bcast_grid(out_axes=(-1, 0, 1)):
+    """All-xfail variant. Used by the bcast+prim composition tests, which
+    today exercise broadcast_in_dim's strip-friendly walk-frame output
+    feeding into downstream prims that still expect the un-broadcast
+    operand shape. xfails track which cells will need to flip to passing
+    once the full `[:-1]` strip removal is synced across all dispatch ops.
+    """
+    cells = []
+    for seed_kind in ("Identity", "BEllpack"):
+        for in_ax in (-1, 0, 1):
+            for out_ax in out_axes:
+                pid = f"{seed_kind}-{in_ax}-{out_ax}"
+                cells.append(pytest.param(
+                    seed_kind, in_ax, out_ax, id=pid, marks=_XFAIL_MARK,
+                ))
+    return cells
+
+
+BCAST_GRID = _bcast_grid()
+BCAST_REDUCE_SUM_GRID = _bcast_grid(out_axes=(-1, 0))
+
+
 def _densify(linop):
     if hasattr(linop, "todense"):
         return np.asarray(linop.todense())
@@ -220,3 +242,93 @@ def test_dot_general_matvec(seed_kind, in_ax, out_ax):
     M = jnp.asarray(np.arange(n * n).reshape(n, n).astype(np.float64))
     y = jnp.linspace(0.1, 1.0, n)
     _check("dot_general", lambda x: M @ x, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# broadcast_in_dim composed with each downstream primitive.
+#
+# Tracks failure modes for the eventual full removal of the dispatch-op
+# `[:-1]` walk-frame strip. Each test pre-broadcasts the operand (so the
+# downstream primitive's operand has a non-trivial broadcast in its
+# lineage) and then applies the primitive. xfails are expected today —
+# the strip-friendly broadcast_in_dim_op output is shape-compatible with
+# walk-frame dispatch ops, but a fully strip-free convention will need
+# every downstream prim's dispatch to handle the new operand shape too.
+# ---------------------------------------------------------------------------
+
+
+def _bcast_then(prim_fn):
+    """Return a fn that broadcasts `x` to (n, 3) trailing then applies prim_fn.
+
+    Squeeze brings the result back to 1D in the size-3 broadcast axis being
+    summed by the trailing prim — keeps composition shape-compatible with
+    the 1D-input primitives in the grid.
+    """
+    def f(x):
+        x2 = jnp.broadcast_to(x[:, None], (x.shape[0], 3))
+        return prim_fn(x2.sum(axis=1))
+    return f
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_slice(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+slice",
+           _bcast_then(lambda x: lax.slice(x, (1,), (5,), (1,))),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_pad(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+pad",
+           _bcast_then(lambda x: lax.pad(x, 0.0, ((2, 2, 0),))),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_reshape(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+reshape",
+           _bcast_then(lambda x: x.reshape(2, 3)),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_rev(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+rev",
+           _bcast_then(lambda x: lax.rev(x, dimensions=(0,))),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_REDUCE_SUM_GRID)
+def test_bcast_then_reduce_sum(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+reduce_sum",
+           _bcast_then(lambda x: jnp.sum(x)),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_concatenate(seed_kind, in_ax, out_ax):
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+concatenate",
+           _bcast_then(lambda x: jnp.concatenate([x[:3], x[3:]])),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", BCAST_GRID)
+def test_bcast_then_dot_general(seed_kind, in_ax, out_ax):
+    n = 6
+    M = jnp.asarray(np.arange(n * n).reshape(n, n).astype(np.float64))
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("bcast+dot_general",
+           _bcast_then(lambda x: M @ x),
+           y, seed_kind, in_ax, out_ax)
