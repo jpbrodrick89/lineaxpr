@@ -315,9 +315,11 @@ materialize_rules[lax.div_p] = _div_rule
 def _transpose_rule(invals, traced, n, **params):
     """Phase B: jaxpr params pass straight through.
 
-    For 2D BEllpack with row/col swap (perm=(1, 0)), use the free
-    `transposed` flag flip. For BCOO, use native transpose (cheap
-    index swap). For other forms, dispatch to op.transpose.
+    Boundary V-transposes (the (1, 2, ..., n-1, 0) and reverse forms
+    that vmap inserts around broadcast_in_dim/reshape) flip BE's
+    `transposed` flag for free in the 2D case. ND boundary transposes
+    fall through to dense motion since BE's structure (batch at front)
+    cannot natively represent V-at-front on rank > 2.
     """
     (op,), (t,) = invals, traced
     if not t:
@@ -335,6 +337,11 @@ def _transpose_rule(invals, traced, n, **params):
     # CD / Diagonal: symmetric, perm is no-op for square.
     if isinstance(op, (ConstantDiagonal, Diagonal)):
         return op
+    # BEllpack with non-(1,0) perm: BE's structure can't represent
+    # V-at-front for rank > 2 (batch_shape sits at the front
+    # regardless of `transposed`). Densify and let lax.transpose handle it.
+    if isinstance(op, BEllpack):
+        return lax.transpose(op.todense(), perm)
     return op.transpose(perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 
