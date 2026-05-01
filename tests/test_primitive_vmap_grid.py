@@ -105,18 +105,9 @@ def _check(prim_name, partial_prim, y, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 # identity — lin_fn is the identity. Trivial walk; tests that single
 # transposes induced by the (in, out) layout pass through.
-#
-# All 9 cells pass: vmap-induced transposes flip the transposed flag
-# on BEllpack (free) and identity for ConstantDiagonal (symmetric).
-# Promoted from xfail.
 # ---------------------------------------------------------------------------
 
-ALL_AXES_GRID = [
-    (in_ax, out_ax) for in_ax in (-1, 0, 1) for out_ax in (-1, 0, 1)
-]
-
-
-@pytest.mark.parametrize("in_ax,out_ax", ALL_AXES_GRID)
+@pytest.mark.parametrize("in_ax,out_ax", VMAP_AXES_GRID)
 def test_identity(in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
