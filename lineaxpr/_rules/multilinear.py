@@ -87,7 +87,7 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
 
 
 def _dot_general_rule(invals, traced, n, **params):
-    vmap_avals = params.pop("_vmap_avals", None)
+    params.pop("_vmap_avals", None)
     x, y = invals
     tx, ty = traced
     (contract, batch) = params["dimension_numbers"]
@@ -123,41 +123,36 @@ def _dot_general_rule(invals, traced, n, **params):
         tensor = lax.transpose(M, remaining + c_M)
         return traced_op.data * tensor
 
-    # Phase B: vmap(-1, -1) puts V at -1 in jaxpr-frame. Operand-frame V
-    # position depends on the LinOp's `transposed` flag: BE.transposed=True
-    # has V at 0 (so jaxpr axes shift +1 to reach operand frame); everything
-    # else has V at -1 (matching jaxpr; just drop the V slot from c_tr).
-    if isinstance(traced_op, BEllpack) and traced_op.transposed:
-        c_tr_use = [c + 1 for c in c_tr]
-    else:
-        traced_ndim = (vmap_avals[0 if tx else 1] is not None
-                       and len(vmap_avals[0 if tx else 1])) if vmap_avals else 0
-        bdim = traced_ndim - 1 if traced_ndim else 0
-        c_tr_use = [c if c < bdim else c - 1 for c in c_tr]
-
-    # Structural BEllpack × closure-matrix path (see
-    # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
-    # falls through to dense).
+    # Structural BEllpack × closure-matrix path: only fires for
+    # BE.transposed=False (V at -1, walk-space convention). Skip for
+    # transposed BE — let it fall through to the dense path where
+    # jaxpr params apply directly. `c_tr_use` here is in walk-space
+    # (V removed); for unbatched 1D primal that's `c_tr - 1` if c_tr
+    # pointed at V, else `c_tr` itself.
     if (isinstance(traced_op, BEllpack)
+            and not traced_op.transposed
             and M.ndim == 2
             and len(c_tr) == 1 and len(c_M) == 1
             and traced_op.start_row == 0
             and traced_op.end_row == traced_op.out_size):
+        # For BE.transposed=False under vmap(-1, -1), operand has V at -1
+        # (axis 1 of 2D BE shape). c_tr=(0,) (primal=out axis) is the
+        # natural contraction; c_be should be 0 in walk-space.
+        c_be = c_tr[0]
         be_result = _be_dot_closure_matrix(
-            traced_op, M, c_tr_use[0], c_M[0], traced_is_first,
+            traced_op, M, c_be, c_M[0], traced_is_first,
         )
         if be_result is not None:
             return be_result
 
+    # Dense fallback: just trust JAX vmap's c_tr/c_M (they already
+    # account for V's position in each operand). No translation needed.
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
-        out = lax.dot_general(
-            dense, M, ((tuple(c_tr_use), tuple(c_M)), ((), ()))
+        return lax.dot_general(
+            dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))
         )
-        # dense's trailing `n` axis is never contracted; dot_general's
-        # output places it at `len(traced_shape) - len(c_tr_use)`. Move to end.
-        return jnp.moveaxis(out, len(traced_shape) - len(c_tr_use), -1)
-    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr_use)), ((), ())))
+    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr)), ((), ())))
 
 
 def _sub_rule(invals, traced, n, **params):

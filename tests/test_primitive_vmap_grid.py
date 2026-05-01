@@ -127,11 +127,10 @@ BCAST_REDUCE_SUM_GRID_IDENTITY_EXT = _bcast_grid(
     out_axes=(-1, 0),
     passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
 )
-# bcast+dot_general: Identity passes everywhere; BEllpack fails (residual
-# walker-invariant gap on the broadcast→dot_general chain for asymmetric
-# seeds — same root as the remaining sweep failures).
+# bcast+dot_general: Identity passes everywhere; BEllpack passes design-
+# target cells now that dot_general trusts JAX vmap's c_tr/c_M directly.
 BCAST_GRID_IDENTITY_ONLY = _bcast_grid(
-    passing={"Identity": _FULL, "BEllpack": set()},
+    passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
 )
 
 
@@ -279,7 +278,7 @@ def test_broadcast_in_dim_trailing_size3(seed_kind, in_ax, out_ax):
            y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_IDENTITY_EXT)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
 def test_dot_general_matvec(seed_kind, in_ax, out_ax):
     n = 6
     M = jnp.asarray(np.arange(n * n).reshape(n, n).astype(np.float64))
