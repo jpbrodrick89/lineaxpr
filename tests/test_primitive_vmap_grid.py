@@ -374,3 +374,30 @@ def test_bcast_then_dot_general(seed_kind, in_ax, out_ax):
     _check("bcast+dot_general",
            _bcast_then(lambda x: M @ x),
            y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# Outer-product-with-closure-row regression (HATFLDFL pattern)
+#
+# The linearized hvp of `f(x) = sum(power(x[i], T))` (T a length-k
+# closure vector) emits `mul(broadcast_in_dim(traced_1D, bd=(0,)),
+# broadcast_in_dim(closure_T, bd=(1,)))` — a (V, 1)*(1, k) outer-product
+# pattern. The mul rule's dense fallback once special-cased
+# `scale.shape[-1] == dense.shape[-2]` and inserted a trailing axis,
+# silently dropping the (1, k) closure row's broadcast. That collapsed
+# accumulated contributions and produced an asymmetric, off-by-2x
+# Hessian for HATFLDFL/HATFLDFLS.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_IDENTITY_EXT)
+def test_outer_with_closure_row(seed_kind, in_ax, out_ax):
+    """Linearized form: dx[i] -> dx[:, None] * c[None, :] — 1D in,
+    2D out with a closure row vector. Exercises the mul rule path
+    that accidentally collapsed the row broadcast."""
+    n = 6
+    c = jnp.asarray(np.arange(1, 4, dtype=np.float64))  # closure (3,)
+    y = jnp.linspace(0.5, 1.0, n)
+    _check("outer_with_closure_row",
+           lambda x: x[:, None] * c[None, :],
+           y, seed_kind, in_ax, out_ax)
