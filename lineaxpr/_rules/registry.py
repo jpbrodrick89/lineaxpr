@@ -118,12 +118,6 @@ def _pad_rule(invals, traced, n, **params):
     return pad_op(operand, n=n, padding_value=padding_value, **params)
 
 
-def _concatenate_rule_vmap(invals, traced, n, **params):
-    """Phase B: jaxpr params pass straight through."""
-    return _concatenate_rule(invals, traced, n, **params)
-
-
-
 # ---------------------------------------------------------------------------
 # Gather — vmap shifts the gather dimension numbers
 # ---------------------------------------------------------------------------
@@ -279,7 +273,7 @@ materialize_rules[lax.rev_p] = _make_unary_rule(rev_op)
 materialize_rules[lax.reshape_p] = _make_unary_rule(reshape_op)
 materialize_rules[lax.broadcast_in_dim_p] = _make_unary_rule(broadcast_in_dim_op)
 materialize_rules[lax.reduce_sum_p] = _make_unary_rule(reduce_sum_op)
-materialize_rules[lax.concatenate_p] = _concatenate_rule_vmap
+materialize_rules[lax.concatenate_p] = _concatenate_rule
 materialize_rules[lax.split_p] = _make_unary_rule(split_op)
 
 try:
