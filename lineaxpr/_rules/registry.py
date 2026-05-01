@@ -61,58 +61,41 @@ __all__ = [
 # Axis-strip primitives and generic rule factory
 # ---------------------------------------------------------------------------
 
-def _decr(v):
-    """Subtract 1 from every element; works on int or tuple."""
-    if hasattr(v, "__iter__"):
-        return tuple(int(x) - 1 for x in v)
-    return int(v) - 1
+def _make_unary_rule(dispatch_fn=None, *, prim=None, zero_preserving=False):
+    """Build a single-traced-operand rule.
 
+    Two flavours:
 
-def _vmap_strip(**ops):
-    """Return a (params, n) → params function that applies one strip op per key."""
-    def strip(params, n):
-        return {**params, **{k: f(params[k]) for k, f in ops.items() if k in params}}
-    return strip
+    - `zero_preserving=True` (with `prim` given): the rule applies the
+      primitive directly to `op.data` and rebuilds the same LinOp form
+      via `replace_slots`. Suits elementwise primitives that map zero
+      to zero (`neg`, `conj`, `real`, `imag`, `convert_element_type`,
+      ...). Mirrors `jax.experimental.sparse.transform._zero_preserving_unary_op`.
 
-
-def _vmap_unary_rule(dispatch_fn, strip=None):
-    """Phase B: unary rule passes jaxpr params straight through.
-
-    Legacy `strip` kwarg supported for backward compatibility, but is
-    now unused (all call sites no longer pass it after Phase B).
+    - `zero_preserving=False` (default, with `dispatch_fn` given):
+      delegates to a singledispatch op (`slice_op`, `squeeze_op`, ...)
+      that has per-LinOp implementations. Jaxpr params pass straight
+      through (Phase B convention — no walk-frame translation).
     """
+    if zero_preserving:
+        assert prim is not None, "zero_preserving=True requires `prim`"
+        def rule(invals, traced, n, **params):
+            del n
+            params.pop("_vmap_avals", None)
+            (op,), (t,) = invals, traced
+            if not t:
+                return None
+            if isinstance(op, LinOpProtocol):
+                return replace_slots(op, data=prim.bind(op.data, **params))
+            return prim.bind(op, **params)
+        return rule
+    assert dispatch_fn is not None, "zero_preserving=False requires `dispatch_fn`"
     def rule(invals, traced, n, **params):
         (op,), (t,) = invals, traced
         if not t:
             return None
         params.pop("_vmap_avals", None)
-        if strip:
-            params = strip(params, n)
         return dispatch_fn(op, n=n, **params)
-    return rule
-
-
-# ---------------------------------------------------------------------------
-# Unchanged rules (no axis params)
-# ---------------------------------------------------------------------------
-
-def _make_zero_preserving_linear_unary_rule(prim):
-    """Mirror of `jax.experimental.sparse.transform._zero_preserving_unary_op`.
-
-    Pushes a primitive through any LinOp by applying it to `op.data`
-    and rebuilding the same form via `replace_slots` (which handles
-    both our `__slots__` LinOps and BCOO's `__dict__`-backed storage
-    uniformly).
-    """
-    def rule(invals, traced, n, **params):
-        del n
-        params.pop("_vmap_avals", None)
-        (op,), (t,) = invals, traced
-        if not t:
-            return None
-        if isinstance(op, LinOpProtocol):
-            return replace_slots(op, data=prim.bind(op.data, **params))
-        return prim.bind(op, **params)
     return rule
 
 
@@ -281,56 +264,23 @@ except ImportError:
 # applies the primitive to `.data` and rebuilds the LinOp via `replace_slots`.
 # Mirrors the upstream pattern at jax.experimental.sparse.transform:539–541.
 for _prim in _zero_preserving_linear_unary_primitives:
-    materialize_rules[_prim] = _make_zero_preserving_linear_unary_rule(_prim)
+    materialize_rules[_prim] = _make_unary_rule(prim=_prim, zero_preserving=True)
 # convert_element_type_p has a `new_dtype` param and isn't in upstream's
 # list, but the same body works (data dtype follows the primitive output).
-materialize_rules[lax.convert_element_type_p] = (
-    _make_zero_preserving_linear_unary_rule(lax.convert_element_type_p)
+materialize_rules[lax.convert_element_type_p] = _make_unary_rule(
+    prim=lax.convert_element_type_p, zero_preserving=True,
 )
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
-def _slice_rule(invals, traced, n, **params):
-    """Phase B: jaxpr params pass straight through.
-
-    With materialize using vmap(-1, -1), the per-sample axis is at
-    jaxpr-pos 0 and the batch (linearization) axis is at jaxpr-pos -1.
-    This matches the walker's BEllpack convention (out at first axis,
-    in at last) directly — no translation needed.
-    """
-    (op,), (t,) = invals, traced
-    if not t:
-        return None
-    params.pop("_vmap_avals", None)
-    return slice_op(op, n=n, **params)
-
-
-materialize_rules[lax.slice_p] = _slice_rule
+materialize_rules[lax.slice_p] = _make_unary_rule(slice_op)
 materialize_rules[lax.pad_p] = _pad_rule
-materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op)
-materialize_rules[lax.rev_p] = _vmap_unary_rule(rev_op)
-def _reshape_rule(invals, traced, n, **params):
-    """Phase B: jaxpr params pass straight through."""
-    (op,), (t,) = invals, traced
-    if not t:
-        return None
-    params.pop("_vmap_avals", None)
-    return reshape_op(op, n=n, **params)
-
-
-materialize_rules[lax.reshape_p] = _reshape_rule
-def _broadcast_in_dim_rule(invals, traced, n, **params):
-    """Phase B: jaxpr params pass straight through."""
-    (op,), (t,) = invals, traced
-    if not t:
-        return None
-    params.pop("_vmap_avals", None)
-    return broadcast_in_dim_op(op, n=n, **params)
-
-
-materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
-materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op)
+materialize_rules[lax.squeeze_p] = _make_unary_rule(squeeze_op)
+materialize_rules[lax.rev_p] = _make_unary_rule(rev_op)
+materialize_rules[lax.reshape_p] = _make_unary_rule(reshape_op)
+materialize_rules[lax.broadcast_in_dim_p] = _make_unary_rule(broadcast_in_dim_op)
+materialize_rules[lax.reduce_sum_p] = _make_unary_rule(reduce_sum_op)
 materialize_rules[lax.concatenate_p] = _concatenate_rule_vmap
-materialize_rules[lax.split_p] = _vmap_unary_rule(split_op)
+materialize_rules[lax.split_p] = _make_unary_rule(split_op)
 
 try:
     from jax._src.lax.control_flow.conditionals import cond_p
