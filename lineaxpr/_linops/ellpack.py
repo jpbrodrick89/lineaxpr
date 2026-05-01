@@ -444,27 +444,19 @@ def _bcoo_swap_last_two_sparse_axes(bcoo: sparse.BCOO) -> sparse.BCOO:
 def canonicalize(op):
     """Defensive guard for rules that aren't yet transposed-flag-aware.
 
-    For a `transposed=True` BEllpack, strips the flag and returns the
-    underlying canonical-layout BE (no data motion). Pass-through for
-    everything else.
-
-    Rationale: the pre-flag walker was effectively producing
-    canonical-layout intermediates at every internal transpose
-    (the rule no-op'd them). Sif2jax problems are Hessians (symmetric),
-    so the no-op was observably correct even though semantically wrong
-    for asymmetric ops. After we made `_transpose_rule` flip the flag,
-    intermediate rules now see transposed=True operands — but those
-    rules were tuned to the canonical-layout-via-no-op behavior. This
-    helper preserves that behavior at intermediate sites (flag stripped,
-    canonical data passed through) so only the boundary `todense` /
-    `to_bcoo` observe the flag.
+    For a `transposed=True` BEllpack, returns its dense view (loses
+    sparsity but stays correct). Pass-through for everything else.
+    Rules that don't yet inspect `op.transposed` should call this on
+    every BEllpack input so they never see a transposed=True operand
+    in a code path that interprets jaxpr axes as canonical.
 
     Per-rule conversion replaces `op = canonicalize(op)` with proper
-    flag handling, recovering the rectangular-Jacobian semantics for
-    asymmetric ops at internal transposes too.
+    flag handling. Until every rule is converted, this guard ensures
+    that introducing `transposed=True` in any producer doesn't break
+    correctness anywhere downstream.
     """
     if isinstance(op, BEllpack) and op.transposed:
-        return replace_slots(op, transposed=False)
+        return op.todense()
     return op
 
 
