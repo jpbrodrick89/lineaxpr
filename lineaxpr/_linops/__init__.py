@@ -32,7 +32,7 @@ from .base import (
     squeeze_op,
 )
 from .diagonal import ConstantDiagonal, Diagonal, Identity
-from .ellpack import BEllpack, ColArr, _ellpack_to_bcoo_batched
+from .ellpack import BEllpack, ColArr, canonicalize, _ellpack_to_bcoo_batched
 from .bcoo_extend import _bcoo_concat
 from . import dense as _dense  # noqa: F401 — registers jax.Array / DynamicJaxprTracer dispatchers
 from . import bcoo_extend as _bcoo_extend  # noqa: F401 — registers BCOO dispatchers
@@ -59,6 +59,7 @@ __all__ = [
     "Identity",
     "BEllpack",
     "ColArr",
+    "canonicalize",
     "_bcoo_concat",
     "_ellpack_to_bcoo_batched",
 ]

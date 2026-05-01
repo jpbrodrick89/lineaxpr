@@ -441,6 +441,25 @@ def _bcoo_swap_last_two_sparse_axes(bcoo: sparse.BCOO) -> sparse.BCOO:
     return bcoo.transpose(axes=perm)
 
 
+def canonicalize(op):
+    """Defensive guard for rules that aren't yet transposed-flag-aware.
+
+    For a `transposed=True` BEllpack, returns its dense view (loses
+    sparsity but stays correct). Pass-through for everything else.
+    Rules that don't yet inspect `op.transposed` should call this on
+    every BEllpack input so they never see a transposed=True operand
+    in a code path that interprets jaxpr axes as canonical.
+
+    Per-rule conversion replaces `op = canonicalize(op)` with proper
+    flag handling. Until every rule is converted, this guard ensures
+    that introducing `transposed=True` in any producer doesn't break
+    correctness anywhere downstream.
+    """
+    if isinstance(op, BEllpack) and op.transposed:
+        return op.todense()
+    return op
+
+
 def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     """Flatten BEllpack to BCOO, filtering -1-sentinel cols.
 
