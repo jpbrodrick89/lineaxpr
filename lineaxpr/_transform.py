@@ -17,6 +17,48 @@ The LinOp classes (`ConstantDiagonal`, `Diagonal`, `BEllpack`; see
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
 
+## Column-independence invariant (Phase B convention)
+
+The walker is a sparsify-style transform: it tracks the *Jacobian*
+of a linearised function, and that Jacobian acts on each COLUMN of a
+2D operand independently. There is no primitive that should couple
+columns. `sparsify(f)(seed)` is "f applied to each column of seed,
+columns stacked".
+
+Concretely, with `vmap(in_axes=±1, out_axes=±1)` (batch at the LAST
+axis of a 2D input, output stacked along the LAST axis), this
+matches `jax.experimental.sparse.sparsify` semantics exactly:
+
+* For seed `Identity(n)`, each column is `e_j`. Output column j is
+  `f(e_j)` = J's column j. Result = J.
+* For asymmetric seed `M` shape `(m, n)`, output column j is `f(M[:, j])`.
+  Independent across j; structural sparsity propagates per-column.
+
+Composition follows: `sparsify(f ∘ g)(eye) = J_f @ J_g` because
+`f(g(eye))` decomposes into f acting on each col of g(eye), and
+each col of g(eye) is `g(e_j) = J_g[:, j]`.
+
+**MUST-meet design invariants**:
+
+1. `sparsify(f)(linop.todense()) == sparsify(f)(linop).todense()` for
+   non-transposed LinOps and any vmap(in=±1, out=±1)'d flat linear
+   function (R^n → R^m) with supported primitives.
+2. `sparsify(f)(BEllpack)` returns a BEllpack with the same
+   `transposed` flag (non-transposed → non-transposed).
+
+**Materialize uses `vmap(in=0, out=-1)`**: this is the column-
+independent view (each row of input is a per-sample input → vmap
+batches over rows; output stacked at -1 = columns). Combined with
+Identity seed, gives J directly. (Note: `in_axes=0` on a 2D input
+is equivalent to "iterate over rows", which under the column-
+independent invariant means columns of the seed are treated row-
+by-row — for symmetric Identity that's the same.)
+
+JAX vmap's broadcasting rules don't always meet the column-
+independence assumption directly — vmap inserts boundary transposes
+to maintain its convention. The walker handles these transposes;
+the key invariant — original columns stay independent — is preserved.
+
 ## Known gap: non-finite closures in structural paths
 
 Our structural rules assume `0 * x = 0` for any `x`. This is correct

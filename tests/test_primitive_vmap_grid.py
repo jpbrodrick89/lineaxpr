@@ -1,21 +1,18 @@
 """Per-primitive `sparsify`-vs-dense Jacobian tests parameterised over
 vmap (in_axes, out_axes) ∈ {-1, 0, 1}² and seed kind.
 
-Pins the rectangular-Jacobian motivation: `vmap(linear_fn, in_axes,
-out_axes)(seed_dense)` should equal `sparsify(vmap(linear_fn, in_axes,
-out_axes))(seed_linop).todense()` for every layout and seed type.
+The column-independence invariant (Phase B): the walker is a
+sparsify-style transform tracking the Jacobian, which acts on each
+COLUMN of a 2D operand independently. With `vmap(in=±1, out=±1)`
+(batch at last axis), the walker's output should match dense vmap
+for any non-transposed LinOp seed.
 
-Two seed kinds:
-- **Identity**: symmetric. Most cells already pass under the current
-  walker. Only `(0, -1)` is universally-passing across all primitives
-  (the layout where dense `vmap(lin, 0, -1)(seed) == J` and the walker's
-  natural canonical output also equals J after the boundary transpose
-  no-op). That cell is a plain regression test. Other Identity cells
-  may xpass for some primitives; those become promotion candidates as
-  Phase B aligns sparsify with dense vmap.
-- **BEllpack**: asymmetric. Walker's semantics for asymmetric seeds
-  doesn't match dense vmap until Phase B; BE seed cells xfail by
-  design and are tracked as the desired end goal.
+`(in=0, *)` cells are NOT design targets — under `in_axes=0`, vmap
+batches over rows, which is incompatible with the column-independent
+walker. They xfail by design.
+
+Cells in `UNIVERSAL_PASSING` are plain regression tests (failures
+indicate real regressions). Other cells xfail(strict=False).
 """
 
 from __future__ import annotations
@@ -35,13 +32,16 @@ from lineaxpr._linops.ellpack import BEllpack
 # Universal passing set: the (seed_kind, in_ax, out_ax) cells that pass
 # for every primitive's grid. Cells in this set are plain pytest.param
 # and act as regression tests; everything else is xfail(strict=False).
+# Phase B convention: column-independent walker. `(in=±1, *)` are the
+# design-target cells (vmap batches over columns). `(in=0, *)` is not
+# supported and xfails by design.
+_TARGET_CELLS = {(in_ax, out_ax)
+                 for in_ax in (-1, 1)
+                 for out_ax in (-1, 0, 1)}
+
 UNIVERSAL_PASSING: dict[str, set[tuple[int, int]]] = {
-    # Phase B WIP: convention shifted from (0, -1) to (-1, -1) for the
-    # walker. Many cells now xpass; some primitives (broadcast_in_dim,
-    # dot_general) still need dispatch-op work. Universal set kept
-    # empty until per-primitive coverage stabilizes.
-    "Identity": set(),
-    "BEllpack": set(),
+    "Identity": _TARGET_CELLS,
+    "BEllpack": _TARGET_CELLS,
 }
 
 _XFAIL_MARK = pytest.mark.xfail(
