@@ -39,12 +39,11 @@ def test_identity_seed_matches_vmap_eye(n):
         return 2.0 * x + jnp.pad(x[:-1], (1, 0))
 
     seed = Identity(n, dtype=jnp.float64)
-    # vmap(lin, 0, -1)(eye) directly equals J — no post-hoc .T needed.
-    # This is the layout where sparsify's output equals dense vmap exactly,
-    # robust to the Phase-B walker invariant change.
-    linop = sparsify(jax.vmap(lin, in_axes=0, out_axes=-1))(seed)
+    # Phase B: sparsify matches dense vmap. Use (in=-1, out=-1) for
+    # both — walker convention has in_axis at -1.
+    linop = sparsify(jax.vmap(lin, in_axes=-1, out_axes=-1))(seed)
     ours = _to_dense(linop)
-    ref = jax.vmap(lin, in_axes=0, out_axes=-1)(jnp.eye(n))
+    ref = jax.vmap(lin, in_axes=-1, out_axes=-1)(jnp.eye(n))
     np.testing.assert_allclose(np.asarray(ours), np.asarray(ref), atol=1e-12)
 
 
@@ -58,8 +57,8 @@ def test_constant_diagonal_seed_scales_output():
     def lin(x):
         return 3.0 * x
 
-    out_identity = _to_dense(sparsify(jax.vmap(lin, in_axes=0, out_axes=-1))(Identity(n, dtype=jnp.float64)))
-    out_scaled = _to_dense(sparsify(jax.vmap(lin, in_axes=0, out_axes=-1))(ConstantDiagonal(n, data=2.0)))
+    out_identity = _to_dense(sparsify(jax.vmap(lin, in_axes=-1, out_axes=-1))(Identity(n, dtype=jnp.float64)))
+    out_scaled = _to_dense(sparsify(jax.vmap(lin, in_axes=-1, out_axes=-1))(ConstantDiagonal(n, data=2.0)))
     np.testing.assert_allclose(
         np.asarray(out_scaled), 2.0 * np.asarray(out_identity), atol=1e-12
     )
@@ -73,8 +72,8 @@ def test_diagonal_seed_scales_per_column():
     def lin(x):
         return jnp.cumsum(x)
 
-    out_identity = _to_dense(sparsify(jax.vmap(lin, in_axes=0, out_axes=-1))(Identity(n, dtype=jnp.float64)))
-    out_diag = _to_dense(sparsify(jax.vmap(lin, in_axes=0, out_axes=-1))(Diagonal(v)))
+    out_identity = _to_dense(sparsify(jax.vmap(lin, in_axes=-1, out_axes=-1))(Identity(n, dtype=jnp.float64)))
+    out_diag = _to_dense(sparsify(jax.vmap(lin, in_axes=-1, out_axes=-1))(Diagonal(v)))
     # sparsify(lin)(Diagonal(v)) computes lin as applied to diag(v)'s columns:
     # column i of output is lin(v[i] * e_i) = v[i] * lin(e_i). So the
     # result is out_identity with each column j scaled by v[j].
@@ -100,7 +99,7 @@ def test_constant_hessian_folds_to_literal():
     @jax.jit
     def extract(y):
         _, hvp = jax.linearize(jax.grad(f), y)
-        return _to_dense(sparsify(jax.vmap(hvp, in_axes=0, out_axes=-1))(Identity(y.size, dtype=y.dtype)))
+        return _to_dense(sparsify(jax.vmap(hvp, in_axes=-1, out_axes=-1))(Identity(y.size, dtype=y.dtype)))
 
     y0 = jnp.zeros(12)
     H = extract(y0)
@@ -123,7 +122,7 @@ def test_nested_jit_inside_linear_fn():
 
     y = jnp.zeros(20)
     _, hvp = jax.linearize(jax.grad(f), y)
-    out = _to_dense(sparsify(jax.vmap(hvp, in_axes=0, out_axes=-1))(Identity(20, dtype=y.dtype)))
+    out = _to_dense(sparsify(jax.vmap(hvp, in_axes=-1, out_axes=-1))(Identity(20, dtype=y.dtype)))
     # Hessian is (2.5)^2 · I = 6.25 · I.
     np.testing.assert_allclose(np.asarray(out), 6.25 * np.eye(20), atol=1e-12)
 

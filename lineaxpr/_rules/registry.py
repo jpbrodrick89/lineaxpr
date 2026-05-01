@@ -31,6 +31,8 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
+    ConstantDiagonal,
+    Diagonal,
     LinOpProtocol,
     broadcast_in_dim_op,
     gather_op,
@@ -74,11 +76,16 @@ def _vmap_strip(**ops):
 
 
 def _vmap_unary_rule(dispatch_fn, strip=None):
-    """Generic unary axis-stripping rule: strip params, call dispatch op."""
+    """Phase B: unary rule passes jaxpr params straight through.
+
+    Legacy `strip` kwarg supported for backward compatibility, but is
+    now unused (all call sites no longer pass it after Phase B).
+    """
     def rule(invals, traced, n, **params):
         (op,), (t,) = invals, traced
         if not t:
             return None
+        params.pop("_vmap_avals", None)
         if strip:
             params = strip(params, n)
         return dispatch_fn(op, n=n, **params)
@@ -114,6 +121,8 @@ def _make_zero_preserving_linear_unary_rule(prim):
 # ---------------------------------------------------------------------------
 
 def _pad_rule(invals, traced, n, **params):
+    """Phase B: jaxpr params pass straight through (vmap(-1, -1) puts
+    batch at the last axis, matching walker's in_axis at -1)."""
     operand, padding_value = invals
     to, tp = traced
     if tp:
@@ -122,20 +131,13 @@ def _pad_rule(invals, traced, n, **params):
         return None
     if hasattr(padding_value, "shape") and padding_value.shape != ():
         raise NotImplementedError("pad with non-scalar padding_value")
-    # Translate jaxpr-frame padding_config (vmap put n at position 0) to
-    # walk-frame (n at -1). The leading entry is always (0,0,0) because
-    # vmap doesn't pad its inserted batch axis; drop it from the front
-    # and append at the back to preserve the n identity-pad.
-    cfg = tuple(params["padding_config"])
-    walk_cfg = cfg[1:] + ((0, 0, 0),)
-    return pad_op(operand, n=n, padding_value=padding_value,
-                  padding_config=walk_cfg)
+    params.pop("_vmap_avals", None)
+    return pad_op(operand, n=n, padding_value=padding_value, **params)
 
 
 def _concatenate_rule_vmap(invals, traced, n, **params):
-    # dimension is shifted +1 by vmap; subtract 1.
-    return _concatenate_rule(invals, traced, n,
-                              **_vmap_strip(dimension=_decr)(params, n))
+    """Phase B: jaxpr params pass straight through."""
+    return _concatenate_rule(invals, traced, n, **params)
 
 
 
@@ -144,6 +146,8 @@ def _concatenate_rule_vmap(invals, traced, n, **params):
 # ---------------------------------------------------------------------------
 
 def _gather_rule(invals, traced, n, **params):
+    """Phase B: jaxpr params pass straight through. Translation removed —
+    legacy walk-frame logic was specific to vmap(in_axes=0)."""
     operand, start_indices = invals
     to, ti = traced
     if ti:
@@ -152,22 +156,6 @@ def _gather_rule(invals, traced, n, **params):
         return None
     if isinstance(operand, sparse.BCOO):
         raise NotImplementedError("gather on BCOO operand")
-    dn = params["dimension_numbers"]
-    # vmap wraps N-D point-gather-collapsed as:
-    #   offset_dims=(0,), collapsed=(k1,...), start_index_map=(k1,...)  where all ki > 0
-    # Convert by stripping the batch dim: decrement each ki by 1, drop batch slice_size.
-    if (len(dn.offset_dims) == 1 and dn.offset_dims[0] == 0
-            and 1 <= len(dn.collapsed_slice_dims) <= 2
-            and all(int(k) > 0 for k in dn.collapsed_slice_dims)
-            and dn.start_index_map == dn.collapsed_slice_dims):
-        new_collapsed = tuple(int(k) - 1 for k in dn.collapsed_slice_dims)
-        base_dn = _slicing.GatherDimensionNumbers(
-            offset_dims=(), collapsed_slice_dims=new_collapsed,
-            start_index_map=new_collapsed,
-            operand_batching_dims=(), start_indices_batching_dims=(),
-        )
-        params = dict(params, dimension_numbers=base_dn,
-                      slice_sizes=tuple(params["slice_sizes"])[1:])
     return gather_op(operand, n=n, start_indices=start_indices, **params)
 
 
@@ -302,74 +290,47 @@ materialize_rules[lax.convert_element_type_p] = (
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
 def _slice_rule(invals, traced, n, **params):
-    """Translate jaxpr-frame slice params (n at 0) to walk-frame (n at -1).
+    """Phase B: jaxpr params pass straight through.
 
-    vmap puts n at position 0 with start=0, limit=n, stride=1 (the
-    identity slice). Move that triple to the end so walk-frame ops can
-    treat n's slot as an identity at position -1.
+    With materialize using vmap(-1, -1), the per-sample axis is at
+    jaxpr-pos 0 and the batch (linearization) axis is at jaxpr-pos -1.
+    This matches the walker's BEllpack convention (out at first axis,
+    in at last) directly — no translation needed.
     """
     (op,), (t,) = invals, traced
     if not t:
         return None
     params.pop("_vmap_avals", None)
-    starts = tuple(params["start_indices"])
-    limits = tuple(params["limit_indices"])
-    walk_params = {
-        **params,
-        "start_indices": starts[1:] + (0,),
-        "limit_indices": limits[1:] + (n,),
-    }
-    strides = params.get("strides")
-    if strides is not None:
-        walk_params["strides"] = tuple(strides)[1:] + (1,)
-    return slice_op(op, n=n, **walk_params)
+    return slice_op(op, n=n, **params)
 
 
 materialize_rules[lax.slice_p] = _slice_rule
 materialize_rules[lax.pad_p] = _pad_rule
-materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op,
-    strip=_vmap_strip(dimensions=_decr))
-materialize_rules[lax.rev_p] = _vmap_unary_rule(rev_op,
-    strip=_vmap_strip(dimensions=_decr))
+materialize_rules[lax.squeeze_p] = _vmap_unary_rule(squeeze_op)
+materialize_rules[lax.rev_p] = _vmap_unary_rule(rev_op)
 def _reshape_rule(invals, traced, n, **params):
-    """Translate jaxpr-frame `new_sizes` (n at 0) to walk-frame (n at -1)."""
+    """Phase B: jaxpr params pass straight through."""
     (op,), (t,) = invals, traced
     if not t:
         return None
     params.pop("_vmap_avals", None)
-    sizes = tuple(int(s) for s in params["new_sizes"])
-    walk_sizes = sizes[1:] + (n,)
-    return reshape_op(op, n=n, **{**params, "new_sizes": walk_sizes})
+    return reshape_op(op, n=n, **params)
 
 
 materialize_rules[lax.reshape_p] = _reshape_rule
 def _broadcast_in_dim_rule(invals, traced, n, **params):
-    """Translate jaxpr broadcast_in_dim params (n at jaxpr-output 0) to
-    walk-frame (n at -1)."""
+    """Phase B: jaxpr params pass straight through."""
     (op,), (t,) = invals, traced
     if not t:
         return None
     params.pop("_vmap_avals", None)
-    jaxpr_shape = tuple(params["shape"])
-    jaxpr_bd = tuple(int(d) for d in params["broadcast_dimensions"])
-    walk_shape = jaxpr_shape[1:] + (n,)
-    # jaxpr output dim d → walk dim: d==0 → ndim-1 (n at end); d>0 → d-1.
-    # vmap puts operand's n at jaxpr operand axis 0, mapped via bd[0] to
-    # jaxpr output axis 0 (always). Reorder so walk operand axes are
-    # (jaxpr operand 1+ then jaxpr operand 0).
-    walk_bd = tuple(b - 1 for b in jaxpr_bd[1:]) + (len(walk_shape) - 1,)
-    return broadcast_in_dim_op(
-        op, n=n,
-        **{**params, "shape": walk_shape, "broadcast_dimensions": walk_bd},
-    )
+    return broadcast_in_dim_op(op, n=n, **params)
 
 
 materialize_rules[lax.broadcast_in_dim_p] = _broadcast_in_dim_rule
-materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op,
-    strip=_vmap_strip(axes=_decr))
+materialize_rules[lax.reduce_sum_p] = _vmap_unary_rule(reduce_sum_op)
 materialize_rules[lax.concatenate_p] = _concatenate_rule_vmap
-materialize_rules[lax.split_p] = _vmap_unary_rule(split_op,
-    strip=_vmap_strip(axis=_decr))
+materialize_rules[lax.split_p] = _vmap_unary_rule(split_op)
 
 try:
     from jax._src.lax.control_flow.conditionals import cond_p
@@ -400,7 +361,7 @@ def _cumsum_rule(invals, traced, n, **params):
     params.pop("_vmap_avals", None)
     if isinstance(op, LinOpProtocol):
         op = op.todense()
-    return lax.cumsum(op, axis=int(params["axis"]) - 1,
+    return lax.cumsum(op, axis=int(params["axis"]),
                       reverse=params.get("reverse", False))
 
 
@@ -408,52 +369,29 @@ materialize_rules[lax.cumsum_p] = _cumsum_rule
 materialize_rules[lax.div_p] = _div_rule
 
 def _transpose_rule(invals, traced, n, **params):
-    """Translate a jaxpr permutation to walk-frame, then dispatch to `.transpose`.
+    """Phase B: jaxpr params pass straight through.
 
-    Walk frame fixes n at dim -1; jaxpr can have it at `bdim` (usually 0
-    after vmap, but `dot_general` can shift it). We rewrite perm into
-    walk axes so n's output dim disappears (it's appended at -1), then
-    every form (LinOp, BCOO, jax.Array) handles `.transpose(walk_perm)`
-    uniformly — BEllpack auto-strips the trailing in-axis identity entry.
+    For 2D BEllpack with row/col swap (perm=(1, 0)), use the free
+    `transposed` flag flip. For BCOO, use native transpose (cheap
+    index swap). For other forms, dispatch to op.transpose.
     """
     (op,), (t,) = invals, traced
     if not t:
         return None
-    vmap_avals = params.pop("_vmap_avals", None)
+    params.pop("_vmap_avals", None)
     perm = tuple(int(p) for p in params["permutation"])
-    ndim = len(perm)
-
-    traced_aval = vmap_avals[0] if vmap_avals else None
-    bdim = 0
-    if traced_aval is not None:
-        bdim = next((i for i, s in enumerate(traced_aval) if int(s) == n), 0)
-
-    # jaxpr dim → walk dim: bdim → ndim-1, others shift down past bdim.
-    def to_walk(d):
-        return ndim - 1 if d == bdim else d - (d > bdim)
-
-    n_out = perm.index(bdim)
-    walk_perm = tuple(to_walk(perm[j]) for j in range(ndim) if j != n_out) + (ndim - 1,)
-
-    if walk_perm == tuple(range(ndim)):
+    if perm == tuple(range(len(perm))):
         return op
-    # BCOO's native transpose disallows permutations that mix batch/sparse/
-    # dense axes (see jax.experimental.sparse.bcoo._validate_permutation).
-    # Use it when allowed, densify only when the perm crosses a boundary.
-    # TODO: once the internal Csr LinOp lands (docs/TODO.md §2), route this
-    # densify branch through BCOO → Csr → relabeled transpose to preserve
-    # sparsity for cross-boundary perms.
-    if isinstance(op, sparse.BCOO):
-        n_batch = op.indices.ndim - 2
-        n_sparse = op.indices.shape[-1]
-        batch_ok = (not n_batch
-                    or tuple(sorted(walk_perm[:n_batch])) == tuple(range(n_batch)))
-        dense_ok = (len(walk_perm) == n_batch + n_sparse
-                    or tuple(sorted(walk_perm[n_batch + n_sparse:]))
-                       == tuple(range(n_batch + n_sparse, len(walk_perm))))
-        if not (batch_ok and dense_ok):
-            op = op.todense()
-    return op.transpose(walk_perm)
+    # 2D row/col swap on BEllpack: free flag flip.
+    if isinstance(op, BEllpack) and op.n_batch == 0 and perm == (1, 0):
+        return replace_slots(op, transposed=not op.transposed)
+    # 2D BCOO: native transpose (cheap index swap).
+    if isinstance(op, sparse.BCOO) and op.indices.ndim == 2 and op.indices.shape[-1] == 2:
+        return op.transpose(axes=perm)
+    # CD / Diagonal: symmetric, perm is no-op for square.
+    if isinstance(op, (ConstantDiagonal, Diagonal)):
+        return op
+    return op.transpose(perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 
 materialize_rules[lax.gather_p] = _gather_rule
