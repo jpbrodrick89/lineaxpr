@@ -157,16 +157,29 @@ def _(op, v):
 
 # ---- unary structural op registrations ----
 
+def _trailing_is_in_axis_noop(starts, limits, strides, in_size):
+    """True when the trailing slice spec is a full no-op over `in_size`.
+
+    Phase B: jaxpr params pass straight through (no `[:-1]` strip). When
+    the trailing axis is a no-op slice covering the full `in_size`, it
+    corresponds to the LinOp's implicit in-axis (e.g. vmap's V-axis at
+    -1) and the structural branches operate on the leading out-axes.
+    """
+    return (len(starts) >= 2
+            and int(starts[-1]) == 0
+            and int(limits[-1]) == int(in_size)
+            and int(strides[-1]) == 1)
+
+
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    # Walk-frame: each indices tuple ends with the n identity-slice;
-    # strip the trailing entry for spatial-only structural checks.
-    starts = tuple(int(x) for x in params["start_indices"])[:-1]
-    limits = tuple(int(x) for x in params["limit_indices"])[:-1]
+    starts = tuple(int(x) for x in params["start_indices"])
+    limits = tuple(int(x) for x in params["limit_indices"])
     strides_p = params.get("strides")
-    strides = (tuple(int(x) for x in strides_p)[:-1]
+    strides = (tuple(int(x) for x in strides_p)
                if strides_p else (1,) * len(starts))
-    if len(starts) == 1:
+    if (len(starts) == 2
+            and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
         stride = strides[0]
         cols = np.arange(s, e, stride)
@@ -177,18 +190,18 @@ def _(op, *, n, **params):
             in_cols=(cols,), data=data_b,
             out_size=k_out, in_size=op.n,
         )
-    # Multi-dim: dense fallback
     return lax.slice(op.todense(), **params)
 
 
 @slice_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])[:-1]
-    limits = tuple(int(x) for x in params["limit_indices"])[:-1]
+    starts = tuple(int(x) for x in params["start_indices"])
+    limits = tuple(int(x) for x in params["limit_indices"])
     strides_p = params.get("strides")
-    strides = (tuple(int(x) for x in strides_p)[:-1]
+    strides = (tuple(int(x) for x in strides_p)
                if strides_p else (1,) * len(starts))
-    if len(starts) == 1:
+    if (len(starts) == 2
+            and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
         stride = strides[0]
         cols = np.arange(s, e, stride)
