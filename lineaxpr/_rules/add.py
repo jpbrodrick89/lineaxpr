@@ -19,6 +19,7 @@ from .._linops import (
     LinOpProtocol,
     _bcoo_concat,
     _ellpack_to_bcoo_batched,
+    replace_slots,
 )
 
 # ---------------------------------------------------------------------------
@@ -367,8 +368,58 @@ def _add_be_overlap_merge(ep1, ep2, n):
 
 def _add_rule(invals, traced, n, **params):
     """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
-    the least-specific form needed. Dispatch is on the set of input kinds."""
+    the least-specific form needed. Dispatch is on the set of input kinds.
+
+    Phase B transposed-flag handling: if all traced BEllpack operands
+    have `transposed=True`, flip them to canonical (free flag flip),
+    run the rest of the rule, flip the result back. If flags are
+    mixed, densify any transposed=True BE first (lossy but correct;
+    structural sparsity could be recovered later by adding native
+    BE row/col-swap real-motion).
+    """
     del params
+
+    # ---- Phase B: pre-process transposed flags -----
+    # Flip-and-flip-back only safe when ALL traced operands are BE with
+    # the same transposed flag. If any traced operand is non-BE (BCOO,
+    # dense, CD/Diagonal which are symmetric), or flags are mixed,
+    # densify the transposed=True BEs so the rest of the rule sees
+    # logical-view dense or canonical BEs.
+    all_traced = [v for v, t in zip(invals, traced) if t]
+    traced_be = [v for v in all_traced if isinstance(v, BEllpack)]
+    if traced_be:
+        be_flags = {v.transposed for v in traced_be}
+        all_be = len(traced_be) == len(all_traced)
+        if all_be and be_flags == {True}:
+            # All transposed=True BEs: flip all to canonical (free),
+            # recurse, flip result back.
+            flipped = [
+                replace_slots(v, transposed=False)
+                if t and isinstance(v, BEllpack) else v
+                for v, t in zip(invals, traced)
+            ]
+            res = _add_rule_canonical(flipped, traced, n)
+            if isinstance(res, BEllpack):
+                return replace_slots(res, transposed=True)
+            if isinstance(res, sparse.BCOO) and res.indices.ndim == 2 and res.indices.shape[-1] == 2:
+                return res.transpose(axes=(1, 0))
+            if hasattr(res, "ndim") and res.ndim >= 2:
+                perm = tuple(range(res.ndim - 2)) + (res.ndim - 1, res.ndim - 2)
+                return jnp.transpose(res, perm)
+            return res
+        if True in be_flags:
+            # Mixed flags or BE+non-BE chain: densify the True ones.
+            # `todense()` respects the flag and produces the logical view.
+            invals = tuple(
+                v.todense() if t and isinstance(v, BEllpack) and v.transposed else v
+                for v, t in zip(invals, traced)
+            )
+    return _add_rule_canonical(invals, traced, n)
+
+
+def _add_rule_canonical(invals, traced, n):
+    """Body of _add_rule, expecting all traced BE operands to be at
+    `transposed=False` canonical layout."""
     vals = [v for v, t in zip(invals, traced) if t]
     if not vals:
         return None
