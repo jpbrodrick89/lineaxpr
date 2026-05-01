@@ -475,3 +475,30 @@ def test_concat_zero_with_slice(seed_kind, in_ax, out_ax):
     g = jax.grad(lambda y: jnp.sum(jnp.concatenate(
         [jnp.zeros(1, dtype=y.dtype), y[:-1]]) ** 2))
     _check("concat_zero_with_slice", g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# select_n preserve-transposed regression (BROYDN7D pattern)
+#
+# `_select_n_rule`'s structural fast path constructed the output BE
+# without forwarding `transposed=first.transposed`. Inside-vmap chains
+# that hit select_n via the abs(x)**p sign-branch jvp would emerge
+# untransposed even though all operands were transposed=True, leading
+# to downstream pad/add operating on the wrong axis (V vs out swap).
+#
+# MWE: `f(y) = sum(abs(y[:half] + y[half:])**2)` — `abs` introduces
+# select_n; the structural path's flag-drop produced a (3, 9)-shape
+# pad output where jaxpr expected (6, 6).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+def test_abs_split_sum(seed_kind, in_ax, out_ax):
+    """Linearised-grad of `sum(abs(y[:half] + y[half:])**2)`.
+    Hits select_n's structural path on transposed BEs; bug was the
+    result coming back untransposed."""
+    n = 6
+    half = n // 2
+    y = jnp.linspace(0.4, 0.9, n)
+    g = jax.grad(lambda y: jnp.sum(jnp.abs(y[:half] + y[half:]) ** 2))
+    _check("abs_split_sum", g, y, seed_kind, in_ax, out_ax)

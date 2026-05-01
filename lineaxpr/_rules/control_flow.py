@@ -170,6 +170,7 @@ def _select_n_rule(invals, traced, n, **params):
                 t_case.start_row, t_case.end_row, t_case.in_cols,
                 new_values, t_case.out_size, t_case.in_size,
                 batch_shape=t_case.batch_shape,
+                transposed=t_case.transposed,
             )
 
     # Structural fast path: all cases are BEllpack with matching
@@ -190,7 +191,8 @@ def _select_n_rule(invals, traced, n, **params):
                     for a, b in zip(c.in_cols, first.in_cols))
             for c in cases[1:]
         )
-        if same_cols:
+        same_transposed = all(c.transposed == first.transposed for c in cases[1:])
+        if same_cols and same_transposed:
             pred_arr = jnp.asarray(pred)
             if pred_arr.ndim == 0:
                 # Scalar pred applies uniformly across rows (HELIX /
@@ -211,6 +213,7 @@ def _select_n_rule(invals, traced, n, **params):
             return BEllpack(
                 first.start_row, first.end_row, first.in_cols,
                 new_values, first.out_size, first.in_size,
+                transposed=first.transposed,
             )
 
     # Multi-traced BCOO / BE (mismatched cols): mask each traced case by
