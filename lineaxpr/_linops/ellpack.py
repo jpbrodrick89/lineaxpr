@@ -62,7 +62,7 @@ class BEllpack:
     """
 
     __slots__ = ("start_row", "end_row", "in_cols", "data",
-                 "out_size", "in_size", "batch_shape")
+                 "out_size", "in_size", "batch_shape", "transposed")
 
     start_row: int
     end_row: int
@@ -71,12 +71,14 @@ class BEllpack:
     out_size: int
     in_size: int
     batch_shape: tuple[int, ...]
+    transposed: bool
 
     def __init__(self, start_row: int, end_row: int,
                  in_cols: tuple[ColArr, ...] | list[ColArr],
                  data: jax.Array,
                  out_size: int, in_size: int,
-                 batch_shape: tuple[int, ...] = ()):
+                 batch_shape: tuple[int, ...] = (),
+                 transposed: bool = False):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
@@ -87,6 +89,7 @@ class BEllpack:
         )
         self.out_size = int(out_size)
         self.in_size = int(in_size)
+        self.transposed = bool(transposed)
 
     @property
     def nrows(self):
@@ -106,6 +109,8 @@ class BEllpack:
 
     @property
     def shape(self):
+        if self.transposed:
+            return (*self.batch_shape, self.in_size, self.out_size)
         return (*self.batch_shape, self.out_size, self.in_size)
 
     @property
@@ -135,9 +140,13 @@ class BEllpack:
         # the "never loop over arrays" rule (CLAUDE.md). Cols stack is
         # static (tuple iteration at trace time), values is passed
         # whole (no per-band slicing).
-        if self.n_batch > 0:
-            return self._todense_batched()
-        return self._todense_unbatched()
+        dense = (self._todense_batched() if self.n_batch > 0
+                 else self._todense_unbatched())
+        if self.transposed:
+            perm = list(range(dense.ndim))
+            perm[-2], perm[-1] = perm[-1], perm[-2]
+            dense = jnp.transpose(dense, tuple(perm))
+        return dense
 
     def _todense_unbatched(self):
         rows_1d = np.arange(self.start_row, self.end_row)
@@ -231,7 +240,16 @@ class BEllpack:
         return replace_slots(self, data=-self.data)
 
     def to_bcoo(self):
-        return _ellpack_to_bcoo(self)
+        if not self.transposed:
+            return _ellpack_to_bcoo(self)
+        # `_ellpack_to_bcoo` reads `self.shape` to set the BCOO's shape;
+        # `shape` is layout-aware, so build the BCOO from a canonical
+        # view first (transposed=False), then swap the last two sparse
+        # axes to recover the logical layout. The swap is cheap — it's
+        # a row/col index reorder, no data motion.
+        canonical = replace_slots(self, transposed=False)
+        bcoo = _ellpack_to_bcoo(canonical)
+        return _bcoo_swap_last_two_sparse_axes(bcoo)
 
     def pad_rows(self, before: int, after: int):
         """Pad along the out_size axis. Negative before/after truncates."""
@@ -413,6 +431,14 @@ def _slice_col(col, lo, hi):
     if col.ndim > 1:
         return col[..., lo:hi]
     return col[lo:hi]
+
+
+def _bcoo_swap_last_two_sparse_axes(bcoo: sparse.BCOO) -> sparse.BCOO:
+    """Swap the last two (sparse) axes of a BCOO. Cheap — reorders the
+    last two index columns, leaves data and n_batch alone."""
+    n_batch = bcoo.n_batch
+    perm = tuple(range(n_batch)) + (n_batch + 1, n_batch)
+    return bcoo.transpose(axes=perm)
 
 
 def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:

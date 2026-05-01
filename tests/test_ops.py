@@ -164,6 +164,41 @@ def test_ellpack_to_bcoo_roundtrip():
     np.testing.assert_array_equal(np.asarray(b.todense()), _ellpack_expected_dense())
 
 
+def _simple_ellpack_transposed():
+    """Same underlying data as `_simple_ellpack`, with transposed=True.
+    Logically represents the (in, out) = (4, 3) view of the same matrix."""
+    e = _simple_ellpack()
+    return BEllpack(
+        start_row=e.start_row, end_row=e.end_row,
+        in_cols=e.in_cols, data=e.data,
+        out_size=e.out_size, in_size=e.in_size,
+        batch_shape=e.batch_shape, transposed=True,
+    )
+
+
+def test_ellpack_transposed_shape():
+    et = _simple_ellpack_transposed()
+    # Logical shape swaps last two axes: (3, 4) → (4, 3).
+    assert et.shape == (4, 3)
+
+
+def test_ellpack_transposed_todense_swaps_axes():
+    et = _simple_ellpack_transposed()
+    np.testing.assert_array_equal(
+        np.asarray(et.todense()), _ellpack_expected_dense().T,
+    )
+
+
+def test_ellpack_transposed_to_bcoo_roundtrip():
+    et = _simple_ellpack_transposed()
+    b = et.to_bcoo()
+    assert isinstance(b, sparse.BCOO)
+    assert b.shape == (4, 3)
+    np.testing.assert_array_equal(
+        np.asarray(b.todense()), _ellpack_expected_dense().T,
+    )
+
+
 def test_ellpack_negate():
     e = -_simple_ellpack()
     np.testing.assert_array_equal(
