@@ -230,16 +230,32 @@ def _(op, *, n, **params):
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
 
 
-@rev_op.register(ConstantDiagonal)
+@rev_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    return op  # constant under axis-reversal
+    dimensions = params["dimensions"]
+    # Walker-frame axis 0 is the out axis. Reversing rows of a·I gives
+    # the anti-diagonal of a — no longer a ConstantDiagonal. Convert
+    # to BEllpack with reversed cols.
+    if dimensions == (0,):
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        data = jnp.broadcast_to(jnp.asarray(op.data, dtype=op.dtype), (op.n,))
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=data,
+                        out_size=op.n, in_size=op.n)
+    return op
 
 
 @rev_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
+    # Reversing rows of diag(v) gives the anti-diagonal with values
+    # v[n-1-i] at (i, n-1-i) — NOT diag(v[::-1]). Convert to BEllpack
+    # with reversed cols and reversed values.
     if dimensions == (0,):
-        return Diagonal(op.data[::-1])
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=op.data[::-1],
+                        out_size=op.n, in_size=op.n)
     return op
 
 
