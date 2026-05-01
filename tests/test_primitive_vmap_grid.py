@@ -173,11 +173,44 @@ def test_concatenate(seed_kind, in_ax, out_ax):
 
 
 @pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
-def test_broadcast_in_dim(seed_kind, in_ax, out_ax):
+def test_broadcast_in_dim_leading_size2(seed_kind, in_ax, out_ax):
+    """1D → 2D leading-axis size-2 expansion. Vmap'd: 2D → 3D."""
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
-    _check("broadcast_in_dim",
+    _check("broadcast_in_dim_leading_size2",
            lambda x: jnp.broadcast_to(x[None, :], (2, n)),
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
+def test_broadcast_in_dim_leading_size1(seed_kind, in_ax, out_ax):
+    """1D → 2D leading-axis size-1 (`x[None, :]`). Vmap'd: 2D → 3D.
+    Mirrors sweep's `bd=(1,)` closure pattern but on a traced operand."""
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("broadcast_in_dim_leading_size1",
+           lambda x: x[None, :],
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
+def test_broadcast_in_dim_trailing_size1(seed_kind, in_ax, out_ax):
+    """1D → 2D trailing-axis size-1 (`x[:, None]`). Vmap'd: 2D → 3D.
+    Mirrors sweep's `bd=(0,)` traced pattern (BENNETT5LS, TRIGON1, etc.)."""
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("broadcast_in_dim_trailing_size1",
+           lambda x: x[:, None],
+           y, seed_kind, in_ax, out_ax)
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
+def test_broadcast_in_dim_trailing_size3(seed_kind, in_ax, out_ax):
+    """1D → 2D trailing-axis broadcast to size 3. Vmap'd: 2D → 3D."""
+    n = 6
+    y = jnp.linspace(0.1, 1.0, n)
+    _check("broadcast_in_dim_trailing_size3",
+           lambda x: jnp.broadcast_to(x[:, None], (n, 3)),
            y, seed_kind, in_ax, out_ax)
 
 
