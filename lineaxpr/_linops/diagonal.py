@@ -311,12 +311,27 @@ def _(op, *, n, **params):
                        out_sharding=params.get("sharding"))
 
 
+def _is_inside_vmap_bcast(shape, bd, op_n):
+    """Detect inside-vmap broadcast: V slot is at the front of the output.
+
+    CD/Diagonal are symmetric so transpose is a no-op (no `transposed`
+    flag), but inside-vmap params still indicate V at output axis 0
+    (mapped from input axis 0). When that pattern matches, densify
+    rather than running the V-at-back structural branches below.
+    """
+    return bool(bd) and bd[0] == 0 and len(shape) >= 1 and shape[0] == op_n
+
+
 @broadcast_in_dim_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
+    full_shape = tuple(params["shape"])
+    full_bd = tuple(params["broadcast_dimensions"])
+    if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
     # for the spatial-only structural checks below.
-    shape = tuple(params["shape"])[:-1]
-    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
+    shape = full_shape[:-1]
+    broadcast_dimensions = full_bd[:-1]
     # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where all
     # non-n axes are size-1.
     if (len(broadcast_dimensions) == 1
@@ -361,10 +376,14 @@ def _(op, *, n, **params):
 
 @broadcast_in_dim_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
+    full_shape = tuple(params["shape"])
+    full_bd = tuple(params["broadcast_dimensions"])
+    if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
     # for the spatial-only structural checks below.
-    shape = tuple(params["shape"])[:-1]
-    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
+    shape = full_shape[:-1]
+    broadcast_dimensions = full_bd[:-1]
     if (len(broadcast_dimensions) == 1
             and shape[broadcast_dimensions[0]] == op.n
             and all(s == 1 for i, s in enumerate(shape)
