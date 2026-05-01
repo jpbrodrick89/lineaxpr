@@ -110,7 +110,8 @@ class BEllpack:
     @property
     def shape(self):
         if self.transposed:
-            return (*self.batch_shape, self.in_size, self.out_size)
+            # V (=in_size) at axis 0, batch_shape and out_size following.
+            return (self.in_size, *self.batch_shape, self.out_size)
         return (*self.batch_shape, self.out_size, self.in_size)
 
     @property
@@ -143,9 +144,11 @@ class BEllpack:
         dense = (self._todense_batched() if self.n_batch > 0
                  else self._todense_unbatched())
         if self.transposed:
-            perm = list(range(dense.ndim))
-            perm[-2], perm[-1] = perm[-1], perm[-2]
-            dense = jnp.transpose(dense, tuple(perm))
+            # Canonical layout is (*batch_shape, out_size, in_size).
+            # transposed=True moves in_size (V) to axis 0.
+            ndim = dense.ndim
+            perm = (ndim - 1,) + tuple(range(ndim - 1))
+            dense = jnp.transpose(dense, perm)
         return dense
 
     def _todense_unbatched(self):
@@ -262,7 +265,8 @@ class BEllpack:
         if trim_top == 0 and trim_bottom == 0:
             return BEllpack(new_start, new_end, self.in_cols, self.data,
                            new_out_size, self.in_size,
-                           batch_shape=self.batch_shape)
+                           batch_shape=self.batch_shape,
+                           transposed=self.transposed)
         nrows_old = self.nrows
         lo = trim_top
         hi = nrows_old - trim_bottom
@@ -272,7 +276,8 @@ class BEllpack:
             empty_vals = jnp.empty(empty_shape, self.dtype)
             return BEllpack(0, 0, empty_cols, empty_vals,
                            new_out_size, self.in_size,
-                           batch_shape=self.batch_shape)
+                           batch_shape=self.batch_shape,
+                           transposed=self.transposed)
         new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
         # Slice values along the nrows axis (after batch dims).
         if self.n_batch == 0:
@@ -282,7 +287,8 @@ class BEllpack:
         return BEllpack(new_start + lo, new_end - trim_bottom,
                        new_in_cols, new_values,
                        new_out_size, self.in_size,
-                       batch_shape=self.batch_shape)
+                       batch_shape=self.batch_shape,
+                       transposed=self.transposed)
 
     def transpose(self, axes: tuple[int, ...] | None = None):
         """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.

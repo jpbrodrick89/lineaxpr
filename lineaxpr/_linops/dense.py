@@ -128,16 +128,19 @@ def _(op, *, n, start_indices, **params):
 @scatter_add_op.register(jax.Array)
 @scatter_add_op.register(DynamicJaxprTracer)
 def _(updates, *, n, operand, scatter_indices, **params):
-    # Custom layout: returns shape (out_size, n) with V at -1.
-    # `_scatter_add_rule` does the dnums normalisation upstream so the
-    # canvas+at[].add() pattern matches the rewritten params; switching
-    # to lax.scatter_add directly regresses test_arrowhead's chain.
+    # V-at-0 layout: updates have shape (V=n, *update_batch); the
+    # result has shape (V=n, out_size). `_scatter_add_rule` does the
+    # dnums normalisation upstream so the canvas+at[].add() pattern
+    # matches the rewritten params.
     out_idx = scatter_indices[..., 0]
     out_idx_flat = out_idx.reshape(-1)
     out_size = operand.shape[0]
-    flat_updates = updates.reshape(-1, n)
-    return (jnp.zeros((out_size, n), flat_updates.dtype)
-            .at[out_idx_flat].add(flat_updates))
+    # Updates come in with V at axis 0; flatten the trailing
+    # (update_batch) dims to a single axis matching `out_idx_flat`.
+    flat_updates = updates.reshape(n, -1)
+    # Scatter along the out_size axis (axis 1 of the canvas).
+    return (jnp.zeros((n, out_size), flat_updates.dtype)
+            .at[:, out_idx_flat].add(flat_updates))
 
 
 @split_op.register(jax.Array)

@@ -168,26 +168,54 @@ def _concatenate_rule(invals, traced, n, **params):
                 batch_shape=invals[0].batch_shape,
             )
 
-    # Structural fast path: `concatenate([C, ..., traced_op, ..., C], axis=0)`
-    # — exactly one traced operand sandwiched by closures. Closures have no
-    # dependency on the traced input, so their Jacobian rows are zero and the
-    # result is structurally `op.pad_rows(left_total, right_total)`. Promote
-    # (Constant)Diagonal to BEllpack first so pad_rows is available.
-    if dimension == 0 and len(traced_idxs) == 1:
+    # Structural fast path: `concatenate([C, ..., traced_op, ..., C])`
+    # along the primal out_size axis — exactly one traced operand
+    # sandwiched by closures. Closures from `jax.linearize` are
+    # structurally zero, so the result is `op.pad_rows(left, right)`.
+    # Under vmap (V at axis 0) `dimension` is rewritten from 0 to 1 and
+    # closures are stripped back to primal rank. Accept both forms.
+    #
+    # Only fires for transposed=False traced operands or symmetric
+    # forms (Diagonal/CD/Identity-derived) — `pad_rows` operates on the
+    # canonical out_size axis, which only matches the matrix's row axis
+    # when transposed=False. For transposed=True inputs we fall through
+    # to the densify fallback (which emits V-at-0 layout naturally).
+    closures_1d = all(
+        len(v.shape) == 1
+        for v, t in zip(invals, traced) if not t and hasattr(v, "shape")
+    )
+    traced_op_check = invals[traced_idxs[0]] if len(traced_idxs) == 1 else None
+    traced_canonical = (
+        traced_op_check is not None
+        and not (isinstance(traced_op_check, BEllpack)
+                 and traced_op_check.transposed)
+    )
+    fast_path_dim = (
+        traced_canonical and (
+            (dimension == 0) or (dimension == 1 and closures_1d)
+        )
+    )
+    if fast_path_dim and len(traced_idxs) == 1:
         idx = traced_idxs[0]
         op = invals[idx]
         left_total = sum(int(invals[i].shape[0]) for i in range(idx))
         right_total = sum(int(invals[i].shape[0])
                           for i in range(idx + 1, len(invals)))
+        # Promote symmetric LinOps to BE. ConstantDiagonal/Diagonal
+        # are symmetric so dense rendering is identical either way; use
+        # `transposed=True` (V at axis 0) when entering via vmap rewrite
+        # so downstream rules see the canonical V-at-0 layout.
+        promote_transposed = (dimension == 1)
         if isinstance(op, ConstantDiagonal):
             op = BEllpack(
                 0, op.n, (np.arange(op.n),),
                 jnp.broadcast_to(jnp.asarray(op.data), (op.n,)),
-                op.n, op.n,
+                op.n, op.n, transposed=promote_transposed,
             )
         elif isinstance(op, Diagonal):
             op = BEllpack(
                 0, op.n, (np.arange(op.n),), op.data, op.n, op.n,
+                transposed=promote_transposed,
             )
         if isinstance(op, BEllpack) and op.n_batch == 0:
             return op.pad_rows(left_total, right_total)

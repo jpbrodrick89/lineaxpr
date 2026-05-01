@@ -75,30 +75,66 @@ def _(op, *, n, start_indices, **params):
         and dnums.start_index_map == (0,)
         and params["slice_sizes"] == (1,)
     )
-    if not (point_gather_collapsed or point_gather_kept):
+    # V-augmented gather (post jax.vmap, V at axis 0): the operand is a
+    # `transposed=True` BE whose dense shape is (V=in_size, out_size).
+    # The gather collapses the out_size axis (axis 1) and keeps V (axis
+    # 0) as offset_dims. Structurally this gathers rows of the (out,
+    # in)-canonical Jacobian — same semantics as point_gather_collapsed
+    # but the dnums describe the V-augmented operand layout.
+    sl = tuple(int(s) for s in params["slice_sizes"])
+    point_gather_v_collapsed_T = (
+        op.transposed
+        and op.n_batch == 0
+        and tuple(dnums.offset_dims) == (0,)
+        and tuple(dnums.collapsed_slice_dims) == (1,)
+        and tuple(dnums.start_index_map) == (1,)
+        and len(sl) == 2 and sl[0] == op.in_size and sl[1] == 1
+    )
+    if not (point_gather_collapsed or point_gather_kept
+            or point_gather_v_collapsed_T):
         raise NotImplementedError(f"gather on BEllpack with unhandled dnums: {dnums}")
 
-    if (op.n_batch == 0
-            and op.start_row == 0
-            and op.end_row == op.out_size):
+    if op.n_batch == 0:
         row_idx = start_indices[..., 0]
         batch_shape = tuple(row_idx.shape[:-1])
         N = row_idx.shape[-1]
         idx_static = isinstance(row_idx, np.ndarray)
         ridx_flat = row_idx.reshape(-1) if idx_static else jnp.asarray(
             row_idx).reshape(-1)
+        # Padded-range support: rows outside [start_row, end_row) are
+        # structurally zero. Clamp the lookup index and mask out-of-range
+        # elements to zero.
+        nrows = op.end_row - op.start_row
+        local = ridx_flat - op.start_row
+        if op.start_row == 0 and op.end_row == op.out_size:
+            local_clipped = local
+            mask = None
+        else:
+            clip_hi = max(nrows - 1, 0)
+            if idx_static:
+                local_clipped = np.clip(local, 0, clip_hi)
+            else:
+                local_clipped = jnp.clip(local, 0, clip_hi)
+            mask = ((ridx_flat >= op.start_row) & (ridx_flat < op.end_row))
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             cr = c
             if idx_static and isinstance(cr, np.ndarray):
-                gathered = cr[ridx_flat].reshape(batch_shape + (N,))
+                gathered = cr[local_clipped].reshape(batch_shape + (N,))
             else:
-                gathered = jnp.asarray(cr)[ridx_flat].reshape(batch_shape + (N,))
+                gathered = jnp.asarray(cr)[local_clipped].reshape(
+                    batch_shape + (N,))
             new_in_cols.append(gathered)
         if op.k == 1:
-            vals = op.data[ridx_flat].reshape(batch_shape + (N,))
+            vals = op.data[local_clipped].reshape(batch_shape + (N,))
         else:
-            vals = op.data[ridx_flat].reshape(batch_shape + (N, op.k))
+            vals = op.data[local_clipped].reshape(batch_shape + (N, op.k))
+        if mask is not None:
+            mask_r = mask.reshape(batch_shape + (N,))
+            if op.k == 1:
+                vals = jnp.where(mask_r, vals, 0)
+            else:
+                vals = jnp.where(mask_r[..., None], vals, 0)
         if point_gather_kept:
             return BEllpack(
                 start_row=0, end_row=1,
@@ -112,6 +148,7 @@ def _(op, *, n, start_indices, **params):
             in_cols=tuple(new_in_cols), data=vals,
             out_size=N, in_size=op.in_size,
             batch_shape=batch_shape,
+            transposed=op.transposed,
         )
 
     # Dense fallback for other BEllpack gather patterns.
