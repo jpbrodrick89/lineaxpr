@@ -219,7 +219,9 @@ def _(op, *, n, **params):
     dimensions = params["dimensions"]
     if not dimensions:
         return op
-    if op.n == 1 and dimensions == (0,):
+    # For a 1×1 CD, axes 0 and 1 are interchangeable (both size 1);
+    # squeeze either to a 1D row-vector BE.
+    if op.n == 1 and dimensions in ((0,), (1,)):
         val = jnp.asarray(op.data).reshape(1)
         return BEllpack(
             start_row=0, end_row=1,
@@ -234,7 +236,7 @@ def _(op, *, n, **params):
     dimensions = params["dimensions"]
     if not dimensions:
         return op
-    if op.n == 1 and dimensions == (0,):
+    if op.n == 1 and dimensions in ((0,), (1,)):
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=(np.asarray([0]),), data=op.data,
@@ -246,10 +248,10 @@ def _(op, *, n, **params):
 @rev_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    # Walker-frame axis 0 is the out axis. Reversing rows of a·I gives
-    # the anti-diagonal of a — no longer a ConstantDiagonal. Convert
-    # to BEllpack with reversed cols.
-    if dimensions == (0,):
+    # CD = a·I is symmetric, so reversing axis 0 (rows) and axis 1
+    # (cols) both yield the same anti-diagonal. dim=(1,) arises under
+    # vmap(in_axes=0) where vmap rewrites rev's primal-axis index.
+    if dimensions in ((0,), (1,)):
         cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
         data = jnp.broadcast_to(jnp.asarray(op.data, dtype=op.dtype), (op.n,))
         return BEllpack(start_row=0, end_row=op.n,
@@ -261,13 +263,19 @@ def _(op, *, n, **params):
 @rev_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    # Reversing rows of diag(v) gives the anti-diagonal with values
-    # v[n-1-i] at (i, n-1-i) — NOT diag(v[::-1]). Convert to BEllpack
-    # with reversed cols and reversed values.
+    # Reversing rows of diag(v) gives the anti-diagonal with v[n-1-i]
+    # at (i, n-1-i) — values reversed.
+    # Reversing cols of diag(v) gives the anti-diagonal with v[i]
+    # at (i, n-1-i) — values not reversed (original col is moved).
     if dimensions == (0,):
         cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
         return BEllpack(start_row=0, end_row=op.n,
                         in_cols=(cols,), data=op.data[::-1],
+                        out_size=op.n, in_size=op.n)
+    if dimensions == (1,):
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=op.data,
                         out_size=op.n, in_size=op.n)
     return op
 

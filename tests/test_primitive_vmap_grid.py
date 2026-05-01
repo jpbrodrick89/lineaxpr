@@ -204,7 +204,7 @@ def test_reshape(seed_kind, in_ax, out_ax):
     _check("reshape", lambda x: x.reshape(2, 3), y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
 def test_rev(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
