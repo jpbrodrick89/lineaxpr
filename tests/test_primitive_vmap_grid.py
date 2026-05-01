@@ -426,3 +426,29 @@ def test_pow_with_closure(seed_kind, in_ax, out_ax):
     y = jnp.linspace(0.4, 0.9, n)
     g = jax.grad(lambda b: jnp.sum((b[1] + c) ** b[2]))
     _check("pow_with_closure", g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# scale_scalar/scale_per_out_row preserve-transposed regression
+# (LEVYMONT5 pattern)
+#
+# `scale_scalar` and `scale_per_out_row` on BEllpack constructed the
+# new BE without forwarding `transposed=op.transposed`, so a transposed
+# BE passing through the mul rule's scalar-like path silently became
+# untransposed. Downstream pad/add then saw an axis-swapped BE and
+# crashed with `(1, 3) vs (2, 2)`-style shape mismatches.
+#
+# MWE: `f(x) = x[0]**2 + sum(x[:-1]**2)` — produces a chain
+# `slice → transpose(boundary flip) → squeeze → mul scalar` where the
+# scalar mul drops the flag.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+def test_scalar_plus_sliced_sq(seed_kind, in_ax, out_ax):
+    """Linearised-grad of `x[0]**2 + sum(x[:-1]**2)`. Hits scale_scalar
+    on a transposed BE; bug was the result coming back untransposed."""
+    n = 6
+    y = jnp.linspace(0.4, 0.9, n)
+    g = jax.grad(lambda x: x[0] ** 2 + jnp.sum(x[:-1] ** 2))
+    _check("scalar_plus_sliced_sq", g, y, seed_kind, in_ax, out_ax)

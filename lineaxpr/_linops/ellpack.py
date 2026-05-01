@@ -742,7 +742,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
 def _(op, s):
     return BEllpack(op.start_row, op.end_row, op.in_cols,
                    s * op.data, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
+                   batch_shape=op.batch_shape, transposed=op.transposed)
 
 
 @scale_per_out_row.register(BEllpack)
@@ -766,7 +766,7 @@ def _(op, v):
         scaled = v_slice[..., None] * op.data
     return BEllpack(op.start_row, op.end_row, op.in_cols,
                    scaled, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
+                   batch_shape=op.batch_shape, transposed=op.transposed)
 
 
 # ---- unary structural op registrations for BEllpack ----
