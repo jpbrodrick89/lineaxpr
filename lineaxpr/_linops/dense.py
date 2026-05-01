@@ -128,6 +128,10 @@ def _(op, *, n, start_indices, **params):
 @scatter_add_op.register(jax.Array)
 @scatter_add_op.register(DynamicJaxprTracer)
 def _(updates, *, n, operand, scatter_indices, **params):
+    # Custom layout: returns shape (out_size, n) with V at -1.
+    # `_scatter_add_rule` does the dnums normalisation upstream so the
+    # canvas+at[].add() pattern matches the rewritten params; switching
+    # to lax.scatter_add directly regresses test_arrowhead's chain.
     out_idx = scatter_indices[..., 0]
     out_idx_flat = out_idx.reshape(-1)
     out_size = operand.shape[0]
@@ -137,15 +141,6 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
 
 @split_op.register(jax.Array)
-@split_op.register(DynamicJaxprTracer)
+@split_op.register(DynamicJaxprTracer)  # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    sizes = params["sizes"]
-    axis = params["axis"]
-    out = []
-    start = 0
-    for sz in sizes:
-        slc = [slice(None)] * op.ndim
-        slc[axis] = slice(int(start), int(start) + int(sz))
-        out.append(op[tuple(slc)])
-        start += int(sz)
-    return out
+    return list(lax.split(op, params["sizes"], axis=params["axis"]))
