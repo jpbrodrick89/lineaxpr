@@ -502,3 +502,31 @@ def test_abs_split_sum(seed_kind, in_ax, out_ax):
     y = jnp.linspace(0.4, 0.9, n)
     g = jax.grad(lambda y: jnp.sum(jnp.abs(y[:half] + y[half:]) ** 2))
     _check("abs_split_sum", g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# Gather pass-through regression (HADAMALS / `jnp.diagonal`-class)
+#
+# The dense gather rule did Phase-A walk-frame indexing tricks
+# (`op[row_idx]`, `op[row_idx][..., None, :]`) that only matched the
+# 1D-primal point-gather patterns. `jnp.diagonal` of a reshape emits a
+# multi-axis gather (`offset_dims=(0,), collapsed_slice_dims=(1, 2),
+# slice_sizes=(V, 1, 1)`) under vmap — none of the special-cases
+# matched, falling through to a wrong `op[row_idx]` that lost the
+# 2D-index → flat-output mapping.
+#
+# Fix: just call `lax.gather(op, start_indices, **params)` directly
+# under Phase B (jaxpr params already correctly index the operand).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax",
+                         _grid(passing={"Identity": _FULL, "BEllpack": set()}))
+def test_diagonal_of_reshape(seed_kind, in_ax, out_ax):
+    """Linearised-grad of `sum(diagonal(y.reshape(n,n))**2)`.
+    Hits the dense gather rule with `lax.platform_dependent`-emitted
+    `slice_sizes=(V, 1, 1)` pattern that the old special-cases missed."""
+    n = 4
+    y = jnp.linspace(0.4, 0.9, n * n)
+    g = jax.grad(lambda y: jnp.sum(jnp.diagonal(y.reshape(n, n)) ** 2))
+    _check("diagonal_of_reshape", g, y, seed_kind, in_ax, out_ax)

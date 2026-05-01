@@ -121,22 +121,8 @@ def _(op, *, n, **params):
 @gather_op.register(jax.Array)
 @gather_op.register(DynamicJaxprTracer)
 def _(op, *, n, start_indices, **params):
-    dnums = params["dimension_numbers"]
-    point_gather_kept = (
-        dnums.offset_dims == (1,)
-        and dnums.collapsed_slice_dims == ()
-        and dnums.start_index_map == (0,)
-        and params["slice_sizes"] == (1,)
-    )
-    row_idx = start_indices[..., 0]
-    if point_gather_kept:
-        return op[row_idx][..., None, :]
-    if (dnums.offset_dims == ()
-            and dnums.collapsed_slice_dims == (0, 1)
-            and dnums.start_index_map == (0, 1)):
-        col_idx = start_indices[..., 1]
-        return op[row_idx, col_idx]
-    return op[row_idx]
+    params.pop("_vmap_avals", None)
+    return lax.gather(op, start_indices, **params)
 
 
 @scatter_add_op.register(jax.Array)
