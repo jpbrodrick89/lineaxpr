@@ -120,7 +120,15 @@ def _dot_general_rule(invals, traced, n, **params):
 
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
-        tensor = lax.transpose(M, remaining + c_M)
+        # dot_general(traced, M) output is (traced_free..., M_free...);
+        # dot_general(M, traced) output is (M_free..., traced_free...).
+        # For Identity, the "traced_free" slot has size n with values
+        # equal to M along the contracted axis. Put c_M first (becomes
+        # traced_free) when traced is first, else last.
+        if traced_is_first:
+            tensor = lax.transpose(M, c_M + remaining)
+        else:
+            tensor = lax.transpose(M, remaining + c_M)
         return traced_op.data * tensor
 
     # Structural BEllpack × closure-matrix path: only fires for
@@ -147,6 +155,10 @@ def _dot_general_rule(invals, traced, n, **params):
 
     # Dense fallback: just trust JAX vmap's c_tr/c_M (they already
     # account for V's position in each operand). No translation needed.
+    # Dense fallback: trust JAX vmap to have placed V at the right
+    # output axis already. (An older `moveaxis(out, ..., -1)` here
+    # was a walk-frame leftover that double-shifted V on the
+    # `traced_is_first` path.)
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
         return lax.dot_general(
