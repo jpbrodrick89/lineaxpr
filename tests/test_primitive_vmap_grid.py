@@ -401,3 +401,28 @@ def test_outer_with_closure_row(seed_kind, in_ax, out_ax):
     _check("outer_with_closure_row",
            lambda x: x[:, None] * c[None, :],
            y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# select_n closure-zero alignment regression (BENNETT5LS pattern)
+#
+# `f(b) = sum((b[1] + c) ** b[2])` with c a length-k closure (k != n)
+# linearizes (via grad → jvp) to a chain that emits select_n with mixed
+# operand layouts: traced cases come through with V at axis 0 (from a
+# transposed-BE → densify path), closure cases get expanded with a
+# zero V tensor. The select_n rule used to expand closures with V at
+# axis -1 unconditionally, then squeezed leading axes regardless of
+# size, which sliced-not-squeezed when shape[0] > 1 — yielding a
+# mismatched (V, k) vs (k, V) pair that broadcast_shapes rejected.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+def test_pow_with_closure(seed_kind, in_ax, out_ax):
+    """Linearised-grad of `sum((b[1] + c) ** b[2])` for a length-k>n
+    closure c. Exercises select_n's mixed-V-position case densification."""
+    n = 6
+    c = jnp.linspace(0.1, 1.0, 4)  # k != n
+    y = jnp.linspace(0.4, 0.9, n)
+    g = jax.grad(lambda b: jnp.sum((b[1] + c) ** b[2]))
+    _check("pow_with_closure", g, y, seed_kind, in_ax, out_ax)
