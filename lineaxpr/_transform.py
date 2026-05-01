@@ -128,16 +128,18 @@ def _walk_jaxpr(jaxpr, env, n):
 
 
 def _walk_with_seed(linear_fn, seed_linop):
-    """Trace vmap(linear_fn) with the aval implied by seed_linop, walk the
+    """Trace `linear_fn` with the aval implied by `seed_linop`, walk the
     jaxpr, return the output LinOp.
 
-    The jaxpr has one invar of shape seed_linop.shape (= (n, n) for the
-    standard Identity(n) seed).  The vmap batch axis is dim 0; every rule
-    in materialize_rules accounts for this by stripping the +1 axis shift
-    from its params before delegating to the LinOp dispatch functions.
+    `linear_fn` is expected to be already vmapped by the caller (see
+    `materialize`). `sparsify(vmapped_fn)(seed)` is the lower-level
+    entry point — callers may supply any vmap configuration.
+
+    The jaxpr's invar has shape `seed_linop.shape`. For the standard
+    `Identity(n)` seed under default `jax.vmap`, that's `(n, n)`.
     """
     placeholder = jax.ShapeDtypeStruct(seed_linop.shape, seed_linop.dtype)
-    cj = jax.make_jaxpr(jax.vmap(linear_fn))(placeholder)
+    cj = jax.make_jaxpr(linear_fn)(placeholder)
     jaxpr = cj.jaxpr
 
     if len(jaxpr.invars) != 1:
@@ -174,15 +176,17 @@ def _walk_with_seed(linear_fn, seed_linop):
 def sparsify(linear_fn):
     """Transform a linear function into one that operates on LinOps.
 
-    `sparsify(linear_fn)(seed_linop)` traces `linear_fn` against the aval
-    implied by `seed_linop.primal_aval()`, walks the resulting jaxpr with
-    per-primitive structural rules, and returns a LinOp representing the
-    linear function's matrix.
+    `sparsify(linear_fn)(seed_linop)` traces `linear_fn` against the
+    aval implied by `seed_linop.shape`, walks the resulting jaxpr with
+    per-primitive structural rules, and returns a LinOp representing
+    the linear function's matrix.
 
-    Seeds are explicit — no automatic Identity cast. For the common case
-    of extracting the full Jacobian, the public wrappers `materialize` /
-    `jacfwd` / `jacrev` / `hessian` build
-    `Identity(primal.size, dtype=primal.dtype)` and pass it through.
+    `linear_fn` is **not** vmapped by sparsify — pass an already-vmapped
+    function if you want a per-sample-then-stack interpretation. The
+    high-level entry points (`materialize` / `jacfwd` / `jacrev` /
+    `hessian`) handle vmap themselves.
+
+    Seeds are explicit — no automatic Identity cast.
     """
     def inner(seed_linop):
         return _walk_with_seed(linear_fn, seed_linop)
@@ -218,7 +222,9 @@ def materialize(linear_fn, primal, format: str = "dense"):
         raise ValueError(f"format must be one of {_VALID_FORMATS}, got {format!r}")
     n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
     seed = Identity(n, dtype=primal.dtype)
-    linop = sparsify(linear_fn)(seed)
+    # vmap config is centralised here so callers (sparsify directly)
+    # can supply any vmap configuration via jax.vmap on linear_fn.
+    linop = sparsify(jax.vmap(linear_fn))(seed)
     if format == "dense":
         return linop.todense() if isinstance(linop, LinOpProtocol) else linop
     bcoo = linop.to_bcoo() if hasattr(linop, 'to_bcoo') else linop
