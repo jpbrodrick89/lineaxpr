@@ -452,3 +452,26 @@ def test_scalar_plus_sliced_sq(seed_kind, in_ax, out_ax):
     y = jnp.linspace(0.4, 0.9, n)
     g = jax.grad(lambda x: x[0] ** 2 + jnp.sum(x[:-1] ** 2))
     _check("scalar_plus_sliced_sq", g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
+# Concatenate-with-closure-zero V-position alignment regression
+# (BROYDN7D pattern)
+#
+# `f(y) = sum(concat([zeros(1), y[:-1]])**2)` chains a closure-zero
+# concatenated with a traced slice. When the traced operand is a
+# transposed-BE → densify chain (V at 0), the concat rule's closure
+# zero path used to insert V at -1, producing operands like (1, V) and
+# (V, k) that lax.concatenate refused to combine.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+def test_concat_zero_with_slice(seed_kind, in_ax, out_ax):
+    """Linearised-grad of `sum(concat([zeros(1), y[:-1]])**2)`.
+    Hits concat's dense fallback with mixed-V-position operands."""
+    n = 6
+    y = jnp.linspace(0.4, 0.9, n)
+    g = jax.grad(lambda y: jnp.sum(jnp.concatenate(
+        [jnp.zeros(1, dtype=y.dtype), y[:-1]]) ** 2))
+    _check("concat_zero_with_slice", g, y, seed_kind, in_ax, out_ax)

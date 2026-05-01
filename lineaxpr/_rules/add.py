@@ -727,6 +727,20 @@ def _add_rule_canonical(invals, traced, n):
     if all(r is not None for r in linear_form_rows):
         return functools.reduce(operator.add, linear_form_rows)
 
-    # Dense fallback: densify everything and sum.
+    # Dense fallback: densify everything and sum. Align V positions
+    # if any operand has V at axis 0 (densified-from-transposed-BE
+    # chain) — transpose the V-at-(-1) ones to match.
     dense_vals = [v.todense() if isinstance(v, LinOpProtocol) else v for v in vals]
+    v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+                    for d in dense_vals)
+    if v_at_zero:
+        aligned = []
+        for d in dense_vals:
+            if d.ndim >= 2 and d.shape[-1] == n and d.shape[0] != n:
+                # V at -1; move to 0.
+                perm = (d.ndim - 1,) + tuple(range(d.ndim - 1))
+                aligned.append(jnp.transpose(d, perm))
+            else:
+                aligned.append(d)
+        dense_vals = aligned
     return functools.reduce(operator.add, dense_vals)

@@ -198,12 +198,21 @@ def _concatenate_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (op.data, new_indices), shape=(out_size, op.shape[1])
             )
-    # Fallback: densify everything.
+    # Fallback: densify everything. When any traced operand has V at
+    # axis 0 (densified-from-transposed-BE chain — detected by
+    # `shape[0]==n, shape[-1]!=n`), build closure zeros with V at 0 to
+    # match. Otherwise V at -1 (Phase B default).
+    raw_traced = [v.todense() if isinstance(v, LinOpProtocol) else v
+                  for v, t in zip(invals, traced) if t]
+    v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+                    for d in raw_traced)
     parts = []
+    traced_iter = iter(raw_traced)
     for v, t in zip(invals, traced):
         if t:
-            parts.append(v.todense() if isinstance(v, LinOpProtocol) else v)
+            parts.append(next(traced_iter))
         else:
-            # Closure constant: extend with a zero "input axis" of size n.
-            parts.append(jnp.broadcast_to(v[..., None] * 0, v.shape + (n,)))
+            zero_shape = (n,) + v.shape if v_at_zero else v.shape + (n,)
+            parts.append(jnp.broadcast_to(v[None] * 0 if v_at_zero
+                                          else v[..., None] * 0, zero_shape))
     return lax.concatenate(parts, dimension)
