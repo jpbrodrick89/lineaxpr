@@ -121,4 +121,4 @@ def _(updates, *, n, operand, scatter_indices, **params):
 @split_op.register(jax.Array)
 @split_op.register(DynamicJaxprTracer)  # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    return list(lax.split_p.bind(op, **params))
+    return lax.split_p.bind(op, **params)
