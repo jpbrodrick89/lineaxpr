@@ -28,11 +28,23 @@ def _mul_rule(invals, traced, n, **params):
     else:
         raise NotImplementedError("mul of two traced operands — not linear")
 
+    # Primal axes (= traced_op shape minus V). For transposed=True
+    # BE, V is at axis 0 → primal = shape[1:]; for transposed=False
+    # (default for non-BE LinOps and canonical BEs) V is at axis -1 →
+    # primal = shape[:-1].
+    is_transposed_be = (
+        isinstance(traced_op, BEllpack) and traced_op.transposed
+    )
+    if is_transposed_be:
+        traced_var_shape = traced_op.shape[1:]
+    else:
+        traced_var_shape = traced_op.shape[:-1]
+
     # vmap inserts broadcast_in_dim on scalar closures, giving them shape
     # (1, k) instead of (k,). Squeeze leading (1,) dims so the existing
     # scale_ok / scale_per_out_row paths see the expected shape.
-    if hasattr(scale, "shape") and hasattr(traced_op, "shape"):
-        target_ndim = len(traced_op.shape) - 1  # (*batch, out)
+    if hasattr(scale, "shape"):
+        target_ndim = len(traced_var_shape)
         while hasattr(scale, "shape") and len(scale.shape) > target_ndim and scale.shape[0] == 1:
             scale = scale[0]
 
@@ -45,7 +57,6 @@ def _mul_rule(invals, traced, n, **params):
     # scale_per_out_row assumes scale has shape that broadcasts cleanly
     # against the op's var_shape (batch_shape + (out_size,)). If scale has
     # extra dims (jaxpr outer-product-like broadcasts), fall back to dense.
-    traced_var_shape = traced_op.shape[:-1]
     scale_ok = (
         hasattr(scale, "shape")
         and len(scale.shape) <= len(traced_var_shape)

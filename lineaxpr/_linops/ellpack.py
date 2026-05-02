@@ -827,11 +827,18 @@ def _(op, *, n, **params):
 @pad_op.register(BEllpack)
 def _(op, *, n, padding_value, **params):
     config = tuple(params["padding_config"])
-    in_axis_noop = len(config) >= 2 and tuple(config[-1]) == (0, 0, 0)
+    # V (in_size) sits at axis -1 for transposed=False, axis 0 for
+    # transposed=True. Padding the V axis is unsupported here; we only
+    # accept configs where the V axis pad is a noop.
+    v_axis = 0 if op.transposed else len(config) - 1
+    primal_axis = len(config) - 1 if op.transposed else 0  # for unbatched
+    in_axis_noop = (
+        len(config) >= 2 and tuple(config[v_axis]) == (0, 0, 0)
+    )
 
     # 1D primal no-interior pad on unbatched BEllpack.
     if len(config) == 2 and in_axis_noop and op.n_batch == 0:
-        before, after, interior = config[0]
+        before, after, interior = config[primal_axis]
         if int(interior) == 0:
             return op.pad_rows(int(before), int(after))
 
