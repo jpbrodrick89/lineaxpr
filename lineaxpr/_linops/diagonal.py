@@ -174,11 +174,9 @@ def _trailing_is_in_axis_noop(starts, limits, strides, in_size):
 
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = (tuple(int(x) for x in strides_p)
-               if strides_p else (1,) * len(starts))
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
     if (len(starts) == 2
             and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
@@ -196,11 +194,9 @@ def _(op, *, n, **params):
 
 @slice_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = (tuple(int(x) for x in strides_p)
-               if strides_p else (1,) * len(starts))
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
     if (len(starts) == 2
             and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
@@ -284,7 +280,7 @@ def _(op, *, n, **params):
 @reshape_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     # Walk-frame new_sizes has n at -1; structural shape is the prefix.
-    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
+    new_sizes = params["new_sizes"][:-1]
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -303,7 +299,7 @@ def _(op, *, n, **params):
 
 @reshape_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
+    new_sizes = params["new_sizes"][:-1]
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
@@ -462,7 +458,7 @@ def _(op, *, n, start_indices, **params):
     # shape (V=n, primal_out=n); the gather collapses axis 1 (primal)
     # and preserves V as offset_dims=(0,). The output BE is the same
     # row-select but transposed=True to match the V-at-0 layout.
-    sl = tuple(int(s) for s in params["slice_sizes"])
+    sl = params["slice_sizes"]
     point_gather_v_collapsed_T = (
         tuple(dnums.offset_dims) == (0,)
         and tuple(dnums.collapsed_slice_dims) == (1,)
@@ -536,7 +532,7 @@ def _(op, *, n, start_indices, **params):
         and params["slice_sizes"] == (1,)
     )
     # V-augmented gather (V at axis 0); see ConstantDiagonal rule above.
-    sl = tuple(int(s) for s in params["slice_sizes"])
+    sl = params["slice_sizes"]
     point_gather_v_collapsed_T = (
         tuple(dnums.offset_dims) == (0,)
         and tuple(dnums.collapsed_slice_dims) == (1,)

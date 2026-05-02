@@ -28,7 +28,7 @@ from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 @reshape_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     # Walk-frame new_sizes has n at -1; structural shape is the prefix.
-    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
+    new_sizes = params["new_sizes"][:-1]
 
     # Pass-through: unbatched BCOO already the target shape.
     # (handled separately via BCOO base; this path won't fire for BEllpack)
@@ -169,7 +169,7 @@ def _(op, *, n, **params):
 # BCOO batched → flat reshape registration.
 @reshape_op.register(sparse.BCOO)
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])[:-1]
+    new_sizes = params["new_sizes"][:-1]
 
     # Pass-through: already the target shape.
     if (op.n_batch == 0
@@ -419,7 +419,7 @@ def _(op, *, n, **params):
     # transposed=True: V at axis 0, structural axes shift down by 1.
     # transposed=False: V at axis -1, structural axes are 0..n_batch.
     if op.transposed:
-        axes = tuple(int(a) - 1 for a in axes)
+        axes = tuple(a - 1 for a in axes)
 
     # BEllpack with leading batch dims.
     if op.n_batch > 0:

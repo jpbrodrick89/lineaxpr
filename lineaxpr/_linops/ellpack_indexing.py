@@ -81,7 +81,7 @@ def _(op, *, n, start_indices, **params):
     # 0) as offset_dims. Structurally this gathers rows of the (out,
     # in)-canonical Jacobian — same semantics as point_gather_collapsed
     # but the dnums describe the V-augmented operand layout.
-    sl = tuple(int(s) for s in params["slice_sizes"])
+    sl = params["slice_sizes"]
     point_gather_v_collapsed_T = (
         op.transposed
         and op.n_batch == 0

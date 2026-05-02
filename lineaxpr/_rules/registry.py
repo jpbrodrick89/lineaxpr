@@ -314,7 +314,7 @@ def _transpose_rule(invals, traced, n, **params):
     (op,), (t,) = invals, traced
     if not t:
         return None
-    perm = tuple(int(p) for p in params["permutation"])
+    perm = params["permutation"]
     return op.transpose(perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 

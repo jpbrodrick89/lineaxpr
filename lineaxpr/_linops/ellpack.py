@@ -816,11 +816,9 @@ def _(op, v):
 
 @slice_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = (tuple(int(s) for s in strides_p)
-               if strides_p else (1,) * len(starts))
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
     # V (in_size) is at axis 0 for transposed=True, axis -1 otherwise.
     # The "in_axis_noop" check confirms the slice doesn't touch V; the
     # primal_out (= structural row axis) sits at the opposite end.
