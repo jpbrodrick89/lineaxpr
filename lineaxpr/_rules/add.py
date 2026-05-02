@@ -457,9 +457,28 @@ def _add_rule(invals, traced, n, **params):
                                 + (res.ndim - 1, res.ndim - 2))
                         return jnp.transpose(res, perm)
                     return res
-                # Promotion didn't yield all-T=True (e.g. BCOO operand
-                # present, or shape mismatch). Fall back to densifying
-                # T=True BEs so the canonical body sees consistent forms.
+                # Promotion didn't yield all-T=True. If a BCOO operand
+                # is present and all operands have a `to_bcoo` route at
+                # matching shape, promote each to BCOO and concat
+                # (preserves sparsity; BE_T's `.to_bcoo()` respects the
+                # transposed flag and produces the LOGICAL view, so the
+                # concat sums all operands at the same logical layout).
+                non_closure = [(v, t) for v, t in zip(invals, traced)]
+                traced_vals = [v for v, t in non_closure if t]
+                if (any(isinstance(v, sparse.BCOO) for v in traced_vals)
+                        and all(hasattr(v, 'shape') for v in traced_vals)
+                        and len({tuple(v.shape) for v in traced_vals}) == 1
+                        and all(isinstance(v, (BEllpack, sparse.BCOO))
+                                or (isinstance(v, ConstantDiagonal)
+                                    or isinstance(v, Diagonal))
+                                for v in traced_vals)):
+                    bcoo_vals = [
+                        v.to_bcoo() if hasattr(v, 'to_bcoo') else v
+                        for v in traced_vals
+                    ]
+                    return _bcoo_concat(bcoo_vals, shape=tuple(traced_vals[0].shape))
+                # Last resort: densify T=True BEs so canonical body
+                # sees consistent forms.
                 invals = tuple(
                     (v.todense()
                      if (t and isinstance(v, BEllpack) and v.transposed)
