@@ -217,6 +217,60 @@ def _scatter_add_rule(invals, traced, n, **params):
 
 
 # ---------------------------------------------------------------------------
+# Scatter (assign) rule — lax.scatter_p  (lax.scatter, not scatter_add)
+# ---------------------------------------------------------------------------
+
+def _scatter_rule(invals, traced, n, **params):
+    """Jacobian rule for lax.scatter (assignment scatter, not accumulation).
+
+    scatter(operand, indices, updates) sets operand[indices] = updates.
+    Jacobian: J_out[indices] = J_updates; J_out[non-indices] = J_operand.
+    """
+    operand, scatter_indices, updates = invals
+    to, ti, tu = traced
+
+    if ti:
+        raise NotImplementedError("scatter with traced indices")
+
+    dnums = params["dimension_numbers"]
+    scatter_target_dim = (int(dnums.scatter_dims_to_operand_dims[0])
+                          if dnums is not None else 0)
+    out_idx_flat = jnp.asarray(scatter_indices)[..., 0].reshape(-1)
+
+    if not to and not tu:
+        return None
+
+    if to and not tu:
+        # Constant updates overwrite scattered rows → those rows have J=0.
+        # Non-scattered rows retain J_operand.
+        op_dense = (operand.todense() if isinstance(operand, LinOpProtocol)
+                    else jnp.asarray(operand))
+        idx = [slice(None)] * op_dense.ndim
+        idx[scatter_target_dim] = out_idx_flat
+        return op_dense.at[tuple(idx)].set(0)
+
+    # tu=True: scatter J_updates into the output Jacobian.
+    upd_dense = (updates.todense() if isinstance(updates, LinOpProtocol)
+                 else jnp.asarray(updates))
+    flat_upd = upd_dense.reshape(-1, n)
+
+    if not to:
+        # Only updates traced: J_out[non-scattered] = 0, J_out[scattered] = J_updates.
+        out_shape = tuple(operand.shape) + (n,)
+        result = jnp.zeros(out_shape, flat_upd.dtype)
+        idx = [slice(None)] * (len(operand.shape) + 1)
+        idx[scatter_target_dim] = out_idx_flat
+        return result.at[tuple(idx)].set(flat_upd)
+
+    # Both traced: merge J_operand (background) with J_updates (foreground).
+    op_dense = (operand.todense() if isinstance(operand, LinOpProtocol)
+                else jnp.asarray(operand))
+    idx = [slice(None)] * op_dense.ndim
+    idx[scatter_target_dim] = out_idx_flat
+    return op_dense.at[tuple(idx)].set(flat_upd)
+
+
+# ---------------------------------------------------------------------------
 # Rule registry
 # ---------------------------------------------------------------------------
 
@@ -275,3 +329,52 @@ def _transpose_rule(invals, traced, n, **params):
 materialize_rules[lax.transpose_p] = _transpose_rule
 materialize_rules[lax.gather_p] = _gather_rule
 materialize_rules[_slicing.scatter_add_p] = _scatter_add_rule
+materialize_rules[_slicing.scatter_p] = _scatter_rule
+
+
+# ---------------------------------------------------------------------------
+# Linear-algebra primitives
+# ---------------------------------------------------------------------------
+
+def _triangular_solve_rule(invals, traced, n, **params):
+    """Jacobian rule for lax.linalg.triangular_solve.
+
+    Only the constant-a / traced-b case is supported (the common MJX path).
+    J_b has one extra trailing dim (n) vs primal b.
+
+    For left_side=True:  J_x = a^{-1} J_b  →  same solve on J_b directly.
+    For left_side=False: J_x = a^{-T} J_b  →  left-solve with transposed a
+        (direct right-solve fails: J_b.shape[-1]=n but a.shape[-2]=m, n≠m).
+    """
+    a, b = invals
+    ta, tb = traced
+    if ta:
+        raise NotImplementedError(
+            "triangular_solve with traced a (constant b) not supported")
+    if not tb:
+        return None
+    J_b = b.todense() if isinstance(b, LinOpProtocol) else jnp.asarray(b)
+    # J_b.ndim = primal_b.ndim + 1 (extra n-axis). a must have matching batch dims.
+    a_batch_ndim = a.ndim - 2
+    j_batch_ndim = J_b.ndim - 2
+    if j_batch_ndim > a_batch_ndim:
+        extra = j_batch_ndim - a_batch_ndim
+        a = jnp.broadcast_to(
+            a.reshape((1,) * extra + a.shape),
+            J_b.shape[:j_batch_ndim] + a.shape[-2:],
+        )
+    left_side = params.get("left_side", True)
+    if left_side:
+        return lax.linalg.triangular_solve(a, J_b, **params)
+    # left_side=False: primal x @ a = b.  J_x = a^{-T} J_b.
+    # Compute as left-solve with transpose_a flipped.
+    new_params = dict(params, left_side=True,
+                      transpose_a=not params.get("transpose_a", False))
+    return lax.linalg.triangular_solve(a, J_b, **new_params)
+
+
+try:
+    from jax._src.lax.linalg import triangular_solve_p
+    materialize_rules[triangular_solve_p] = _triangular_solve_rule
+except ImportError:
+    pass

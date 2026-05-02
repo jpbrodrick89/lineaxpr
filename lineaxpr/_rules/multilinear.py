@@ -60,7 +60,7 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
     if not (n_batch - 1 <= c_be <= n_batch):
         return None
     A = aval_shape[c_be]
-    if A != M.shape[c_M] or k_old * A >= in_size:
+    if A == 0 or A != M.shape[c_M] or k_old * A >= in_size:
         return None
 
     B = M.shape[1 - c_M]
@@ -84,8 +84,14 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
     k_let = "K" if k_old > 1 else ""
     eq = f"{letters}{k_let},{ctr}J->{remaining}J{k_let}{ctr}"
     new_vals = jnp.einsum(eq, be.values, M_AB)
-    if k_old > 1:
-        new_vals = new_vals.reshape(new_aval + (k_old * A,))
+    # Einsum output has shape (*remaining, B, [K,] a); flatten to (*new_aval, k_new).
+    # For k_old==1 the K dim is absent; for k_old>1 it's present. Either way
+    # reshape to new_aval + (k_new,) then squeeze if k_new==1 (BEllpack stores
+    # k=1 values without the trailing band dim).
+    k_new = k_old * A
+    new_vals = new_vals.reshape(new_aval + (k_new,))
+    if k_new == 1:
+        new_vals = new_vals[..., 0]
 
     out_be = BEllpack(
         start_row=0, end_row=new_out,

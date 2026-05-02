@@ -143,6 +143,8 @@ class BEllpack:
         rows_1d = np.arange(self.start_row, self.end_row)
         dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
+        if k == 0:
+            return dense
         if k == 1:
             cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
