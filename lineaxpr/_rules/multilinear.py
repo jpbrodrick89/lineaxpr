@@ -102,21 +102,14 @@ def _dot_general_rule(invals, traced, n, **params):
     else:
         traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
     traced_is_first = tx
-    traced_shape = traced_op.shape[:-1]
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
         if isinstance(traced_op, ConstantDiagonal):
             return ConstantDiagonal(traced_op.n, M * traced_op.data)
         return M * traced_op
-    if len(c_tr) == 0 and len(c_M) == 0:
-        # Outer product. BE's trailing `n` axis stays last.
-        dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
-        if traced_is_first:
-            # (*t, n) × (*m,) → (*t, *m, n)
-            d = dense.reshape(traced_shape + (1,) * M.ndim + dense.shape[-1:])
-            return d * M[..., None]
-        # (*m,) × (*t, n) → (*m, *t, n)
-        return M.reshape(M.shape + (1,) * (len(traced_shape) + 1)) * dense
+    # Outer product (no contraction): fall through to the dense
+    # `lax.dot_general` path below — it places V correctly per the
+    # rewritten dnums, regardless of V position in `traced_op`.
 
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
