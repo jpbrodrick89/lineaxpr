@@ -427,58 +427,33 @@ def _add_rule(invals, traced, n, **params):
                     for v, t in zip(invals, traced)
                 )
             else:
-                # Promote D / CD operands to T=True BEllpack so the
-                # mixed-flag chain converges to all-T=True, then route
-                # to the all-T=True flip-and-flip-back path. Avoids
-                # densifying any BE_T. _SYN_SCATTER_COMPACT_DUP / SBRYBND
-                # density baseline.
-                invals, traced = _promote_diag_to_be_t(invals, traced, n)
-                # Recompute be_flags after promotion: should be {True}.
-                traced_be = [v for v, t in zip(invals, traced)
-                             if t and isinstance(v, BEllpack)]
-                be_flags = {v.transposed for v in traced_be}
-                all_traced = [v for v, t in zip(invals, traced) if t]
-                all_be = traced_be and len(traced_be) == len(all_traced)
-                if all_be and be_flags == {True}:
-                    flipped = [
-                        replace_slots(v, transposed=False)
-                        if t and isinstance(v, BEllpack) else v
-                        for v, t in zip(invals, traced)
-                    ]
-                    res = _add_rule_canonical(flipped, traced, n)
-                    if isinstance(res, BEllpack):
-                        return replace_slots(res, transposed=True)
-                    if (isinstance(res, sparse.BCOO)
-                            and res.indices.ndim == 2
-                            and res.indices.shape[-1] == 2):
-                        return res.transpose(axes=(1, 0))
-                    if hasattr(res, "ndim") and res.ndim >= 2:
-                        perm = (tuple(range(res.ndim - 2))
-                                + (res.ndim - 1, res.ndim - 2))
-                        return jnp.transpose(res, perm)
-                    return res
-                # Promotion didn't yield all-T=True. If a BCOO operand
-                # is present and all operands have a `to_bcoo` route at
-                # matching shape, promote each to BCOO and concat
-                # (preserves sparsity; BE_T's `.to_bcoo()` respects the
-                # transposed flag and produces the LOGICAL view, so the
-                # concat sums all operands at the same logical layout).
-                non_closure = [(v, t) for v, t in zip(invals, traced)]
-                traced_vals = [v for v, t in non_closure if t]
+                # If a BCOO operand is present and all operands have a
+                # `to_bcoo` route at matching shape, promote each to
+                # BCOO and concat (preserves sparsity; BE_T's
+                # `.to_bcoo()` respects the transposed flag and
+                # produces the LOGICAL view, so the concat sums all
+                # operands at the same logical layout).
+                traced_vals = [v for v, t in zip(invals, traced) if t]
                 if (any(isinstance(v, sparse.BCOO) for v in traced_vals)
                         and all(hasattr(v, 'shape') for v in traced_vals)
                         and len({tuple(v.shape) for v in traced_vals}) == 1
-                        and all(isinstance(v, (BEllpack, sparse.BCOO))
-                                or (isinstance(v, ConstantDiagonal)
-                                    or isinstance(v, Diagonal))
+                        and all(isinstance(v, (BEllpack, sparse.BCOO,
+                                                ConstantDiagonal, Diagonal))
                                 for v in traced_vals)):
                     bcoo_vals = [
                         v.to_bcoo() if hasattr(v, 'to_bcoo') else v
                         for v in traced_vals
                     ]
-                    return _bcoo_concat(bcoo_vals, shape=tuple(traced_vals[0].shape))
-                # Last resort: densify T=True BEs so canonical body
-                # sees consistent forms.
+                    return _bcoo_concat(bcoo_vals,
+                                        shape=tuple(traced_vals[0].shape))
+                # Densify T=True BEs so canonical body sees consistent
+                # forms. Densifying a BE here is the only way to
+                # converge a mixed `BE_T + (Diagonal/CD or 2D ndarray)`
+                # chain — promoting CD/Diagonal to a T=True BE produces
+                # a structurally-valid result whose downstream
+                # interaction (`_mul_rule` etc.) can give wrong values
+                # (NONCVXU2 / NONCVXUN regression). Pay the
+                # densification here; recover sparsity upstream.
                 invals = tuple(
                     (v.todense()
                      if (t and isinstance(v, BEllpack) and v.transposed)
@@ -486,35 +461,6 @@ def _add_rule(invals, traced, n, **params):
                     for v, t in zip(invals, traced)
                 )
     return _add_rule_canonical(invals, traced, n)
-
-
-def _promote_diag_to_be_t(invals, traced, n):
-    """Promote each Diagonal / ConstantDiagonal operand to a T=True
-    BEllpack, sharing shape `(n, n)`. Leaves BEllpack / BCOO / array
-    operands untouched. Used by `_add_rule` to converge a mixed
-    BE_T + Diagonal chain to all-T=True (avoids densification).
-    """
-    new_invals = []
-    for v, t in zip(invals, traced):
-        if not t:
-            new_invals.append(v)
-            continue
-        if isinstance(v, ConstantDiagonal):
-            arange_n = np.arange(v.n)
-            data = jnp.broadcast_to(jnp.asarray(v.data), (v.n,))
-            new_invals.append(BEllpack(
-                0, v.n, (arange_n,), data, v.n, v.n,
-                transposed=True,
-            ))
-        elif isinstance(v, Diagonal):
-            arange_n = np.arange(v.n)
-            new_invals.append(BEllpack(
-                0, v.n, (arange_n,), v.data, v.n, v.n,
-                transposed=True,
-            ))
-        else:
-            new_invals.append(v)
-    return tuple(new_invals), traced
 
 
 def _add_rule_canonical(invals, traced, n):
