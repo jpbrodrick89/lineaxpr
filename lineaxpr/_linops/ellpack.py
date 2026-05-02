@@ -984,6 +984,7 @@ def _bellpack_unbatch(bep):
             in_cols=tuple(flat_cols), data=flat_values,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(prod_B,),
+            transposed=bep.transposed,
         )
     B = bep.batch_shape[0]
     result = []
@@ -996,5 +997,6 @@ def _bellpack_unbatch(bep):
             in_cols=in_cols_b, data=values_b,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(),
+            transposed=bep.transposed,
         ))
     return tuple(result)

@@ -415,6 +415,11 @@ def _(op, *, n, **params):
 @reduce_sum_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     axes = params["axes"]
+    # Translate V-augmented axes to structural axes (batch + out).
+    # transposed=True: V at axis 0, structural axes shift down by 1.
+    # transposed=False: V at axis -1, structural axes are 0..n_batch.
+    if op.transposed:
+        axes = tuple(int(a) - 1 for a in axes)
 
     # BEllpack with leading batch dims.
     if op.n_batch > 0:
@@ -516,11 +521,13 @@ def _(op, *, n, **params):
                     start_row=0, end_row=B,
                     in_cols=tuple(group_cols), data=dedup_values,
                     out_size=B, in_size=op.in_size,
+                    transposed=op.transposed,
                 ), n)
             return _densify_if_wider_than_dense(BEllpack(
                 start_row=0, end_row=B,
                 in_cols=tuple(new_in_cols), data=new_values,
                 out_size=B, in_size=op.in_size,
+                transposed=op.transposed,
             ), n)
 
     # BEllpack row-sum (unbatched, axis 0): emit a BEllpack row-vector whose

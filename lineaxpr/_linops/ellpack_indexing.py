@@ -239,7 +239,15 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
     # BEllpack batched case.
     if updates.n_batch == 0:
-        updates = updates.to_bcoo() if hasattr(updates, 'to_bcoo') else updates
+        # Normalise to canonical (out, in) BCOO regardless of the BE's
+        # transposed flag — downstream uses indices[:, 0] as the
+        # out-axis index.
+        from lineaxpr._linops.ellpack import (  # noqa: PLC0415
+            _ellpack_to_bcoo, replace_slots,
+        )
+        canonical = (replace_slots(updates, transposed=False)
+                     if updates.transposed else updates)
+        updates = _ellpack_to_bcoo(canonical)
     else:
         from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
         slices = _bellpack_unbatch(updates)

@@ -457,6 +457,17 @@ def _(op, *, n, start_indices, **params):
         and dnums.start_index_map == (0,)
         and params["slice_sizes"] == (1,)
     )
+    # V-augmented gather (post jax.vmap, V at axis 0): operand has
+    # shape (V=n, primal_out=n); the gather collapses axis 1 (primal)
+    # and preserves V as offset_dims=(0,). The output BE is the same
+    # row-select but transposed=True to match the V-at-0 layout.
+    sl = tuple(int(s) for s in params["slice_sizes"])
+    point_gather_v_collapsed_T = (
+        tuple(dnums.offset_dims) == (0,)
+        and tuple(dnums.collapsed_slice_dims) == (1,)
+        and tuple(dnums.start_index_map) == (1,)
+        and len(sl) == 2 and sl[0] == op.n and sl[1] == 1
+    )
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
@@ -475,6 +486,7 @@ def _(op, *, n, start_indices, **params):
         data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
+        transposed=point_gather_v_collapsed_T,
     )
 
 
@@ -522,6 +534,14 @@ def _(op, *, n, start_indices, **params):
         and dnums.start_index_map == (0,)
         and params["slice_sizes"] == (1,)
     )
+    # V-augmented gather (V at axis 0); see ConstantDiagonal rule above.
+    sl = tuple(int(s) for s in params["slice_sizes"])
+    point_gather_v_collapsed_T = (
+        tuple(dnums.offset_dims) == (0,)
+        and tuple(dnums.collapsed_slice_dims) == (1,)
+        and tuple(dnums.start_index_map) == (1,)
+        and len(sl) == 2 and sl[0] == op.n and sl[1] == 1
+    )
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
@@ -540,6 +560,7 @@ def _(op, *, n, start_indices, **params):
         data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
+        transposed=point_gather_v_collapsed_T,
     )
 
 

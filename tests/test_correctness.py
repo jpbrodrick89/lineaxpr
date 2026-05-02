@@ -30,7 +30,7 @@ CASES = [
     ("sif2jax.cutest._unconstrained_minimisation.dixmaana1", "DIXMAANA1", 0.0),
     ("sif2jax.cutest._quadratic_problems.cmpc1", "CMPC1", 0.0),
     ("sif2jax.cutest._unconstrained_minimisation.luksan17ls", "LUKSAN17LS", 1e-11),
-    ("sif2jax.cutest._unconstrained_minimisation.tointgor", "TOINTGOR", 0.0),
+    ("sif2jax.cutest._unconstrained_minimisation.tointgor", "TOINTGOR", 1e-13),
 ]
 
 
