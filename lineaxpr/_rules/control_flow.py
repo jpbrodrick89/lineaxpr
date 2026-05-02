@@ -267,6 +267,8 @@ def _select_n_rule(invals, traced, n, **params):
     # Determine V position from the traced LinOp inputs:
     # transposed=True BEs render with V at axis 0; everything else
     # (Diagonal/CD/BCOO/already-dense) follows shape inspection.
+    # Square dense shapes are ambiguous — default to V-at-0 to match
+    # the post-vmap convention used elsewhere.
     traced_be_flags = [
         c.transposed for c, t in zip(cases, case_traced)
         if t and isinstance(c, BEllpack)
@@ -278,8 +280,24 @@ def _select_n_rule(invals, traced, n, **params):
     if traced_be_flags:
         v_at_zero = any(traced_be_flags)
     else:
-        v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
-                        for d in raw_traced)
+        # Default V-at-0 unless every dense traced operand is
+        # unambiguously V-at-(-1) (`shape[-1]==n, shape[0]!=n`).
+        any_v_at_0_unambiguous = any(
+            d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+            for d in raw_traced
+        )
+        all_v_at_last_unambiguous = (
+            len(raw_traced) > 0
+            and all(d.ndim >= 2 and d.shape[-1] == n and d.shape[0] != n
+                    for d in raw_traced)
+        )
+        if any_v_at_0_unambiguous:
+            v_at_zero = True
+        elif all_v_at_last_unambiguous:
+            v_at_zero = False
+        else:
+            # Ambiguous (e.g., square shapes): default to V-at-0.
+            v_at_zero = True
     case_dense = []
     traced_iter = iter(raw_traced)
     for c, t in zip(cases, case_traced):

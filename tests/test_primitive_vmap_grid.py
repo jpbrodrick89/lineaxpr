@@ -505,6 +505,49 @@ def test_abs_split_sum(seed_kind, in_ax, out_ax):
 
 
 # ---------------------------------------------------------------------------
+# select_n V-at-0 dense-fallback regression (SBRYBND boundary pattern)
+#
+# `_select_n_rule`'s dense fallback inferred V position from the
+# traced operand's dense shape — `shape[0]==n, shape[-1]!=n` ⇒ V-at-0.
+# When the traced operand was a square `(n, n)` dense ndarray (built
+# upstream via broadcast_in_dim+pad of a (V,) vector), the heuristic
+# was undecided and defaulted to V-at-(-1), but the rest of the chain
+# was V-at-0. The closure-zero case got built with V at the wrong
+# axis, scrambling the `select_n` output.
+#
+# MWE: `f(y) = (y[2] + where(mask, slice(pad(-y**2)), slice(pad(-y**3)))[2])**2`.
+# The mixed-mask `where` propagates traced gradient through the
+# linearised-grad chain into a square `(n, n)` ndarray going into a
+# downstream `select_n` dense fallback.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax",
+                         _grid(passing={"Identity": _FULL, "BEllpack": set()}))
+def test_where_padded_slices_v_at_0(seed_kind, in_ax, out_ax):
+    """Linearised-grad of a single residual depending on `where(mask,
+    slice(pad(g(y))), slice(pad(h(y))))[2]**2`. Exercises the
+    `select_n` dense fallback under V-at-0 with a square traced shape."""
+    n = 5
+    lb = 2
+    y = jnp.linspace(0.5, 2.0, n)
+
+    def g(y):
+        nl_sq = -y ** 2
+        nl_cb = -y ** 3
+        nl_sq_padded = jnp.concatenate([jnp.zeros(lb, y.dtype), nl_sq])
+        nl_cb_padded = jnp.concatenate([jnp.zeros(lb, y.dtype), nl_cb])
+        mask = jnp.arange(n) < lb
+        nsq = nl_sq_padded[1 : 1 + n]
+        ncb = nl_cb_padded[1 : 1 + n]
+        return jnp.array(
+            (y[2] + jnp.where(mask, nsq, ncb)[2]) ** 2
+        )
+    grad_g = jax.grad(g)
+    _check("where_padded_slices_v_at_0", grad_g, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
 # Gather pass-through regression (HADAMALS / `jnp.diagonal`-class)
 #
 # The dense gather rule did Phase-A walk-frame indexing tricks
