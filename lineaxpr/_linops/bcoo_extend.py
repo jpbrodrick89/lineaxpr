@@ -34,11 +34,14 @@ def _(op: sparse.BCOO, s) -> sparse.BCOO:
 
 @scale_per_out_row.register(sparse.BCOO)
 def _(op: sparse.BCOO, v) -> sparse.BCOO:
-    # op.indices shape: (nse, 2) for unbatched; (*batch, nse, 2) for batched.
-    row_idx = op.indices[..., 0]
+    # Under V-at-0 layout (post-vmap), the BCOO has V at axis 0 and the
+    # primal-output axis at axis 1. `scale_per_out_row` scales by the
+    # output index, so use `indices[..., 1]`. op.indices shape:
+    # `(nse, 2)` for unbatched; `(*batch, nse, 2)` for batched.
+    out_idx = op.indices[..., 1]
     v_arr = jnp.asarray(v)
     return sparse.BCOO(
-        (op.data * jnp.take(v_arr, row_idx), op.indices), shape=op.shape
+        (op.data * jnp.take(v_arr, out_idx), op.indices), shape=op.shape
     )
 
 

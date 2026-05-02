@@ -172,29 +172,13 @@ def _concatenate_rule(invals, traced, n, **params):
     # along the primal out_size axis — exactly one traced operand
     # sandwiched by closures. Closures from `jax.linearize` are
     # structurally zero, so the result is `op.pad_rows(left, right)`.
-    # Under vmap (V at axis 0) `dimension` is rewritten from 0 to 1 and
-    # closures are stripped back to primal rank. Accept both forms.
-    #
-    # Only fires for transposed=False traced operands or symmetric
-    # forms (Diagonal/CD/Identity-derived) — `pad_rows` operates on the
-    # canonical out_size axis, which only matches the matrix's row axis
-    # when transposed=False. For transposed=True inputs we fall through
-    # to the densify fallback (which emits V-at-0 layout naturally).
+    # `pad_rows` preserves the transposed flag and pads `out_size`,
+    # which is the primal-output axis under either flag.
     closures_1d = all(
         len(v.shape) == 1
         for v, t in zip(invals, traced) if not t and hasattr(v, "shape")
     )
-    traced_op_check = invals[traced_idxs[0]] if len(traced_idxs) == 1 else None
-    traced_canonical = (
-        traced_op_check is not None
-        and not (isinstance(traced_op_check, BEllpack)
-                 and traced_op_check.transposed)
-    )
-    fast_path_dim = (
-        traced_canonical and (
-            (dimension == 0) or (dimension == 1 and closures_1d)
-        )
-    )
+    fast_path_dim = (dimension == 0) or (dimension == 1 and closures_1d)
     if fast_path_dim and len(traced_idxs) == 1:
         idx = traced_idxs[0]
         op = invals[idx]
