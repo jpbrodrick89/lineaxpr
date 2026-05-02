@@ -242,6 +242,17 @@ def _(op, *, n, **params):
             in_cols=tuple(new_in_cols), data=new_values,
             out_size=N, in_size=op.in_size, transposed=True,
         )
+    # transposed=True BE with broadcast that only adds trailing
+    # size-1 axes (LUKSAN-class): convert to BCOO and use
+    # `bcoo_broadcast_in_dim` to keep the result sparse.
+    if (op.transposed
+            and tuple(full_bd) == tuple(range(len(op.shape)))
+            and full_shape[:len(op.shape)] == tuple(op.shape)
+            and all(s == 1 for s in full_shape[len(op.shape):])):
+        return sparse.bcoo_broadcast_in_dim(
+            op.to_bcoo(), shape=full_shape,
+            broadcast_dimensions=tuple(full_bd),
+        )
     # Inside-vmap (transposed=True): V is at axis 0 in the jaxpr-frame
     # operand (externally), but BE's batch-at-front structure can't
     # natively represent V-at-front for rank > 2 outputs. Densify via

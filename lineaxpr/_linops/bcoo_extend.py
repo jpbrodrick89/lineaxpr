@@ -170,4 +170,10 @@ def _(op: sparse.BCOO, *, n, **params):
 
 @broadcast_in_dim_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_broadcast_in_dim(op, **params)
+    # `bcoo_broadcast_in_dim` raises NotImplementedError when adding
+    # sparse dims with size != 1; fall back to dense broadcast in that
+    # case rather than crashing.
+    try:
+        return sparse.bcoo_broadcast_in_dim(op, **params)
+    except NotImplementedError:
+        return lax.broadcast_in_dim_p.bind(op.todense(), **params)
