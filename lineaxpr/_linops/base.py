@@ -168,13 +168,31 @@ def gather_op(op, *, n, start_indices, **params) -> LinOpProtocol | sparse.BCOO 
 @singledispatch
 def scatter_add_op(updates, *, n, operand, scatter_indices,
                    **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Scatter-add updates into rows. Plain-array fallback."""
-    out_idx = scatter_indices[..., 0]
-    out_idx_flat = out_idx.reshape(-1)
-    out_size = operand.shape[0]
-    flat_updates = updates.reshape(-1, n)
-    return (jnp.zeros((out_size, n), flat_updates.dtype)
-            .at[out_idx_flat].add(flat_updates))
+    """Scatter-add updates into rows. Plain-array fallback.
+
+    Handles multi-dimensional operands (e.g. MJX batched scatters where
+    scatter_dims_to_operand_dims targets a non-zero dim).  Output Jacobian
+    shape is always (*operand.shape, n).
+
+    `updates` already has shape (*primal_updates_shape, n); no reshape is
+    needed — the layout produced by the walker matches operand.shape + (n,)
+    with the scatter index axis at scatter_target_dim.
+    """
+    dnums = params.get("dimension_numbers")
+    out_idx_flat = scatter_indices[..., 0].reshape(-1)  # (num_updates,)
+
+    scatter_target_dim = (int(dnums.scatter_dims_to_operand_dims[0])
+                          if dnums is not None else 0)
+
+    # Output shape: (*operand.shape, n)
+    out_shape = tuple(operand.shape) + (n,)
+    result = jnp.zeros(out_shape, updates.dtype)
+
+    # Index all dims with slice(None) except scatter_target_dim → out_idx_flat.
+    # updates already has the matching shape for the selected slice.
+    idx = [slice(None)] * (operand.ndim + 1)  # operand ndim + n dim
+    idx[scatter_target_dim] = out_idx_flat
+    return result.at[tuple(idx)].add(updates)
 
 
 @singledispatch

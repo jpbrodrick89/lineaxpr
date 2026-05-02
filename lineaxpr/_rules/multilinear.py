@@ -105,23 +105,27 @@ def _dot_general_rule(invals, traced, n, **params):
     tx, ty = traced
     (contract, batch) = params["dimension_numbers"]
     (cx, cy) = contract
-    if batch != ((), ()):
-        raise NotImplementedError("dot_general with batch dims not yet handled")
+    (bx, by) = batch
 
     if tx and ty:
         raise NotImplementedError("dot_general of two traced operands")
     if tx:
-        traced_op, c_tr, M, c_M = x, list(cx), y, list(cy)
+        traced_op, c_tr, M, c_M, b_tr, b_M = x, list(cx), y, list(cy), list(bx), list(by)
     else:
-        traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
+        traced_op, c_tr, M, c_M, b_tr, b_M = y, list(cy), x, list(cx), list(by), list(bx)
     traced_is_first = tx
     traced_shape = traced_op.shape[:-1]
+    has_batch = len(b_tr) > 0
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
+        if has_batch:
+            raise NotImplementedError("dot_general scalar-M with batch dims not handled")
         if isinstance(traced_op, ConstantDiagonal):
             return ConstantDiagonal(traced_op.n, M * traced_op.value)
         return M * traced_op
     if len(c_tr) == 0 and len(c_M) == 0:
+        if has_batch:
+            raise NotImplementedError("dot_general outer-product with batch dims not handled")
         # Outer product. BE's trailing `n` axis stays last.
         dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
         if traced_is_first:
@@ -131,34 +135,41 @@ def _dot_general_rule(invals, traced, n, **params):
         # (*m,) × (*t, n) → (*m, *t, n)
         return M.reshape(M.shape + (1,) * (len(traced_shape) + 1)) * dense
 
-    if isinstance(traced_op, ConstantDiagonal):
-        remaining = [a for a in range(M.ndim) if a not in c_M]
-        tensor = lax.transpose(M, remaining + c_M)
-        return traced_op.value * tensor
+    # Structured paths only support no-batch contractions.
+    if not has_batch:
+        if isinstance(traced_op, ConstantDiagonal):
+            remaining = [a for a in range(M.ndim) if a not in c_M]
+            tensor = lax.transpose(M, remaining + c_M)
+            return traced_op.value * tensor
 
-    # Structural BEllpack × closure-matrix path (see
-    # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
-    # falls through to dense).
-    if (isinstance(traced_op, BEllpack)
-            and M.ndim == 2
-            and len(c_tr) == 1 and len(c_M) == 1
-            and traced_op.start_row == 0
-            and traced_op.end_row == traced_op.out_size):
-        be_result = _be_dot_closure_matrix(
-            traced_op, M, c_tr[0], c_M[0], traced_is_first,
-        )
-        if be_result is not None:
-            return be_result
+        # Structural BEllpack × closure-matrix path (see
+        # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
+        # falls through to dense).
+        if (isinstance(traced_op, BEllpack)
+                and M.ndim == 2
+                and len(c_tr) == 1 and len(c_M) == 1
+                and traced_op.start_row == 0
+                and traced_op.end_row == traced_op.out_size):
+            be_result = _be_dot_closure_matrix(
+                traced_op, M, c_tr[0], c_M[0], traced_is_first,
+            )
+            if be_result is not None:
+                return be_result
 
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
         out = lax.dot_general(
-            dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))
+            dense, M,
+            ((tuple(c_tr), tuple(c_M)), (tuple(b_tr), tuple(b_M))),
         )
         # dense's trailing `n` axis is never contracted; dot_general's
-        # output places it at `len(traced_shape) - len(c_tr)`. Move to end.
+        # output places it at `len(traced_shape) - len(c_tr)` (batch dims
+        # shift the absolute position but the formula is invariant). Move to end.
         return jnp.moveaxis(out, len(traced_shape) - len(c_tr), -1)
-    return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr)), ((), ())))
+    return lax.dot_general(
+        M, dense,
+        ((tuple(c_M), tuple(c_tr)), (tuple(b_M), tuple(b_tr))),
+    )
 
 
 def _sub_rule(invals, traced, n, **params):

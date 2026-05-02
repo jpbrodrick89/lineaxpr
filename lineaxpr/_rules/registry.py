@@ -123,8 +123,34 @@ def _scatter_add_rule(invals, traced, n, **params):
     to, ti, tu = traced
     if ti:
         raise NotImplementedError("scatter-add with traced indices")
-    if to:
-        raise NotImplementedError("scatter-add with traced operand")
+    if to and not tu:
+        # out = operand + scatter(constant_updates, indices)
+        # Linear part: ∂out/∂input = ∂operand/∂input — the constant updates
+        # vanish from the Jacobian. Return the operand's LinOp unchanged.
+        return operand
+    if to and tu:
+        # out = operand.at[indices].add(updates)  — both linear in input.
+        # J_out = J_operand + scatter(J_updates, indices).
+        # J_operand and J_updates are both (*batch, rows, n) dense matrices.
+        # Scatter J_updates rows into J_operand using the same index map.
+        op_dense  = (operand.todense() if isinstance(operand, LinOpProtocol)
+                     else jnp.asarray(operand))
+        upd_dense = (updates.todense() if isinstance(updates, LinOpProtocol)
+                     else jnp.asarray(updates))
+        # out_rows: which rows of op_dense each update adds to.
+        # upd_dense may have a leading batch-1 dim from MJX's vmap; flatten it.
+        out_rows   = jnp.asarray(scatter_indices).reshape(-1)  # (update_count,)
+        flat_upd   = upd_dense.reshape(-1, n)                  # (update_count, n)
+        if op_dense.ndim == 2:
+            # (out, n) — simple row-scatter
+            return op_dense.at[out_rows].add(flat_upd)
+        # (*batch, out, n) — scatter along the out axis for every batch element
+        batch_shape = op_dense.shape[:-2]
+        out_size    = op_dense.shape[-2]
+        op_flat     = op_dense.reshape(-1, out_size, n)        # (B, out, n)
+        upd_3d      = flat_upd.reshape(-1, len(out_rows), n)   # (B, update_count, n)
+        result      = op_flat.at[:, out_rows, :].add(upd_3d)
+        return result.reshape(op_dense.shape)
     if not tu:
         return None
     dnums = params["dimension_numbers"]

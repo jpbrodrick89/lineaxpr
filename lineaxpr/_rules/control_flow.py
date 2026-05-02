@@ -272,10 +272,25 @@ def _select_n_rule(invals, traced, n, **params):
         else d[(0,) * (d.ndim - min_ndim)]
         for d in case_dense
     ]
+    # After ndim normalisation, cases may still have mismatched shapes due to
+    # MJX's internal vmap batching (e.g. traced (1,n) vs non-traced (4,n), or
+    # vice versa). Non-traced cases are always zero so it is safe to broadcast
+    # all entries to the common broadcast-compatible shape.
+    try:
+        bcast_shape = np.broadcast_shapes(*[d.shape for d in case_dense])
+        case_dense = [jnp.broadcast_to(d, bcast_shape) for d in case_dense]
+    except ValueError:
+        pass  # shapes not broadcast-compatible; lax.select_n will give a clear error
 
     pred_arr = jnp.asarray(pred)
     # pred has shape (*var_shape,); broadcast it to (*var_shape, n) so each
     # row across the input-coord axis is selected the same way.
     target_shape = case_dense[0].shape
-    pred_b = jnp.broadcast_to(pred_arr[..., None], target_shape)
+    pred_expanded = pred_arr[..., None]
+    # pred may carry extra leading size-1 dims from MJX's internal vmap
+    # batching, while case_dense entries were already normalized to min_ndim.
+    # Squeeze matching leading size-1 dims so ndim equals len(target_shape).
+    while pred_expanded.ndim > len(target_shape) and pred_expanded.shape[0] == 1:
+        pred_expanded = pred_expanded[0]
+    pred_b = jnp.broadcast_to(pred_expanded, target_shape)
     return lax.select_n(pred_b, *case_dense)
