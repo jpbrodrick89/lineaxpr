@@ -178,7 +178,8 @@ def _scatter_add_rule(invals, traced, n, **params):
         params = dict(params, dimension_numbers=dnums)
 
     # 2D point-scatter (HADAMALS-class): inserts updates[k] at
-    # operand[scatter_indices[k,0], scatter_indices[k,1]].
+    # operand[scatter_indices[k,0], scatter_indices[k,1]]. Output has V
+    # at axis 0 (match the rest of the post-vmap V-at-0 chain).
     if (dnums.update_window_dims == ()
             and dnums.inserted_window_dims == (0, 1)
             and dnums.scatter_dims_to_operand_dims == (0, 1)
@@ -186,12 +187,14 @@ def _scatter_add_rule(invals, traced, n, **params):
         out_shape_2d = operand.shape
         updates_dense = updates.todense() if isinstance(updates, LinOpProtocol) else jnp.asarray(updates)
         si_flat = scatter_indices.reshape(-1, 2)
-        updates_flat = updates_dense.reshape(-1, n)
-        flat_rows = (si_flat[:, 0].astype(jnp.int64) * out_shape_2d[1]
+        # Updates have V at axis 0 → flatten trailing dims: (V, K).
+        updates_flat = updates_dense.reshape(n, -1)
+        flat_cols = (si_flat[:, 0].astype(jnp.int64) * out_shape_2d[1]
                      + si_flat[:, 1].astype(jnp.int64))
-        return (jnp.zeros((out_shape_2d[0] * out_shape_2d[1], n), updates_flat.dtype)
-                .at[flat_rows].add(updates_flat)
-                .reshape(out_shape_2d + (n,)))
+        return (jnp.zeros((n, out_shape_2d[0] * out_shape_2d[1]),
+                          updates_flat.dtype)
+                .at[:, flat_cols].add(updates_flat)
+                .reshape((n,) + out_shape_2d))
 
     scatter_kept = (
         dnums.update_window_dims == (1,)
