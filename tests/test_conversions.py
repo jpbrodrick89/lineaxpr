@@ -133,19 +133,39 @@ def test_ellpack_to_bcoo_unbatched(k, transposed):
     np.testing.assert_allclose(_todense(bcoo), _todense(be))
 
 
-@pytest.mark.parametrize("transposed", [
-    False,
-    pytest.param(True, marks=pytest.mark.xfail(
-        reason="Batched T=True to_bcoo: `_bcoo_swap_last_two_sparse_axes` "
-               "swaps axes (out, in) but the LOGICAL shape "
-               "`(in, *batch, out)` puts in at axis 0, requiring a full "
-               "rotate not just a last-two swap. Pre-existing limitation; "
-               "no current rule produces a batched T=True BE that flows "
-               "through `.to_bcoo`.",
-        strict=True,
-    )),
-])
+def _be_batched_4d(*, b1=2, b2=3, out=2, in_=4, transposed=False):
+    nrows = out
+    cols = (np.broadcast_to(
+        np.array([r % in_ for r in range(nrows)], dtype=np.int64),
+        (b1, b2, nrows),
+    ).copy(),)
+    data = jnp.asarray(
+        np.arange(1, b1 * b2 * nrows + 1, dtype=np.float64).reshape(
+            b1, b2, nrows)
+    )
+    return BEllpack(
+        start_row=0, end_row=nrows, in_cols=cols, data=data,
+        out_size=out, in_size=in_, batch_shape=(b1, b2),
+        transposed=transposed,
+    )
+
+
+@pytest.mark.parametrize("transposed", [False, True])
+def test_ellpack_to_bcoo_4d_batched(transposed):
+    """Batched T=True with multi-dim batch: rotation must move `in`
+    past TWO batch axes."""
+    be = _be_batched_4d(b1=2, b2=3, out=2, in_=4, transposed=transposed)
+    bcoo = be.to_bcoo()
+    assert bcoo.shape == be.shape, (bcoo.shape, be.shape)
+    np.testing.assert_allclose(_todense(bcoo), _todense(be))
+
+
+@pytest.mark.parametrize("transposed", [False, True])
 def test_ellpack_to_bcoo_3d_batched(transposed):
+    """Batched T=True to_bcoo: rotates the canonical
+    `(*batch, out, in)` BCOO to the LOGICAL `(in, *batch, out)` shape.
+    The rotation crosses the batch/sparse boundary, so the result is
+    a fully-sparse (n_batch=0) BCOO when batched."""
     be = _be_batched_3d(b=2, out=3, in_=4, transposed=transposed)
     bcoo = be.to_bcoo()
     assert bcoo.shape == be.shape, (bcoo.shape, be.shape)

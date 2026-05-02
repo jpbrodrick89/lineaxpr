@@ -478,6 +478,78 @@ def _bcoo_swap_last_two_sparse_axes(bcoo: sparse.BCOO) -> sparse.BCOO:
     return bcoo.transpose(axes=perm)
 
 
+def _bcoo_to_fully_sparse(bcoo: sparse.BCOO) -> sparse.BCOO:
+    """Promote a batched BCOO (`n_batch > 0`) to a fully-sparse BCOO
+    (`n_batch=0`) at the same `.shape` and `.todense()` view.
+
+    Inlines the per-batch index positions into the indices tensor,
+    flattening `data` accordingly. Same nse, just rearranged so that
+    every axis is sparse — required as a precursor to a transpose
+    that crosses the batch/sparse boundary (`bcoo.transpose` rejects
+    permutations that mix batch with sparse axes).
+    """
+    if bcoo.n_batch == 0:
+        return bcoo
+    nb = bcoo.n_batch
+    batch_shape = tuple(bcoo.shape[:nb])
+    nse_per_batch = bcoo.indices.shape[-2]
+    batch_size = int(np.prod(batch_shape)) if batch_shape else 1
+
+    # Build per-batch index arrays via meshgrid.
+    if batch_shape:
+        batch_axes = np.unravel_index(
+            np.arange(batch_size, dtype=np.int64), batch_shape,
+        )  # tuple of `nb` 1D arrays of length batch_size
+    else:
+        batch_axes = ()
+
+    # Broadcast each batch-axis index to (batch_size, nse_per_batch).
+    new_batch_indices = jnp.stack(
+        [
+            jnp.broadcast_to(
+                jnp.asarray(idx)[:, None], (batch_size, nse_per_batch),
+            )
+            for idx in batch_axes
+        ],
+        axis=-1,
+    ) if batch_axes else jnp.zeros(
+        (batch_size, nse_per_batch, 0), dtype=bcoo.indices.dtype,
+    )
+
+    # Flatten the original sparse indices to (batch_size,
+    # nse_per_batch, n_sparse).
+    flat_sparse = bcoo.indices.reshape(batch_size, nse_per_batch, -1)
+    new_indices = jnp.concatenate(
+        [new_batch_indices.astype(flat_sparse.dtype), flat_sparse],
+        axis=-1,
+    ).reshape(batch_size * nse_per_batch, -1)
+    new_data = bcoo.data.reshape(batch_size * nse_per_batch)
+
+    return sparse.BCOO(
+        (new_data, new_indices),
+        shape=bcoo.shape,
+        indices_sorted=False, unique_indices=False,
+    )
+
+
+def _bcoo_rotate_in_to_front(bcoo: sparse.BCOO, n_batch: int) -> sparse.BCOO:
+    """Rotate a BCOO at shape `(*batch, out, in)` to `(in, *batch, out)`.
+
+    Used by `_ellpack_to_bcoo_batched` for `transposed=True` BEs:
+    canonical-shape BCOO `(*batch, out, in)` needs to land at the
+    LOGICAL `(in, *batch, out)` shape. The permutation crosses the
+    batch/sparse boundary, so go via fully-sparse first.
+    """
+    if n_batch == 0:
+        # Unbatched: just swap last two sparse axes (cheap).
+        return _bcoo_swap_last_two_sparse_axes(bcoo)
+    flat = _bcoo_to_fully_sparse(bcoo)
+    # Original axes: 0..nb-1 (batch), nb (out), nb+1 (in).
+    # Target: in (nb+1) → 0; batch (0..nb-1) → 1..nb; out (nb) → nb+1.
+    perm = (n_batch + 1,) + tuple(range(n_batch)) + (n_batch,)
+    return flat.transpose(axes=perm)
+
+
 def canonicalize(op):
     """Defensive guard for rules that aren't yet transposed-flag-aware.
 
@@ -517,15 +589,17 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
 
     Flag handling: a `transposed=True` BEllpack is flipped to canonical
     (free flag flip — same data, T=False interpretation), the canonical
-    BCOO is built, then its last two sparse axes are swapped to
-    recover the LOGICAL `(in, out)` indexing. Identical behaviour to
-    `BEllpack.to_bcoo`. Mixing the two helpers is safe — both produce
-    BCOOs at the LOGICAL view regardless of the BE's flag.
+    BCOO is built, then rotated so `in_size` lands at axis 0 (matching
+    the LOGICAL `(in, *batch, out)` shape). Unbatched: a cheap
+    last-two-swap. Batched: goes via `_bcoo_to_fully_sparse` first
+    because the rotation crosses the batch/sparse boundary. Identical
+    behaviour to `BEllpack.to_bcoo`. Mixing the two helpers is safe —
+    both produce BCOOs at the LOGICAL view regardless of the BE's flag.
     """
     if e.transposed:
         canonical = replace_slots(e, transposed=False)
         bcoo = _ellpack_to_bcoo(canonical)
-        return _bcoo_swap_last_two_sparse_axes(bcoo)
+        return _bcoo_rotate_in_to_front(bcoo, n_batch=len(e.batch_shape))
     if e.n_batch > 0:
         return _ellpack_to_bcoo_batched(e)
     rows_1d = np.arange(e.start_row, e.end_row)
@@ -643,12 +717,14 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
     if e.n_batch == 0:
         return _ellpack_to_bcoo(e)
     if e.transposed:
-        # Mirror `_ellpack_to_bcoo`'s flag handling: flip-and-swap so
-        # callers always see a BCOO at the LOGICAL view regardless of
-        # the BE's flag.
+        # Mirror `_ellpack_to_bcoo`'s flag handling: build the
+        # canonical-layout BCOO at shape `(*batch, out, in)`, then
+        # rotate to the LOGICAL `(in, *batch, out)` shape. The rotate
+        # crosses the batch/sparse boundary so the result is always
+        # a fully-sparse (n_batch=0) BCOO when batched.
         canonical = replace_slots(e, transposed=False)
         bcoo = _ellpack_to_bcoo_batched(canonical)
-        return _bcoo_swap_last_two_sparse_axes(bcoo)
+        return _bcoo_rotate_in_to_front(bcoo, n_batch=len(B := e.batch_shape))
     B = e.batch_shape
     nrows = e.nrows
     k = e.k
