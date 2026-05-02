@@ -427,6 +427,31 @@ def _add_rule(invals, traced, n, **params):
                     for v, t in zip(invals, traced)
                 )
             else:
+                # Pre-process: BE_T `(n, 1)` no-op-squeezed col-vector
+                # mixed with a square `(n, n)` LinOp (Diagonal /
+                # ConstantDiagonal / BEllpack) — broadcast the BE_T to
+                # `(n, n)` by tiling its single column n times. Reuses
+                # `_tile_1row_bellpack` via the user's transpose
+                # pattern: flag-flip BE_T → BE_F (now `(1, n)` row),
+                # tile to `(n, n)` BE_F, flag-flip back to BE_T.
+                _shapes = [tuple(v.shape) for v, t in zip(invals, traced)
+                           if t and hasattr(v, "shape")]
+                if _shapes and any(s == (n, n) for s in _shapes):
+                    invals = tuple(
+                        (replace_slots(
+                            _tile_1row_bellpack(
+                                replace_slots(v, transposed=False), n,
+                            ),
+                            transposed=True,
+                        )
+                         if (t and isinstance(v, BEllpack) and v.transposed
+                             and v.n_batch == 0 and v.out_size == 1
+                             and v.start_row == 0 and v.end_row == 1
+                             and v.in_size == n
+                             and tuple(v.shape) != (n, n))
+                         else v)
+                        for v, t in zip(invals, traced)
+                    )
                 traced_vals = [v for v, t in zip(invals, traced) if t]
                 # Mixed `BE_T + (Diagonal/CD)` (no BCOO/ndarray): flip
                 # all BE_T to canonical (free flag flip), recurse via
