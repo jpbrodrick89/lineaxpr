@@ -408,28 +408,42 @@ def _add_rule(invals, traced, n, **params):
                 return jnp.transpose(res, perm)
             return res
         if True in be_flags:
-            # Mixed flags or BE+non-BE chain: densify the True ones.
-            # `todense()` respects the flag and produces the logical view.
-            # Special case: a no-op-squeezed BE (transposed=True,
-            # out_size=1) carries logical-1D linear-form semantics; if
-            # mixed with a 1D ndarray operand, extract the (n,) row
-            # rather than densifying to (n, 1) which would mis-broadcast.
+            # Mixed flags or BE+non-BE chain. Two cases:
+            #
+            # (a) The other operand is a 1D linear-form ndarray: the
+            #     BE_T is a no-op-squeezed `(n, 1)` form whose
+            #     `.todense()` would give `(n, 1)` and broadcast wrongly
+            #     with the `(n,)` ndarray. Extract the BE as `(n,)`.
+            # (b) Otherwise: don't densify. Let
+            #     `_add_rule_canonical`'s BCOO-concat path (line ~699)
+            #     promote BE → BCOO and add structurally, preserving
+            #     sparsity for `add(BCOO|CD|Diagonal, BE_T)` cases.
             other_is_linear_form = any(
                 t and isinstance(v, jax.Array) and v.ndim == 1
                 and v.shape[0] == n
                 for v, t in zip(invals, traced)
             )
-            invals = tuple(
-                (v.todense()[:, 0]
-                 if (t and isinstance(v, BEllpack) and v.transposed
-                     and v.n_batch == 0 and v.out_size == 1
-                     and v.start_row == 0 and v.end_row == 1
-                     and other_is_linear_form)
-                 else v.todense()
-                 if t and isinstance(v, BEllpack) and v.transposed
-                 else v)
-                for v, t in zip(invals, traced)
-            )
+            if other_is_linear_form:
+                invals = tuple(
+                    (v.todense()[:, 0]
+                     if (t and isinstance(v, BEllpack) and v.transposed
+                         and v.n_batch == 0 and v.out_size == 1
+                         and v.start_row == 0 and v.end_row == 1)
+                     else v)
+                    for v, t in zip(invals, traced)
+                )
+            else:
+                # No-op-squeezed BE_T (n, 1) mixed with non-linear-form
+                # operands: densify to (n, 1) ndarray. Keeping it as BCOO
+                # has produced downstream rule mismatches (PENALTY3-class).
+                invals = tuple(
+                    (v.todense()
+                     if (t and isinstance(v, BEllpack) and v.transposed
+                         and v.n_batch == 0 and v.out_size == 1
+                         and v.start_row == 0 and v.end_row == 1)
+                     else v)
+                    for v, t in zip(invals, traced)
+                )
     return _add_rule_canonical(invals, traced, n)
 
 
