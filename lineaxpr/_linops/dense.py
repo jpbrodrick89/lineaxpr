@@ -85,6 +85,13 @@ def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
 @broadcast_in_dim_op.register(jax.Array)
 @broadcast_in_dim_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
+    # Squeeze trailing singleton axes when the rewritten jaxpr's
+    # broadcast_in_dim was emitted for a logical-1D operand but our
+    # operand is 2D (n, 1) — happens when a no-op-squeezed BE got
+    # densified upstream into (n, 1) ndarray form.
+    bd = params["broadcast_dimensions"]
+    while op.ndim > len(bd) and op.shape[-1] == 1:
+        op = op.squeeze(-1)
     return lax.broadcast_in_dim_p.bind(op, **params)
 
 

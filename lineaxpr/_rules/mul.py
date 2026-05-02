@@ -166,6 +166,7 @@ def _mul_rule(invals, traced, n, **params):
                 in_cols=tuple(new_in_cols), data=new_values,
                 out_size=new_out, in_size=traced_op.in_size,
                 batch_shape=traced_op.batch_shape,
+                transposed=traced_op.transposed,
             )
     # Dense fallback: just trust natural broadcasting. Under vmap, JAX
     # already wraps scale appropriately so `scale * dense` does the

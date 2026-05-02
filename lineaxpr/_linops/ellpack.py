@@ -936,7 +936,13 @@ def _(op, *, n, padding_value, **params):
 @squeeze_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    if (op.n_batch == 0 and dimensions == (0,)
+    # Unbatched 1-row BE: squeeze of the size-1 out axis is a no-op.
+    # The out axis sits at position 0 for transposed=False (shape (1, n))
+    # and at position 1 for transposed=True (shape (n, 1)). Returning
+    # the BE unchanged lets downstream rules consume the structural
+    # form rather than a dense (n,) vector.
+    out_axis = (op.n_batch + 1) if op.transposed else op.n_batch
+    if (op.n_batch == 0 and dimensions == (out_axis,)
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1):
         return op
     if (op.n_batch >= 1

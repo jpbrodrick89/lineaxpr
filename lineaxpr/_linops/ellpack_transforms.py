@@ -210,6 +210,38 @@ def _(op, *, n, **params):
 
 @broadcast_in_dim_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
+    # Post-no-op-squeeze 1-row BE (transposed=True, out_size=1) carries
+    # logical-1D semantics in 2D form. The rewritten jaxpr's
+    # broadcast_in_dim params describe a 1D operand input (the squeezed
+    # form), but our BE has shape (in, 1).
+    full_bd = tuple(params["broadcast_dimensions"])
+    full_shape = tuple(params["shape"])
+    if (op.transposed and op.n_batch == 0
+            and op.out_size == 1
+            and op.start_row == 0 and op.end_row == 1
+            and len(full_bd) == 1 and full_bd[0] == 0
+            and len(full_shape) == 2 and full_shape[0] == op.in_size):
+        # Output shape (in_size, N) with bd=(0,) means: tile the
+        # 1D-semantic row vector to N rows. Each output row is a copy
+        # of the BE's single canonical row — broadcast values & cols
+        # along the new out_size axis.
+        N = int(full_shape[1])
+        if N == 1:
+            return op  # (in, 1) → (in, 1): no-op.
+        new_values = jnp.broadcast_to(
+            op.data, (N,) + op.data.shape[1:]
+        )
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, np.ndarray):
+                new_in_cols.append(np.broadcast_to(c, (N,)).copy())
+            else:
+                new_in_cols.append(jnp.broadcast_to(jnp.asarray(c), (N,)))
+        return BEllpack(
+            start_row=0, end_row=N,
+            in_cols=tuple(new_in_cols), data=new_values,
+            out_size=N, in_size=op.in_size, transposed=True,
+        )
     # Inside-vmap (transposed=True): V is at axis 0 in the jaxpr-frame
     # operand (externally), but BE's batch-at-front structure can't
     # natively represent V-at-front for rank > 2 outputs. Densify via
