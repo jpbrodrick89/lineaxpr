@@ -22,6 +22,39 @@ def _concatenate_rule(invals, traced, n, **params):
     dimension = params["dimension"]
     traced_idxs = [i for i, t in enumerate(traced) if t]
 
+    # Phase B: all-traced BE_T concat — flip all to canonical (free
+    # flag flip), shift `dimension` to the canonical frame (V was at
+    # axis 0, now at axis -1; structural axes shift down by 1), recurse
+    # through the canonical body, flip the BE result back to T=True.
+    # Bridges concat-along-out chains (BROYDN3DLS-class:
+    # `concat([BE_T(n,1), BE_T(n,m), BE_T(n,1)], dim=1)`) whose
+    # canonical-frame analogue is `dim=0` and hits the existing
+    # out-axis structural path (line ~116).
+    from .._linops.base import replace_slots  # noqa: PLC0415
+    traced_be = [v for v, t in zip(invals, traced) if t and isinstance(v, BEllpack)]
+    if (traced_be
+            and len(traced_be) == sum(traced)
+            and all(v.transposed for v in traced_be)
+            and all(v.n_batch == 0 for v in traced_be)
+            and dimension >= 1):
+        flipped = [
+            replace_slots(v, transposed=False) if isinstance(v, BEllpack) else v
+            for v in invals
+        ]
+        new_params = dict(params, dimension=dimension - 1)
+        res = _concatenate_rule(flipped, traced, n, **new_params)
+        if isinstance(res, BEllpack):
+            return replace_slots(res, transposed=True)
+        if (isinstance(res, sparse.BCOO)
+                and res.indices.ndim == 2
+                and res.indices.shape[-1] == 2):
+            return res.transpose(axes=(1, 0))
+        if hasattr(res, "ndim") and res.ndim >= 2:
+            perm = (tuple(range(res.ndim - 2))
+                    + (res.ndim - 1, res.ndim - 2))
+            return jnp.transpose(res, perm)
+        return res
+
     # Structural path: all-traced BEllpack concat, each operand spans
     # its full (0, out_size) range, same batch_shape and same in_size.
     # `dimension` in the aval is either a batch axis (dim < n_batch) or
