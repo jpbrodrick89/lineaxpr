@@ -59,41 +59,33 @@ __all__ = [
 # Axis-strip primitives and generic rule factory
 # ---------------------------------------------------------------------------
 
-def _make_unary_rule(dispatch_fn=None, *, prim=None, zero_preserving=False):
+def _make_unary_rule(dispatch_fn, *, zero_preserving=False):
     """Build a single-traced-operand rule.
 
-    Two flavours:
+    Two flavours, both keyed off `dispatch_fn`:
 
-    - `zero_preserving=True` (with `prim` given): the rule applies the
-      primitive directly to `op.data` and rebuilds the same LinOp form
-      via `replace_slots`. Suits elementwise primitives that map zero
-      to zero (`neg`, `conj`, `real`, `imag`, `convert_element_type`,
-      ...). Mirrors `jax.experimental.sparse.transform._zero_preserving_unary_op`.
-
-    - `zero_preserving=False` (default, with `dispatch_fn` given):
-      delegates to a singledispatch op (`slice_op`, `squeeze_op`, ...)
-      that has per-LinOp implementations. Jaxpr params pass straight
-      through (Phase B convention — no walk-frame translation).
+    - `zero_preserving=True`: `dispatch_fn` is a `prim.bind`-style
+      callable for an elementwise primitive that maps zero to zero
+      (`neg`, `conj`, `real`, `imag`, `convert_element_type`, ...).
+      The rule applies it to `op.data` for LinOps and rebuilds via
+      `replace_slots`; for non-LinOp inputs (BCOO, plain arrays) it
+      applies directly. Mirrors
+      `jax.experimental.sparse.transform._zero_preserving_unary_op`.
+    - `zero_preserving=False` (default): `dispatch_fn` is a
+      singledispatch op (`slice_op`, `squeeze_op`, ...) with per-LinOp
+      implementations. Called with the LinOp, `n=n`, and the jaxpr
+      params straight through (Phase B convention — no walk-frame
+      translation).
     """
-    if zero_preserving:
-        assert prim is not None, "zero_preserving=True requires `prim`"
-        bound_prim = prim
-        def apply(op, n, **params):
-            del n
-            if isinstance(op, LinOpProtocol):
-                return replace_slots(op, data=bound_prim.bind(op.data, **params))
-            return bound_prim.bind(op, **params)
-    else:
-        assert dispatch_fn is not None, "zero_preserving=False requires `dispatch_fn`"
-        bound_dispatch = dispatch_fn
-        def apply(op, n, **params):
-            return bound_dispatch(op, n=n, **params)
-
     def rule(invals, traced, n, **params):
         (op,), (t,) = invals, traced
         if not t:
             return None
-        return apply(op, n, **params)
+        if zero_preserving:
+            if isinstance(op, LinOpProtocol):
+                return replace_slots(op, data=dispatch_fn(op.data, **params))
+            return dispatch_fn(op, **params)
+        return dispatch_fn(op, n=n, **params)
     return rule
 
 
@@ -258,11 +250,13 @@ except ImportError:
 # applies the primitive to `.data` and rebuilds the LinOp via `replace_slots`.
 # Mirrors the upstream pattern at jax.experimental.sparse.transform:539–541.
 for _prim in _zero_preserving_linear_unary_primitives:
-    materialize_rules[_prim] = _make_unary_rule(prim=_prim, zero_preserving=True)
+    materialize_rules[_prim] = _make_unary_rule(
+        _prim.bind, zero_preserving=True,
+    )
 # convert_element_type_p has a `new_dtype` param and isn't in upstream's
 # list, but the same body works (data dtype follows the primitive output).
 materialize_rules[lax.convert_element_type_p] = _make_unary_rule(
-    prim=lax.convert_element_type_p, zero_preserving=True,
+    lax.convert_element_type_p.bind, zero_preserving=True,
 )
 materialize_rules[lax.sub_p] = _sub_rule
 materialize_rules[lax.dot_general_p] = _dot_general_rule
