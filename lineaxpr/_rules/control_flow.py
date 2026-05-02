@@ -264,12 +264,22 @@ def _select_n_rule(invals, traced, n, **params):
     # unambiguous for non-square traced shapes, but those are the ones
     # that actually crash) and build closure zeros with V at 0 to
     # match.
+    # Determine V position from the traced LinOp inputs:
+    # transposed=True BEs render with V at axis 0; everything else
+    # (Diagonal/CD/BCOO/already-dense) follows shape inspection.
+    traced_be_flags = [
+        c.transposed for c, t in zip(cases, case_traced)
+        if t and isinstance(c, BEllpack)
+    ]
     raw_traced = [
         c.todense() if isinstance(c, LinOpProtocol) else c
         for c, t in zip(cases, case_traced) if t
     ]
-    v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
-                    for d in raw_traced)
+    if traced_be_flags:
+        v_at_zero = any(traced_be_flags)
+    else:
+        v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+                        for d in raw_traced)
     case_dense = []
     traced_iter = iter(raw_traced)
     for c, t in zip(cases, case_traced):

@@ -784,15 +784,22 @@ def _(op, *, n, **params):
     strides_p = params.get("strides")
     strides = (tuple(int(s) for s in strides_p)
                if strides_p else (1,) * len(starts))
-    in_axis_noop = (len(starts) >= 2
-                    and starts[-1] == 0
-                    and limits[-1] == op.in_size
-                    and strides[-1] == 1)
+    # V (in_size) is at axis 0 for transposed=True, axis -1 otherwise.
+    # The "in_axis_noop" check confirms the slice doesn't touch V; the
+    # primal_out (= structural row axis) sits at the opposite end.
+    v_axis = 0 if op.transposed else len(starts) - 1
+    primal_axis = len(starts) - 1 if op.transposed else 0
+    in_axis_noop = (
+        len(starts) >= 2
+        and starts[v_axis] == 0
+        and limits[v_axis] == op.in_size
+        and strides[v_axis] == 1
+    )
 
     # Unit-stride 1D primal slice on unbatched BEllpack.
     if (len(starts) == 2 and in_axis_noop
-            and strides[0] == 1 and op.n_batch == 0):
-        s, e = starts[0], limits[0]
+            and strides[primal_axis] == 1 and op.n_batch == 0):
+        s, e = starts[primal_axis], limits[primal_axis]
         return op.pad_rows(-s, -(op.out_size - e))
 
     # N-D unit-stride slice on batched BEllpack: out_axis is the
