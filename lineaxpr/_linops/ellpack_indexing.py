@@ -239,9 +239,14 @@ def _(updates, *, n, operand, scatter_indices, **params):
 
     # BEllpack batched case.
     if updates.n_batch == 0:
-        # Normalise to canonical (out, in) BCOO regardless of the BE's
-        # transposed flag — downstream uses indices[:, 0] as the
-        # out-axis index.
+        # We want a BCOO whose `indices[:, 0]` is the OUTPUT axis index
+        # (for downstream `.at[out_idx].add(...)`). For a T=True BE
+        # this is NOT the logical view — it's the canonical-data view.
+        # Flip the flag explicitly (free; same data, T=False
+        # interpretation) so `_ellpack_to_bcoo` produces a BCOO with
+        # indices `(out, in)`. `_ellpack_to_bcoo` is flag-aware, so
+        # passing it the flipped (T=False) value is the unambiguous
+        # way to ask for a canonical-frame BCOO.
         from lineaxpr._linops.ellpack import (  # noqa: PLC0415
             _ellpack_to_bcoo, replace_slots,
         )

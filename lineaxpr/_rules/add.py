@@ -427,13 +427,10 @@ def _add_rule(invals, traced, n, **params):
                     for v, t in zip(invals, traced)
                 )
             else:
+                traced_vals = [v for v, t in zip(invals, traced) if t]
                 # If a BCOO operand is present and all operands have a
                 # `to_bcoo` route at matching shape, promote each to
-                # BCOO and concat (preserves sparsity; BE_T's
-                # `.to_bcoo()` respects the transposed flag and
-                # produces the LOGICAL view, so the concat sums all
-                # operands at the same logical layout).
-                traced_vals = [v for v, t in zip(invals, traced) if t]
+                # BCOO and concat (preserves sparsity).
                 if (any(isinstance(v, sparse.BCOO) for v in traced_vals)
                         and all(hasattr(v, 'shape') for v in traced_vals)
                         and len({tuple(v.shape) for v in traced_vals}) == 1
@@ -446,14 +443,8 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
-                # Densify T=True BEs so canonical body sees consistent
-                # forms. Densifying a BE here is the only way to
-                # converge a mixed `BE_T + (Diagonal/CD or 2D ndarray)`
-                # chain — promoting CD/Diagonal to a T=True BE produces
-                # a structurally-valid result whose downstream
-                # interaction (`_mul_rule` etc.) can give wrong values
-                # (NONCVXU2 / NONCVXUN regression). Pay the
-                # densification here; recover sparsity upstream.
+                # Last resort: densify T=True BEs so canonical body
+                # sees consistent forms.
                 invals = tuple(
                     (v.todense()
                      if (t and isinstance(v, BEllpack) and v.transposed)

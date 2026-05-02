@@ -243,16 +243,10 @@ class BEllpack:
         return replace_slots(self, data=-self.data)
 
     def to_bcoo(self):
-        if not self.transposed:
-            return _ellpack_to_bcoo(self)
-        # `_ellpack_to_bcoo` reads `self.shape` to set the BCOO's shape;
-        # `shape` is layout-aware, so build the BCOO from a canonical
-        # view first (transposed=False), then swap the last two sparse
-        # axes to recover the logical layout. The swap is cheap — it's
-        # a row/col index reorder, no data motion.
-        canonical = replace_slots(self, transposed=False)
-        bcoo = _ellpack_to_bcoo(canonical)
-        return _bcoo_swap_last_two_sparse_axes(bcoo)
+        # Delegated to `_ellpack_to_bcoo` (which is flag-aware). Both
+        # helpers produce BCOOs at the LOGICAL view — see the
+        # `_ellpack_to_bcoo` docstring for details.
+        return _ellpack_to_bcoo(self)
 
     def pad_rows(self, before: int, after: int):
         """Pad along the out_size axis. Negative before/after truncates."""
@@ -504,7 +498,8 @@ def canonicalize(op):
 
 
 def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
-    """Flatten BEllpack to BCOO, filtering -1-sentinel cols.
+    """Flatten BEllpack to BCOO at the LOGICAL view (respects
+    `transposed`).
 
     Unbatched (n_batch == 0):
       k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
@@ -519,7 +514,18 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
       broadcast to `(*batch, nrows)`. `-1` sentinels keep their
       position in `indices` with col set to 0 and value set to 0,
       since batched BCOO can't have variable `nse` across batches.
+
+    Flag handling: a `transposed=True` BEllpack is flipped to canonical
+    (free flag flip — same data, T=False interpretation), the canonical
+    BCOO is built, then its last two sparse axes are swapped to
+    recover the LOGICAL `(in, out)` indexing. Identical behaviour to
+    `BEllpack.to_bcoo`. Mixing the two helpers is safe — both produce
+    BCOOs at the LOGICAL view regardless of the BE's flag.
     """
+    if e.transposed:
+        canonical = replace_slots(e, transposed=False)
+        bcoo = _ellpack_to_bcoo(canonical)
+        return _bcoo_swap_last_two_sparse_axes(bcoo)
     if e.n_batch > 0:
         return _ellpack_to_bcoo_batched(e)
     rows_1d = np.arange(e.start_row, e.end_row)
@@ -636,6 +642,13 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
     """
     if e.n_batch == 0:
         return _ellpack_to_bcoo(e)
+    if e.transposed:
+        # Mirror `_ellpack_to_bcoo`'s flag handling: flip-and-swap so
+        # callers always see a BCOO at the LOGICAL view regardless of
+        # the BE's flag.
+        canonical = replace_slots(e, transposed=False)
+        bcoo = _ellpack_to_bcoo_batched(canonical)
+        return _bcoo_swap_last_two_sparse_axes(bcoo)
     B = e.batch_shape
     nrows = e.nrows
     k = e.k
