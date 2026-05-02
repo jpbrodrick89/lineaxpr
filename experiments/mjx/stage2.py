@@ -58,11 +58,18 @@ def run(model_name: str = "cartpole", T: int = 20):
     # ------------------------------------------------------------------
     J_bcoo = lineaxpr.bcoo_jacfwd(f)(z0)
     print(f"\n1. lineaxpr.bcoo_jacfwd OK")
-    print(f"   BCOO shape: {J_bcoo.shape}   nse={J_bcoo.nse}")
-    print(f"   fill: {100*J_bcoo.nse/dense_size:.2f}%  vs dense {dense_size} elements")
+    if hasattr(J_bcoo, 'nse'):
+        nse = J_bcoo.nse
+        print(f"   BCOO shape: {J_bcoo.shape}   nse={nse}")
+        print(f"   fill: {100*nse/dense_size:.2f}%  vs dense {dense_size} elements")
+    else:
+        J_np_bcoo = np.array(J_bcoo)
+        nse = int(np.sum(np.abs(J_np_bcoo) > 1e-12))
+        print(f"   dense shape: {J_bcoo.shape}  (walk produced dense output)")
+        print(f"   structural nonzeros: {nse} / {dense_size}  ({100*nse/dense_size:.1f}% fill)")
 
     # Dense for comparison
-    J_dense = lineaxpr.jacfwd(f)(z0)
+    J_dense = J_bcoo.todense() if hasattr(J_bcoo, 'todense') else J_bcoo
     print(f"   dense shape: {J_dense.shape}")
 
     # ------------------------------------------------------------------
@@ -142,8 +149,8 @@ def run(model_name: str = "cartpole", T: int = 20):
     print(f"\n{'='*62}")
     print(f"  Summary")
     print(f"  Jacobian {res_dim}×{z_dim} = {dense_size} dense elements")
-    print(f"  lineaxpr nse = {J_bcoo.nse}  ({100*J_bcoo.nse/dense_size:.2f}% fill)")
-    print(f"  Sparsity ratio: {dense_size // max(J_bcoo.nse, 1)}× fewer stored values")
+    print(f"  lineaxpr nse = {nse}  ({100*nse/dense_size:.2f}% fill)")
+    print(f"  Sparsity ratio: {dense_size // max(nse, 1)}× fewer stored values")
     print(f"  jax.jacobian needs {z_dim} forward passes;  "
           f"lineaxpr needs 1 linearize + structural walk")
     print(f"{'='*62}")

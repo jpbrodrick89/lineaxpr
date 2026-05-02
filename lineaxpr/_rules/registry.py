@@ -340,11 +340,14 @@ def _triangular_solve_rule(invals, traced, n, **params):
     """Jacobian rule for lax.linalg.triangular_solve.
 
     Only the constant-a / traced-b case is supported (the common MJX path).
-    J_b has one extra trailing dim (n) vs primal b.
+    J_b.shape = (*primal_b.shape, n).
 
-    For left_side=True:  J_x = a^{-1} J_b  →  same solve on J_b directly.
-    For left_side=False: J_x = a^{-T} J_b  →  left-solve with transposed a
-        (direct right-solve fails: J_b.shape[-1]=n but a.shape[-2]=m, n≠m).
+    For left_side=True:  J_x = a^{-1} J_b (same solve on each column of J_b).
+    For left_side=False: J_x = a^{-T} J_b — remap to left-solve with transposed a.
+
+    When primal b is multi-dimensional (shape (*batch, m, k)), J_b has an extra
+    k-dim before n: (*batch, m, k, n).  JAX requires a.ndim == b.ndim, so we
+    merge the trailing (k, n) dims into one before the solve, then restore.
     """
     a, b = invals
     ta, tb = traced
@@ -354,7 +357,21 @@ def _triangular_solve_rule(invals, traced, n, **params):
     if not tb:
         return None
     J_b = b.todense() if isinstance(b, LinOpProtocol) else jnp.asarray(b)
-    # J_b.ndim = primal_b.ndim + 1 (extra n-axis). a must have matching batch dims.
+
+    # Convert right-solve to left-solve with transposed a so shapes work out.
+    if not params.get("left_side", True):
+        params = dict(params, left_side=True,
+                      transpose_a=not params.get("transpose_a", False))
+
+    # J_b may have extra trailing dims vs a (when primal b is multi-column).
+    # Merge everything after the m-dim into one column count, solve, restore.
+    orig_shape = J_b.shape
+    if J_b.ndim > a.ndim:
+        # batch_ndim = number of leading batch dims shared by a and J_b
+        batch_ndim = max(a.ndim - 2, J_b.ndim - 3)
+        J_b = J_b.reshape(J_b.shape[:batch_ndim + 1] + (-1,))
+
+    # Expand a's batch dims if J_b has more.
     a_batch_ndim = a.ndim - 2
     j_batch_ndim = J_b.ndim - 2
     if j_batch_ndim > a_batch_ndim:
@@ -363,14 +380,8 @@ def _triangular_solve_rule(invals, traced, n, **params):
             a.reshape((1,) * extra + a.shape),
             J_b.shape[:j_batch_ndim] + a.shape[-2:],
         )
-    left_side = params.get("left_side", True)
-    if left_side:
-        return lax.linalg.triangular_solve(a, J_b, **params)
-    # left_side=False: primal x @ a = b.  J_x = a^{-T} J_b.
-    # Compute as left-solve with transpose_a flipped.
-    new_params = dict(params, left_side=True,
-                      transpose_a=not params.get("transpose_a", False))
-    return lax.linalg.triangular_solve(a, J_b, **new_params)
+
+    return lax.linalg.triangular_solve(a, J_b, **params).reshape(orig_shape)
 
 
 try:
