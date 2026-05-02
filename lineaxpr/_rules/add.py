@@ -413,16 +413,26 @@ def _add_rule(invals, traced, n, **params):
             # broadcast lines up with the dense vector. The BE_T's
             # `(n, 1)` `.todense()` would broadcast to `(n, n)` here.
             other_is_linear_form = any(
-                t and isinstance(v, jax.Array) and v.ndim == 1
-                and v.shape[0] == n
+                t and (
+                    (isinstance(v, jax.Array) and v.ndim == 1
+                     and v.shape[0] == n)
+                    or (isinstance(v, sparse.BCOO) and v.ndim == 1
+                        and v.shape[0] == n)
+                )
                 for v, t in zip(invals, traced)
             )
             if other_is_linear_form:
+                # Extract BE_T `(n, 1)` no-op-squeezed col-vector to a
+                # `(n,)` ndarray — and densify a 1D BCOO too so all
+                # operands sum at logical 1D shape (the eqn's expected
+                # output aval is 1D in this V-augmented chain).
                 invals = tuple(
                     (v.todense()[:, 0]
                      if (t and isinstance(v, BEllpack) and v.transposed
                          and v.n_batch == 0 and v.out_size == 1
                          and v.start_row == 0 and v.end_row == 1)
+                     else v.todense()
+                     if (t and isinstance(v, sparse.BCOO) and v.ndim == 1)
                      else v)
                     for v, t in zip(invals, traced)
                 )

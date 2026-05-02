@@ -169,13 +169,30 @@ def _(op, *, n, **params):
 # BCOO batched → flat reshape registration.
 @reshape_op.register(sparse.BCOO)
 def _(op, *, n, **params):
-    new_sizes = params["new_sizes"][:-1]
+    full_sizes = tuple(params["new_sizes"])
+    new_sizes = full_sizes[:-1]
 
     # Pass-through: already the target shape.
     if (op.n_batch == 0
             and len(new_sizes) == 1
             and op.shape == (int(new_sizes[0]), op.shape[-1])):
         return op
+
+    # General-purpose path via `sparse.bcoo_reshape`. Try with the
+    # full `new_sizes` first (V-at-0 BCOOs and V-at-last BCOOs both
+    # ship with the V dim already in `new_sizes`), then fall back to
+    # the legacy walk-frame stripped form. Wrapped in try/except
+    # because `bcoo_reshape` raises on permutations that mix batch
+    # with sparse axes.
+    for candidate in (full_sizes, new_sizes):
+        if op.shape == candidate:
+            return op
+        try:
+            res = sparse.bcoo_reshape(op, new_sizes=candidate)
+            if res.shape == candidate:
+                return res
+        except (NotImplementedError, ValueError):
+            pass
 
     # Flatten batched BCOO's leading (batch + out) axes.
     if (op.n_batch >= 1

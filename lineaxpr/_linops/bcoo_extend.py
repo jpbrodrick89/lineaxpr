@@ -165,6 +165,34 @@ def _(op: sparse.BCOO, *, n, **params):
             ))
             start = end
         return out
+    # General-purpose path for split along any sparse axis (n_batch=0,
+    # n_sparse>=2). Mask out-of-range entries to `(col=0, value=0)`
+    # per piece and offset the split-axis index. Each piece is a BCOO
+    # at the same nse as input (with sentinels for entries outside).
+    if op.n_batch == 0 and axis < op.ndim and op.indices.shape[-1] >= 2:
+        sparse_axis = axis  # n_batch=0
+        col_along = op.indices[:, sparse_axis]
+        out = []
+        start = 0
+        n_idx_cols = op.indices.shape[-1]
+        for sz in sizes:
+            end = start + int(sz)
+            in_range = (col_along >= start) & (col_along < end)
+            new_along = jnp.where(in_range, col_along - start, 0)
+            new_data = jnp.where(in_range, op.data,
+                                 jnp.zeros((), op.data.dtype))
+            new_index_cols = [
+                op.indices[:, j] if j != sparse_axis else new_along
+                for j in range(n_idx_cols)
+            ]
+            new_indices = jnp.stack(new_index_cols, axis=1)
+            new_shape = list(op.shape)
+            new_shape[axis] = int(sz)
+            out.append(sparse.BCOO(
+                (new_data, new_indices), shape=tuple(new_shape),
+            ))
+            start = end
+        return out
     dense = op.todense()
     out = []
     start = 0

@@ -243,6 +243,19 @@ def _concatenate_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (op.data, new_indices), shape=(out_size, op.shape[1])
             )
+    # All-traced BCOO concat: delegate to `sparse.bcoo_concatenate`
+    # for an all-sparse result. Closes the LUKSAN11LS-class chain
+    # `concat(BCOO(...), BCOO(...)) → BCOO(...)` that previously
+    # densified at this rule's dense fallback below. Closures
+    # contribute structural zeros, so we'd need to materialize them
+    # as BCOO too — keep this path narrow to all-traced for now.
+    if (len(traced_idxs) == len(invals)
+            and all(isinstance(v, sparse.BCOO) for v in invals)
+            and all(v.n_batch == invals[0].n_batch for v in invals[1:])):
+        return sparse.bcoo_concatenate(
+            list(invals), dimension=dimension,
+        )
+
     # Fallback: densify everything. When any traced operand has V at
     # axis 0 (densified-from-transposed-BE chain — detected by
     # `shape[0]==n, shape[-1]!=n`), build closure zeros with V at 0 to

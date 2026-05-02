@@ -31,11 +31,20 @@ def _mul_rule(invals, traced, n, **params):
     # Primal axes (= traced_op shape minus V). For transposed=True
     # BE, V is at axis 0 → primal = shape[1:]; for transposed=False
     # (default for non-BE LinOps and canonical BEs) V is at axis -1 →
-    # primal = shape[:-1].
+    # primal = shape[:-1]. For BCOO at V-at-0 layout (shape[0] == n
+    # and shape[-1] != n — produced by `_scatter_add_rule` and the
+    # broadcast_in_dim sparsity-recovery path), V is at axis 0 too.
     is_transposed_be = (
         isinstance(traced_op, BEllpack) and traced_op.transposed
     )
-    if is_transposed_be:
+    from jax.experimental import sparse as _sp  # noqa: PLC0415
+    is_v_at_0_bcoo = (
+        isinstance(traced_op, _sp.BCOO)
+        and len(traced_op.shape) >= 2
+        and traced_op.shape[0] == n
+        and traced_op.shape[-1] != n
+    )
+    if is_transposed_be or is_v_at_0_bcoo:
         traced_var_shape = traced_op.shape[1:]
     else:
         traced_var_shape = traced_op.shape[:-1]
