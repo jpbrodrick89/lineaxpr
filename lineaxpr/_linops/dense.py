@@ -115,7 +115,7 @@ def _(op, *, n, **params):
 @reduce_sum_op.register(jax.Array)
 @reduce_sum_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    return jnp.sum(op, axis=tuple(params["axes"]))
+    return lax.reduce_sum_p.bind(op, **params)
 
 
 @gather_op.register(jax.Array)
