@@ -121,7 +121,6 @@ def _(op, *, n, **params):
 @gather_op.register(jax.Array)
 @gather_op.register(DynamicJaxprTracer)
 def _(op, *, n, start_indices, **params):
-    params.pop("_vmap_avals", None)
     return lax.gather(op, start_indices, **params)
 
 

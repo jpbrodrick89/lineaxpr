@@ -55,7 +55,8 @@ class ConstantDiagonal:
         return _diag_to_bcoo(self.n, jnp.full((self.n,), self.data))
 
     def transpose(self, axes: tuple[int, ...] | None = None):
-        return self  # symmetric
+        # Symmetric: any 2D perm preserves the matrix.
+        return self
 
     def __neg__(self):
         return replace_slots(self, data=-self.data)

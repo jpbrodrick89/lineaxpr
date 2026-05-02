@@ -153,14 +153,7 @@ def _walk_jaxpr(jaxpr, env, n):
                 f"  Or file an issue at https://github.com/jpbrodrick89/lineaxpr/issues "
                 f"with the minimal f(y) that triggers this."
             )
-        # Pass vmap aval shapes so rules can determine where n sits in each
-        # traced variable (its "batch dim" = the position of n in the vmap
-        # jaxpr's intermediate shape, which may differ from 0 after
-        # dot_general / transpose ops that displace the vmap batch).
-        vmap_avals = tuple(
-            v.aval.shape if hasattr(v, "aval") else None for v in eqn.invars
-        )
-        outs = rule(invals, traced, n, _vmap_avals=vmap_avals, **eqn.params)
+        outs = rule(invals, traced, n, **eqn.params)
         if eqn.primitive.multiple_results:
             for v, o in zip(eqn.outvars, outs):
                 env[v] = (True, o)

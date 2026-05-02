@@ -291,21 +291,58 @@ class BEllpack:
                        transposed=self.transposed)
 
     def transpose(self, axes: tuple[int, ...] | None = None):
-        """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.
+        """Permute the BE's axes.
 
-        Accepts `axes` of length `n_batch + 1` (just `(*batch, out)`) or
-        the full `n_batch + 2` (with the trailing in-axis), in which case
-        the last entry must already be that in-axis (n stays last). The
-        returned BEllpack is structurally equivalent to
-        `jnp.transpose(self.todense(), axes)` without densifying.
+        Accepts three forms:
+
+        - `axes is None`: reverse `(*batch_shape, out_size)` — the
+          structural form. V (in-axis) stays at the structural tail.
+        - `axes` of length `n_batch + 1`: structural perm over
+          `(*batch_shape, out_size)`.
+        - `axes` of length `n_batch + 2`: full V-augmented perm. If V's
+          original position (axis 0 for transposed=True, axis -1 for
+          transposed=False) ends up unmoved, this reduces to the
+          structural form. The 2D unbatched cross-V swap (`(1, 0)`)
+          flips `transposed` for free. Other cross-V perms (V swapped
+          with a non-primal axis on rank > 2) are unsupported and
+          raise — BE's structural representation can't natively place
+          V mid-batch.
         """
         nb = self.n_batch
-        permutation = tuple(int(p) for p in axes) if axes is not None else tuple(range(nb + 1))[::-1]
+        permutation = (tuple(int(p) for p in axes) if axes is not None
+                       else tuple(range(nb + 1))[::-1])
+        # Identity perm — return self.
+        if permutation == tuple(range(len(permutation))):
+            return self
+        # Full V-augmented perm: classify what happens to V.
         if len(permutation) == nb + 2:
-            assert permutation[-1] == nb + 1, (
-                f"BEllpack.transpose: in-axis must stay last, got {permutation}"
-            )
-            permutation = permutation[:-1]
+            v_axis_in = 0 if self.transposed else nb + 1
+            v_axis_out = permutation.index(v_axis_in)
+            # Output transposed flag is determined by where V ends up:
+            # axis 0 → transposed=True, axis nb+1 (tail) → transposed=False.
+            # Anything in between means V crossed a batch axis and isn't
+            # structurally representable.
+            if v_axis_out == 0:
+                new_transposed = True
+            elif v_axis_out == nb + 1:
+                new_transposed = False
+            else:
+                raise NotImplementedError(
+                    f"BEllpack.transpose: V ends up at axis {v_axis_out} "
+                    f"of {nb + 2} under perm {permutation} (transposed="
+                    f"{self.transposed}). V must land on either axis 0 "
+                    f"or axis {nb + 1}; intermediate positions cross a "
+                    f"batch axis and aren't structurally representable."
+                )
+            # Strip V from the perm and re-index, leaving a structural
+            # perm over `(*batch, out_size)`.
+            permutation = tuple(p for p in permutation if p != v_axis_in)
+            permutation = tuple(p - 1 if p > v_axis_in else p
+                                for p in permutation)
+            # Apply the structural perm via the recursive code below,
+            # then update the flag.
+            structural = self.transpose(permutation)
+            return replace_slots(structural, transposed=new_transposed)
         assert len(permutation) == nb + 1
         old_sizes = self.batch_shape + (self.out_size,)
         new_sizes = tuple(old_sizes[p] for p in permutation)

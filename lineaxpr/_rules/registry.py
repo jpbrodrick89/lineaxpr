@@ -31,8 +31,6 @@ from .control_flow import (
 from .structural import _concatenate_rule
 from .._linops import (
     BEllpack,
-    ConstantDiagonal,
-    Diagonal,
     LinOpProtocol,
     broadcast_in_dim_op,
     gather_op,
@@ -81,7 +79,6 @@ def _make_unary_rule(dispatch_fn=None, *, prim=None, zero_preserving=False):
         assert prim is not None, "zero_preserving=True requires `prim`"
         def rule(invals, traced, n, **params):
             del n
-            params.pop("_vmap_avals", None)
             (op,), (t,) = invals, traced
             if not t:
                 return None
@@ -94,7 +91,6 @@ def _make_unary_rule(dispatch_fn=None, *, prim=None, zero_preserving=False):
         (op,), (t,) = invals, traced
         if not t:
             return None
-        params.pop("_vmap_avals", None)
         return dispatch_fn(op, n=n, **params)
     return rule
 
@@ -114,7 +110,6 @@ def _pad_rule(invals, traced, n, **params):
         return None
     if hasattr(padding_value, "shape") and padding_value.shape != ():
         raise NotImplementedError("pad with non-scalar padding_value")
-    params.pop("_vmap_avals", None)
     return pad_op(operand, n=n, padding_value=padding_value, **params)
 
 
@@ -305,7 +300,6 @@ def _cumsum_rule(invals, traced, n, **params):
     (op,), (t,) = invals, traced
     if not t:
         return None
-    params.pop("_vmap_avals", None)
     if isinstance(op, LinOpProtocol):
         op = op.todense()
     return lax.cumsum(op, axis=int(params["axis"]),
@@ -316,35 +310,15 @@ materialize_rules[lax.cumsum_p] = _cumsum_rule
 materialize_rules[lax.div_p] = _div_rule
 
 def _transpose_rule(invals, traced, n, **params):
-    """Phase B: jaxpr params pass straight through.
-
-    Boundary V-transposes (the (1, 2, ..., n-1, 0) and reverse forms
-    that vmap inserts around broadcast_in_dim/reshape) flip BE's
-    `transposed` flag for free in the 2D case. ND boundary transposes
-    fall through to dense motion since BE's structure (batch at front)
-    cannot natively represent V-at-front on rank > 2.
-    """
+    """Phase B: dispatch to `op.transpose(perm)`. Each LinOp / BCOO /
+    plain array implements its own transpose — symmetric forms return
+    self, BE 2D cross-V swap flips the flag, identity perms early-out
+    inside the method, and unsupported cross-V perms raise."""
+    del n
     (op,), (t,) = invals, traced
     if not t:
         return None
-    params.pop("_vmap_avals", None)
     perm = tuple(int(p) for p in params["permutation"])
-    if perm == tuple(range(len(perm))):
-        return op
-    # 2D row/col swap on BEllpack: free flag flip.
-    if isinstance(op, BEllpack) and op.n_batch == 0 and perm == (1, 0):
-        return replace_slots(op, transposed=not op.transposed)
-    # 2D BCOO: native transpose (cheap index swap).
-    if isinstance(op, sparse.BCOO) and op.indices.ndim == 2 and op.indices.shape[-1] == 2:
-        return op.transpose(axes=perm)
-    # CD / Diagonal: symmetric, perm is no-op for square.
-    if isinstance(op, (ConstantDiagonal, Diagonal)):
-        return op
-    # BEllpack with non-(1,0) perm: BE's structure can't represent
-    # V-at-front for rank > 2 (batch_shape sits at the front
-    # regardless of `transposed`). Densify and let lax.transpose handle it.
-    if isinstance(op, BEllpack):
-        return lax.transpose(op.todense(), perm)
     return op.transpose(perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 

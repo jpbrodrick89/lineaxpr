@@ -246,7 +246,20 @@ def test_broadcast_in_dim_leading_size2(seed_kind, in_ax, out_ax):
            y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize(
+    "seed_kind,in_ax,out_ax",
+    # All cells pass except the asymmetric-BE seed under
+    # `in_ax=0, out_ax=-1`: the rewritten chain ends in a transpose
+    # `perm=(1, 2, 0)` that places V at a mid (batch-crossing)
+    # position, which BE's structural representation can't hold —
+    # under in_ax=0 with transposed=False seed the BE convention's V
+    # axis disagrees with vmap's. The other in_ax=0 cells happen to
+    # avoid the cross-V transpose.
+    _grid(passing={
+        "Identity": _FULL,
+        "BEllpack": _FULL - {(0, -1)},
+    }),
+)
 def test_broadcast_in_dim_leading_size1(seed_kind, in_ax, out_ax):
     """1D → 2D leading-axis size-1 (`x[None, :]`). Vmap'd: 2D → 3D.
     Mirrors sweep's `bd=(1,)` closure pattern but on a traced operand."""

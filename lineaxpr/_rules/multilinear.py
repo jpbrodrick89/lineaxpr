@@ -87,7 +87,6 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
 
 
 def _dot_general_rule(invals, traced, n, **params):
-    params.pop("_vmap_avals", None)
     x, y = invals
     tx, ty = traced
     (contract, batch) = params["dimension_numbers"]
