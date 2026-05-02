@@ -21,9 +21,8 @@ The interesting structure: collocation residuals couple adjacent (x_k, u_k)
 and (x_{k+1}, u_{k+1}).  lineaxpr.jacfwd extracts the Jacobian block
 directly from the linearised dynamics.  On CPU (n=20) lineaxpr is currently
 ~1.8× slower per re-solve than jax.jacfwd; the per-cost Jacobian is a dense
-4×10 block so the structural extraction overhead dominates.  The bcoo format
-(make_lineaxpr_jac(..., format='bcoo')) may help when the per-cost block is
-sparser, or when the tangent dimension is much larger than the residual dimension.
+4×10 block so the structural extraction overhead dominates with no sparsity
+to exploit.
 
 Usage:
     uv run python -m experiments.jaxls.cart_pole
