@@ -273,27 +273,32 @@ def test_sif2jax_correctness_and_nse(param):
             f"smart-densify should have caught this."
         )
 
-    # nse regression (only meaningful when S is a BCOO — dense returns
-    # skip the check). Manifest is keyed by bare class name; for
+    # nse regression. Manifest is keyed by bare class name; for
     # size-overridden problems the recorded nse is the override's
     # smaller-n nse, not the default-n.
-    if isinstance(S, sparse.BCOO):
-        manifest = _load_manifest()
-        entry = manifest.get(name)
-        if entry is not None:
-            recorded_nse = entry["nse"]
-            recorded_n = entry["n"]
-            if recorded_n != n:
-                # Problem default-size may have changed upstream; skip
-                # the regression check rather than crying wolf.
-                pytest.skip(
-                    f"{name}: manifest n={recorded_n} != current n={n} — "
-                    f"update the manifest"
-                )
-            assert S.nse <= recorded_nse, (
-                f"{name}: nse regressed {recorded_nse} → {S.nse} (n={n}). "
-                f"If this increase is intentional (trade-off justified), "
-                f"bump `tests/nse_manifest.json`."
+    manifest = _load_manifest()
+    entry = manifest.get(name)
+    if entry is not None:
+        recorded_nse = entry["nse"]
+        recorded_n = entry["n"]
+        if recorded_n != n:
+            # Problem default-size may have changed upstream; skip
+            # the regression check rather than crying wolf.
+            pytest.skip(
+                f"{name}: manifest n={recorded_n} != current n={n} — "
+                f"update the manifest"
             )
-        # Un-manifested problems: silent. Run `update_nse_manifest.py`
-        # to capture current state.
+        # Sparsity regression: a problem recorded in the manifest
+        # was previously a BCOO. If it now densifies, structural
+        # paths got lost — fail loudly so we notice.
+        assert isinstance(S, sparse.BCOO), (
+            f"{name}: previously emitted BCOO (manifest nse={recorded_nse}, "
+            f"n={n}) but now densified — structural sparsity regression."
+        )
+        assert S.nse <= recorded_nse, (
+            f"{name}: nse regressed {recorded_nse} → {S.nse} (n={n}). "
+            f"If this increase is intentional (trade-off justified), "
+            f"bump `tests/nse_manifest.json`."
+        )
+    # Un-manifested problems: silent. Run `update_nse_manifest.py`
+    # to capture current state.

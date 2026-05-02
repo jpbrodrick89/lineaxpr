@@ -18,6 +18,7 @@ unit tests of the `materialize` transform's format kwarg, see
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -144,6 +145,45 @@ def test_heat_equation_hessian_is_tridiagonal(n):
     # minimum. Loose 3x bound catches structural regressions.
     if isinstance(S, sparse.BCOO):
         assert S.nse <= 3 * (3 * n - 2)
+
+
+# ----------------------- mixed-flag BE+BE add regression ----------------
+
+
+def _scatter_compact_dup_objective(y, n):
+    """Mini version of `_SYN_SCATTER_COMPACT_DUP`: produces a linearized
+    chain where `_add_rule` sees two BEllpack operands with mismatched
+    `transposed` flags. The all-BEllpack fast paths in
+    `_add_rule_canonical` (kinds=={BEllpack}) ignore the `transposed`
+    flag and dedup/widen as if both operands shared the same layout —
+    silently producing the transposed sum of M + M^T.
+
+    Mixed-flag BE+BE adds must densify before the canonical body sees
+    them. Mixed flag with non-BE (BCOO/Diagonal) is fine via BCOO concat.
+    """
+    half = n // 2
+    perms = np.stack([
+        np.repeat(np.arange(half), 2),
+        np.tile(np.arange(half), 2),
+        np.concatenate([np.arange(half), np.arange(half)]),
+    ])
+    sine = jnp.sin(y)
+    alpha = sine + sine[perms].sum(axis=0)
+    return jnp.sum(0.5 * jnp.arange(1, n + 1, dtype=y.dtype) * alpha**2)
+
+
+@pytest.mark.parametrize("n", [4, 8, 20])
+def test_mixed_flag_be_add_via_scatter_dup(n):
+    y = jnp.linspace(0.1, 0.5, n)
+    f = lambda z: _scatter_compact_dup_objective(z, n)  # noqa: E731
+    H_ref = np.asarray(jax.hessian(f)(y))
+
+    H_dense = np.asarray(lineaxpr.hessian(f)(y))
+    np.testing.assert_allclose(H_dense, H_ref, atol=1e-10, rtol=1e-10)
+
+    S = lineaxpr.bcoo_hessian(f)(y)
+    H_bcoo = np.asarray(S.todense() if isinstance(S, sparse.BCOO) else S)
+    np.testing.assert_allclose(H_bcoo, H_ref, atol=1e-10, rtol=1e-10)
 
 
 # ----------------------- edge cases --------------------------------------
