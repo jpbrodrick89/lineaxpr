@@ -428,6 +428,53 @@ def _add_rule(invals, traced, n, **params):
                 )
             else:
                 traced_vals = [v for v, t in zip(invals, traced) if t]
+                # Mixed `BE_T + (Diagonal/CD)` (no BCOO/ndarray): flip
+                # all BE_T to canonical (free flag flip), recurse via
+                # canonical body. If it returns a BE result, flip the
+                # flag back to T=True. If it returns a BCOO (e.g. via
+                # the canonical `kinds <= {CD, D, BE, BCOO}` branch
+                # when full-rows isn't met), keep it at canonical
+                # `(out, in)` layout — downstream BCOO rules
+                # (`_select_n_rule`, `_scatter_add_rule`) assume that
+                # convention.
+                # Only fire when the BE_T occupies its full row range:
+                # the canonical body's `kinds <= {CD, D, BE}` branch
+                # requires `full_rows_ok` and would otherwise fall
+                # through to BCOO concat — emitting a BCOO at canonical
+                # layout would clash with downstream rules expecting a
+                # BE here. Partial-row BE_T's keep the densify path.
+                _all_be_full = (
+                    all(isinstance(v, (BEllpack, ConstantDiagonal, Diagonal))
+                        for v in traced_vals)
+                    and all(hasattr(v, 'shape') for v in traced_vals)
+                    and len({tuple(v.shape) for v in traced_vals}) == 1
+                    and all(getattr(v, 'n_batch', 0) == 0
+                            for v in traced_vals
+                            if isinstance(v, BEllpack))
+                    and all(len(v.shape) == 2 and v.shape[0] == v.shape[1]
+                            for v in traced_vals)
+                    and all(v.start_row == 0 and v.end_row == v.shape[0]
+                            for v in traced_vals
+                            if isinstance(v, BEllpack))
+                )
+                if _all_be_full:
+                    flipped = [
+                        replace_slots(v, transposed=False)
+                        if t and isinstance(v, BEllpack) else v
+                        for v, t in zip(invals, traced)
+                    ]
+                    res = _add_rule_canonical(flipped, traced, n)
+                    if isinstance(res, BEllpack):
+                        return replace_slots(res, transposed=True)
+                    if (isinstance(res, sparse.BCOO)
+                            and res.indices.ndim == 2
+                            and res.indices.shape[-1] == 2):
+                        return res.transpose(axes=(1, 0))
+                    if hasattr(res, "ndim") and res.ndim >= 2:
+                        perm = (tuple(range(res.ndim - 2))
+                                + (res.ndim - 1, res.ndim - 2))
+                        return jnp.transpose(res, perm)
+                    return res
                 # If a BCOO operand is present and all operands have a
                 # `to_bcoo` route at matching shape, promote each to
                 # BCOO and concat (preserves sparsity).

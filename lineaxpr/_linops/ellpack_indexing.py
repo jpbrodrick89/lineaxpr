@@ -238,21 +238,14 @@ def _(updates, *, n, operand, scatter_indices, **params):
                 .at[out_idx_flat].add(flat_updates))
 
     # BEllpack batched case.
+    was_transposed = False
     if updates.n_batch == 0:
-        # We want a BCOO whose `indices[:, 0]` is the OUTPUT axis index
-        # (for downstream `.at[out_idx].add(...)`). For a T=True BE
-        # this is NOT the logical view — it's the canonical-data view.
-        # Flip the flag explicitly (free; same data, T=False
-        # interpretation) so `_ellpack_to_bcoo` produces a BCOO with
-        # indices `(out, in)`. `_ellpack_to_bcoo` is flag-aware, so
-        # passing it the flipped (T=False) value is the unambiguous
-        # way to ask for a canonical-frame BCOO.
-        from lineaxpr._linops.ellpack import (  # noqa: PLC0415
-            _ellpack_to_bcoo, replace_slots,
-        )
-        canonical = (replace_slots(updates, transposed=False)
-                     if updates.transposed else updates)
-        updates = _ellpack_to_bcoo(canonical)
+        # `to_bcoo()` is flag-aware: for T=True it produces the LOGICAL
+        # `(V, struct)` view, matching the dense `scatter_add_op`
+        # rule's V-at-0 output convention. For T=False it produces
+        # canonical `(struct, V)` (matches legacy behaviour).
+        was_transposed = updates.transposed
+        updates = updates.to_bcoo()
     else:
         from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
         slices = _bellpack_unbatch(updates)
@@ -316,9 +309,21 @@ def _(updates, *, n, operand, scatter_indices, **params):
             ))
         return _bcoo_concat(bcoo_pieces, shape=(out_size, updates.in_size))
 
-    # BCOO (converted from unbatched BEllpack above).
+    # BCOO (converted from unbatched BEllpack above). For T=True BE
+    # input, BCOO is at LOGICAL `(V, struct)` layout — axis 1 is
+    # struct, gets remapped via `out_idx`; result is `(V=n, out_size)`
+    # matching the dense path. For T=False input, BCOO is at canonical
+    # `(struct, V)` — axis 0 is struct.
     if isinstance(updates, sparse.BCOO):
         out_idx_flat = out_idx.reshape(-1)
+        if was_transposed:
+            v_idx = updates.indices[:, 0]
+            struct_idx = updates.indices[:, 1]
+            new_struct = out_idx_flat[struct_idx]
+            new_indices = jnp.stack([v_idx, new_struct], axis=1)
+            return sparse.BCOO(
+                (updates.data, new_indices), shape=(n, out_size)
+            )
         new_rows = out_idx_flat[updates.indices[:, 0]]
         new_indices = jnp.stack([new_rows, updates.indices[:, 1]], axis=1)
         return sparse.BCOO(
