@@ -298,6 +298,14 @@ def _select_n_rule(invals, traced, n, **params):
         else:
             # Ambiguous (e.g., square shapes): default to V-at-0.
             v_at_zero = True
+    # Determine traced operand shape — closures are zero, so they
+    # need to match the traced shape exactly (not just the V dim).
+    # Otherwise numpy broadcast can explode (e.g. (3, 1) traced +
+    # (3,) closure → (3, 3) under standard rules — wrong here, since
+    # the closure represents zero contribution and should keep the
+    # traced shape unchanged).
+    traced_shapes = [d.shape for d in raw_traced]
+    traced_target_shape = traced_shapes[0] if traced_shapes else None
     case_dense = []
     traced_iter = iter(raw_traced)
     for c, t in zip(cases, case_traced):
@@ -305,8 +313,13 @@ def _select_n_rule(invals, traced, n, **params):
             case_dense.append(next(traced_iter))
         else:
             arr = jnp.asarray(c)
-            zero_shape = (n,) + arr.shape if v_at_zero else arr.shape + (n,)
-            case_dense.append(jnp.zeros(zero_shape, dtype=arr.dtype))
+            if traced_target_shape is not None:
+                # Build zeros matching traced operand shape so the
+                # numpy broadcast against the traced cases is a no-op.
+                case_dense.append(jnp.zeros(traced_target_shape, dtype=arr.dtype))
+            else:
+                zero_shape = (n,) + arr.shape if v_at_zero else arr.shape + (n,)
+                case_dense.append(jnp.zeros(zero_shape, dtype=arr.dtype))
     # Normalise densified cases to the lowest aval-rank by squeezing
     # leading size-1 axes only. A 1-row BEllpack (aval ndim 0)
     # densifies to `(1, n)`; a scalar-aval LinOp densifies to `(n,)`.
