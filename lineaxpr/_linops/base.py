@@ -151,18 +151,39 @@ def reduce_sum_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array
 
 @singledispatch
 def gather_op(op, *, n, start_indices, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Gather rows. Plain-array fallback."""
+    """Gather rows. Plain-array fallback.
+
+    The Jacobian of a gather is itself a gather: apply the same primal gather
+    to the Jacobian tensor by appending n to slice_sizes and adding the n-axis
+    as a new offset dim at the last output position.
+    """
+    from jax._src.lax import slicing as _slicing
     dnums = params["dimension_numbers"]
-    point_gather_kept = (
-        dnums.offset_dims == (1,)
-        and dnums.collapsed_slice_dims == ()
-        and dnums.start_index_map == (0,)
-        and params["slice_sizes"] == (1,)
+    slice_sizes = params["slice_sizes"]
+
+    # Number of primal output dims = offset dims + index batch dims.
+    batch_ndim = start_indices.ndim - 1  # index depth is the last dim
+    n_primal_out_dims = len(dnums.offset_dims) + batch_ndim
+
+    # Extend to Jacobian: add n-axis as a new offset dim at the last position.
+    new_slice_sizes = tuple(slice_sizes) + (n,)
+    new_offset_dims = tuple(dnums.offset_dims) + (n_primal_out_dims,)
+    new_dnums = _slicing.GatherDimensionNumbers(
+        offset_dims=new_offset_dims,
+        collapsed_slice_dims=dnums.collapsed_slice_dims,
+        start_index_map=dnums.start_index_map,
+        operand_batching_dims=getattr(dnums, "operand_batching_dims", ()),
+        start_indices_batching_dims=getattr(dnums, "start_indices_batching_dims", ()),
     )
-    row_idx = start_indices[..., 0]
-    if point_gather_kept:
-        return op[row_idx][..., None, :]
-    return op[row_idx]
+    return lax.gather(
+        op, start_indices,
+        dimension_numbers=new_dnums,
+        slice_sizes=new_slice_sizes,
+        indices_are_sorted=params.get("indices_are_sorted", False),
+        unique_indices=params.get("unique_indices", False),
+        mode=params.get("mode", "promise_in_bounds"),
+        fill_value=params.get("fill_value", None),
+    )
 
 
 @singledispatch
@@ -173,10 +194,6 @@ def scatter_add_op(updates, *, n, operand, scatter_indices,
     Handles multi-dimensional operands (e.g. MJX batched scatters where
     scatter_dims_to_operand_dims targets a non-zero dim).  Output Jacobian
     shape is always (*operand.shape, n).
-
-    `updates` already has shape (*primal_updates_shape, n); no reshape is
-    needed — the layout produced by the walker matches operand.shape + (n,)
-    with the scatter index axis at scatter_target_dim.
     """
     dnums = params.get("dimension_numbers")
     out_idx_flat = scatter_indices[..., 0].reshape(-1)  # (num_updates,)
@@ -189,10 +206,10 @@ def scatter_add_op(updates, *, n, operand, scatter_indices,
     result = jnp.zeros(out_shape, updates.dtype)
 
     # Index all dims with slice(None) except scatter_target_dim → out_idx_flat.
-    # updates already has the matching shape for the selected slice.
+    # Flatten all primal-update dims into one so updates aligns with out_idx_flat.
     idx = [slice(None)] * (operand.ndim + 1)  # operand ndim + n dim
     idx[scatter_target_dim] = out_idx_flat
-    return result.at[tuple(idx)].add(updates)
+    return result.at[tuple(idx)].add(updates.reshape(-1, n))
 
 
 @singledispatch
