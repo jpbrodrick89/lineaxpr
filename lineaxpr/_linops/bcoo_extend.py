@@ -73,6 +73,34 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
         return sparse.BCOO(
             (op.data, new_indices), shape=(out_size, op.shape[1])
         )
+
+    # `(n, 1) → (n, m)` via padding axis 1 with zeros: the BCOO has all
+    # entries at col 0, padding adds zero columns afterwards. Indices
+    # and data unchanged; just bump `shape[1]`. Bridges
+    # `broadcast_in_dim((n,) → (n, 1))` (BCOO recovery from a
+    # densified linear form) to a final `add_any` at `(n, m)` shape.
+    if (len(config) == 2 and tuple(config[0]) == (0, 0, 0)
+            and op.shape[1] == 1):
+        before_c, after_c, interior_c = config[1]
+        before_c, after_c, interior_c = (
+            int(before_c), int(after_c), int(interior_c))
+        if interior_c == 0 and before_c == 0:
+            new_shape1 = 1 + after_c
+            return sparse.BCOO(
+                (op.data, op.indices), shape=(op.shape[0], new_shape1),
+                indices_sorted=op.indices_sorted,
+                unique_indices=op.unique_indices,
+            )
+        if interior_c == 0 and before_c > 0:
+            # Shift entries from col 0 to col `before_c`.
+            new_shape1 = 1 + before_c + after_c
+            new_cols = op.indices[:, 1] + before_c
+            new_indices = jnp.stack(
+                [op.indices[:, 0], new_cols], axis=1)
+            return sparse.BCOO(
+                (op.data, new_indices), shape=(op.shape[0], new_shape1),
+            )
+
     return lax.pad(op.todense(), padding_value, **params)
 
 

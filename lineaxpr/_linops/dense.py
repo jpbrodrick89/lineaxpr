@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax._src.interpreters.partial_eval import DynamicJaxprTracer
+from jax.experimental import sparse
 
 from .base import (
     broadcast_in_dim_op,
@@ -92,6 +93,28 @@ def _(op, *, n, **params):
     bd = params["broadcast_dimensions"]
     while op.ndim > len(bd) and op.shape[-1] == 1:
         op = op.squeeze(-1)
+    # Sparsity recovery: a `(n,)` ndarray broadcast to `(n, 1)` (or
+    # any shape that just adds a trailing size-1 axis) is a linear
+    # form whose values land at column 0. Wrap as a 1D-on-axis-1 BCOO
+    # so subsequent `pad` / `add_any` chains can stay sparse instead
+    # of inflating to a full `(n, n)` dense matrix. The (n,) ndarray
+    # typically arrived here via `reduce_sum_op(BEllpack)`'s dense
+    # fallback (full-cover row-sum case).
+    shape = tuple(params["shape"])
+    if (op.ndim == 1 and len(bd) == 1 and bd[0] == 0
+            and len(shape) >= 2 and shape[0] == op.shape[0]
+            and all(s == 1 for s in shape[1:])):
+        n_in = int(op.shape[0])
+        # BCOO at shape `shape` with `nse = n_in` entries, all at
+        # column 0 of axis 1.
+        idx_flat = jnp.arange(n_in, dtype=jnp.int64)
+        zeros_flat = jnp.zeros((n_in,), dtype=jnp.int64)
+        index_cols = [idx_flat] + [zeros_flat] * (len(shape) - 1)
+        indices = jnp.stack(index_cols, axis=-1)
+        return sparse.BCOO(
+            (op, indices), shape=shape,
+            indices_sorted=True, unique_indices=True,
+        )
     return lax.broadcast_in_dim_p.bind(op, **params)
 
 
