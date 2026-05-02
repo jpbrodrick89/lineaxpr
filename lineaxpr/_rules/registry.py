@@ -77,21 +77,23 @@ def _make_unary_rule(dispatch_fn=None, *, prim=None, zero_preserving=False):
     """
     if zero_preserving:
         assert prim is not None, "zero_preserving=True requires `prim`"
-        def rule(invals, traced, n, **params):
+        bound_prim = prim
+        def apply(op, n, **params):
             del n
-            (op,), (t,) = invals, traced
-            if not t:
-                return None
             if isinstance(op, LinOpProtocol):
-                return replace_slots(op, data=prim.bind(op.data, **params))
-            return prim.bind(op, **params)
-        return rule
-    assert dispatch_fn is not None, "zero_preserving=False requires `dispatch_fn`"
+                return replace_slots(op, data=bound_prim.bind(op.data, **params))
+            return bound_prim.bind(op, **params)
+    else:
+        assert dispatch_fn is not None, "zero_preserving=False requires `dispatch_fn`"
+        bound_dispatch = dispatch_fn
+        def apply(op, n, **params):
+            return bound_dispatch(op, n=n, **params)
+
     def rule(invals, traced, n, **params):
         (op,), (t,) = invals, traced
         if not t:
             return None
-        return dispatch_fn(op, n=n, **params)
+        return apply(op, n, **params)
     return rule
 
 

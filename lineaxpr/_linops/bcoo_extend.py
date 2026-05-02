@@ -25,7 +25,6 @@ from .base import (
     split_op,
     squeeze_op,
 )
-from .dense import _bid_with_extra_batch
 
 
 @scale_scalar.register(sparse.BCOO)
@@ -45,47 +44,13 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
 
 @slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = (tuple(int(s) for s in strides_p)
-               if strides_p else (1,) * len(starts))
-    in_size = op.shape[-1]
-    in_axis_noop = (len(starts) >= 2
-                    and starts[-1] == 0
-                    and limits[-1] == in_size
-                    and strides[-1] == 1)
-
-    if (len(starts) == 2 and in_axis_noop
-            and strides[0] == 1 and op.n_batch == 0):
-        s, e = starts[0], limits[0]
-        k = e - s
-        indices_np = None
-        try:
-            indices_np = np.asarray(op.indices)
-        except (jax.errors.TracerArrayConversionError, TypeError):
-            pass
-        if isinstance(indices_np, np.ndarray):
-            rows_np = indices_np[:, 0]
-            keep = np.nonzero((rows_np >= s) & (rows_np < e))[0]
-            new_indices = np.stack(
-                [rows_np[keep] - s, indices_np[keep, 1]], axis=1
-            )
-            new_data = jnp.take(op.data, jnp.asarray(keep))
-            return sparse.BCOO(
-                # pyrefly: ignore [bad-argument-type]
-                (new_data, new_indices), shape=(k, op.shape[1]),
-            )
-        rows = op.indices[:, 0]
-        in_range = (rows >= s) & (rows < e)
-        new_rows = jnp.where(in_range, rows - s, 0)
-        new_data = jnp.where(in_range, op.data,
-                             jnp.zeros((), op.data.dtype))
-        new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
-        return sparse.BCOO((new_data, new_indices), shape=(k, op.shape[1]))
-
-    # Dense fallback for other BCOO slice patterns.
-    return lax.slice(op.todense(), **params)
+    return sparse.bcoo_slice(
+        op,
+        start_indices=tuple(int(s) for s in params["start_indices"]),
+        limit_indices=tuple(int(l) for l in params["limit_indices"]),
+        strides=(tuple(int(s) for s in params["strides"])
+                 if params.get("strides") else None),
+    )
 
 
 @pad_op.register(sparse.BCOO)
@@ -116,13 +81,7 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
 
 @rev_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    dimensions = params["dimensions"]
-    if op.n_batch == 0 and dimensions == (0,):
-        new_rows = (op.shape[0] - 1) - op.indices[:, 0]
-        new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
-        return sparse.BCOO((op.data, new_indices), shape=op.shape)
-    dense = op.todense()
-    return lax.rev(dense, dimensions)
+    return sparse.bcoo_rev(op, dimensions=tuple(params["dimensions"]))
 
 
 @reduce_sum_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
@@ -156,8 +115,7 @@ def _(op: sparse.BCOO, *, n, **params):
                     data=summed.reshape(1, n_groups),
                     out_size=1, in_size=in_size,
                 )
-    dense = op.todense()
-    return jnp.sum(dense, axis=tuple(axes))
+    return sparse.bcoo_reduce_sum(op, axes=tuple(axes))
 
 
 @split_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
@@ -209,14 +167,14 @@ def _bcoo_concat(bcoo_vals, shape):
 
 
 @squeeze_op.register(sparse.BCOO)
-def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
-    return lax.squeeze(op.todense(), params["dimensions"])
+def _(op: sparse.BCOO, *, n, **params):
+    return sparse.bcoo_squeeze(op, dimensions=tuple(params["dimensions"]))
 
 
 @broadcast_in_dim_op.register(sparse.BCOO)
-def _(op: sparse.BCOO, *, n, **params) -> jax.Array:
-    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
-    # for the spatial-only call to _bid_with_extra_batch.
-    shape = tuple(params["shape"])[:-1]
-    broadcast_dimensions = tuple(params["broadcast_dimensions"])[:-1]
-    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
+def _(op: sparse.BCOO, *, n, **params):
+    return sparse.bcoo_broadcast_in_dim(
+        op,
+        shape=tuple(params["shape"]),
+        broadcast_dimensions=tuple(params["broadcast_dimensions"]),
+    )
