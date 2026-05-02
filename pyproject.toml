@@ -24,6 +24,7 @@ dev = [
     # over; without it, `tests/test_sif2jax_sweep.py` skips entirely
     # and the ECF/no-ECF CI matrix becomes a no-op.
     "sif2jax @ git+https://github.com/johannahaffner/sif2jax.git@main",
+    "jaxls>=2024.0.1",
 ]
 benchmark = [
     "lineaxpr[dev]",
@@ -106,4 +107,7 @@ module = [
   "asdex.*",
 ]
 ignore_missing_imports = true
+
+[tool.uv.sources]
+jaxls = { git = "https://github.com/brentyi/jaxls.git" }
 
