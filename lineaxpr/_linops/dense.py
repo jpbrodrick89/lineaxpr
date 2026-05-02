@@ -16,7 +16,6 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 from jax._src.interpreters.partial_eval import DynamicJaxprTracer
-from jax.experimental import sparse
 
 from .base import (
     broadcast_in_dim_op,
@@ -67,12 +66,12 @@ def _(op, *, n, **params):
 
 
 def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
-    """Shared tail for broadcast_in_dim dense fallbacks.
+    """Shared tail for broadcast_in_dim LinOp dense fallbacks.
 
     Handles extra leading batch dims that vmap may have accumulated before
     the strip rules see the tensor (n_extra == 0 in the normal non-vmap
-    path). Also imported by ellpack_transforms.py for the BEllpack dense
-    fallback.
+    path). Imported by `ellpack_transforms.py` and `diagonal.py` for
+    their LinOp dense fallbacks.
     """
     expected_ndim = len(broadcast_dimensions) + 1
     while dense.ndim > expected_ndim and dense.shape[0] == 1:
@@ -90,26 +89,11 @@ def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
 @broadcast_in_dim_op.register(jax.Array)
 @broadcast_in_dim_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    full_shape = tuple(params["shape"])
-    full_bd = tuple(params["broadcast_dimensions"])
-    # Inside-vmap: V at the front of output (bd[0]==0, shape[0]==n).
-    # Operand is already in V-at-0 layout (e.g., densified upstream from a
-    # transposed BE). Pass params straight through to lax.broadcast_in_dim.
-    if full_bd and full_bd[0] == 0 and full_shape[0] == n:
-        return lax.broadcast_in_dim(op, full_shape, full_bd)
-    # Walk-frame: shape ends in n, bd ends in n's mapping (== ndim_out-1).
-    # Strip both trailing entries for the spatial-only structural checks.
-    shape = full_shape[:-1]
-    broadcast_dimensions = full_bd[:-1]
-    # Dense linear-form (n,)-ndarray broadcast to spatial-shape (1,):
-    # recover BCOO form so downstream rules see structure, not a dense row.
-    if broadcast_dimensions == () and shape == (1,):
-        if op.ndim == 1 and op.shape[0] == n:
-            zeros_row = jnp.zeros((n,), dtype=jnp.int32)
-            cols = jnp.arange(n, dtype=jnp.int32)
-            indices = jnp.stack([zeros_row, cols], axis=1)
-            return sparse.BCOO((op, indices), shape=(1, n))
-    return _bid_with_extra_batch(op, shape, broadcast_dimensions, n)
+    return lax.broadcast_in_dim(
+        op,
+        shape=tuple(params["shape"]),
+        broadcast_dimensions=tuple(params["broadcast_dimensions"]),
+    )
 
 
 @reduce_sum_op.register(jax.Array)
