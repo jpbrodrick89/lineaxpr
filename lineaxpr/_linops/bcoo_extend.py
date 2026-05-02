@@ -44,13 +44,7 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
 
 @slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_slice(
-        op,
-        start_indices=tuple(int(s) for s in params["start_indices"]),
-        limit_indices=tuple(int(l) for l in params["limit_indices"]),
-        strides=(tuple(int(s) for s in params["strides"])
-                 if params.get("strides") else None),
-    )
+    return sparse.bcoo_slice(op, **params)
 
 
 @pad_op.register(sparse.BCOO)
@@ -81,7 +75,7 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
 
 @rev_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_rev(op, dimensions=tuple(params["dimensions"]))
+    return sparse.bcoo_rev(op, **params)
 
 
 @reduce_sum_op.register(sparse.BCOO)  # pyrefly: ignore [bad-argument-type]
@@ -168,13 +162,9 @@ def _bcoo_concat(bcoo_vals, shape):
 
 @squeeze_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_squeeze(op, dimensions=tuple(params["dimensions"]))
+    return sparse.bcoo_squeeze(op, **params)
 
 
 @broadcast_in_dim_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_broadcast_in_dim(
-        op,
-        shape=tuple(params["shape"]),
-        broadcast_dimensions=tuple(params["broadcast_dimensions"]),
-    )
+    return sparse.bcoo_broadcast_in_dim(op, **params)

@@ -34,35 +34,31 @@ from .base import (
 @squeeze_op.register(jax.Array)
 @squeeze_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    return lax.squeeze(op, params["dimensions"])
+    return lax.squeeze_p.bind(op, **params)
 
 
 @rev_op.register(jax.Array)
 @rev_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    return lax.rev(op, params["dimensions"])
+    return lax.rev_p.bind(op, **params)
 
 
 @slice_op.register(jax.Array)
 @slice_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    return lax.slice(op, **params)
+    return lax.slice_p.bind(op, **params)
 
 
 @pad_op.register(jax.Array)
 @pad_op.register(DynamicJaxprTracer)
 def _(op, *, n, padding_value, **params):
-    return lax.pad(op, padding_value, **params)
+    return lax.pad_p.bind(op, padding_value, **params)
 
 
 @reshape_op.register(jax.Array)
 @reshape_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    # `sharding` (jaxpr) → `out_sharding` (lax); pass explicitly to avoid
-    # name mismatch when forwarding **params.
-    return lax.reshape(op, params["new_sizes"],
-                       dimensions=params.get("dimensions"),
-                       out_sharding=params.get("sharding"))
+    return lax.reshape_p.bind(op, **params)
 
 
 def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
@@ -89,11 +85,7 @@ def _bid_with_extra_batch(dense, shape, broadcast_dimensions, n):
 @broadcast_in_dim_op.register(jax.Array)
 @broadcast_in_dim_op.register(DynamicJaxprTracer)
 def _(op, *, n, **params):
-    return lax.broadcast_in_dim(
-        op,
-        shape=tuple(params["shape"]),
-        broadcast_dimensions=tuple(params["broadcast_dimensions"]),
-    )
+    return lax.broadcast_in_dim_p.bind(op, **params)
 
 
 @reduce_sum_op.register(jax.Array)
