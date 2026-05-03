@@ -782,6 +782,34 @@ def _(op, *, n, **params):
             ))
             start = end
         return out
+    # Structural path: unbatched T=True split along the out axis
+    # (axis 1 of `(in_size, out_size)`). Slice `data` along its
+    # leading axis (the out-axis in T=True data layout: `(out, k)` for
+    # k>=2, `(out,)` for k=1) and each band's col array along its
+    # only axis. Emits one BE T=True per chunk with full row coverage.
+    if (op.transposed and op.n_batch == 0 and axis == 1
+            and op.start_row == 0 and op.end_row == op.out_size):
+        out = []
+        start = 0
+        for sz in sizes:
+            sz_i = int(sz)
+            end = start + sz_i
+            if op.k == 1:
+                new_values = op.data[start:end]
+            else:
+                new_values = op.data[start:end, :]
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, np.ndarray):
+                    new_in_cols.append(c[start:end])
+                else:
+                    new_in_cols.append(jnp.asarray(c)[start:end])
+            out.append(BEllpack(
+                0, sz_i, tuple(new_in_cols), new_values,
+                sz_i, op.in_size, transposed=True,
+            ))
+            start = end
+        return out
     # Structural path: split along output axis 0 (the "out_size" dim).
     # For an unbatched BEllpack with static cols we slice the BE
     # per-chunk (row range + per-band-col row-slice) and emit one
