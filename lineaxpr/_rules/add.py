@@ -572,6 +572,66 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
+                # 1D linear-form sparse path: when all traced
+                # operands are BE row/col vectors representing the
+                # same 1D linear form (`add_any` aval `(n,)` 1D, but
+                # stored as 2D BEs with `out_size=1`, `end_row=1` —
+                # either BE_T(n, 1) col-vector or BE_F(1, n)
+                # row-vector layout), convert each to a 1D BCOO at
+                # shape `(n,)` and concat. Preserves sparsity through
+                # BROYDN3DLS-class chains where the same 1D form
+                # appears in both layouts via parallel sub-trees.
+                _all_1d_lf = (
+                    all(isinstance(v, BEllpack)
+                        and v.n_batch == 0
+                        and v.out_size == 1
+                        and v.start_row == 0
+                        and v.end_row == 1
+                        and (v.in_size == n if not v.transposed
+                             else v.shape[0] == n)
+                        and all(isinstance(c, np.ndarray) and c.ndim == 1
+                                and c.shape[0] == 1
+                                for c in v.in_cols)
+                        for v in traced_vals)
+                    and len(traced_vals) >= 2
+                )
+                if _all_1d_lf:
+                    # Combine the static cols + traced data per
+                    # operand, then static-dedup across operands so
+                    # any column that appears in multiple BEs gets
+                    # its data summed in the value tensor (avoids the
+                    # `BCOO concat` duplicates that the user's
+                    # "no sum_duplicates" rule disallows downstream).
+                    all_cols_per_op = []
+                    all_data_per_op = []
+                    for v in traced_vals:
+                        cols_concat = np.concatenate(
+                            [c.reshape(1) for c in v.in_cols]
+                        )
+                        valid_idx = np.where(cols_concat >= 0)[0]
+                        valid_cols = cols_concat[valid_idx]
+                        vals_flat = jnp.asarray(v.data).reshape(-1)
+                        valid_vals = vals_flat[jnp.asarray(valid_idx)]
+                        all_cols_per_op.append(valid_cols)
+                        all_data_per_op.append(valid_vals)
+                    # Static unique-col dedup: build a (unique_cols,
+                    # n_op*max_band) -indexed accumulator. For each
+                    # entry (col, op_idx, band_idx) deposit data at
+                    # `unique_idx[col]`, sum.
+                    cat_cols = np.concatenate(all_cols_per_op)
+                    cat_data = jnp.concatenate(all_data_per_op)
+                    unique_cols, inverse = np.unique(
+                        cat_cols, return_inverse=True)
+                    n_unique = unique_cols.shape[0]
+                    summed = jnp.zeros((n_unique,), cat_data.dtype).at[
+                        jnp.asarray(inverse)].add(cat_data)
+                    return sparse.BCOO(
+                        (summed,
+                         jnp.asarray(unique_cols[:, None])),
+                        shape=(n,),
+                        indices_sorted=True,
+                        unique_indices=True,
+                    )
                 # Last resort: densify T=True BEs so canonical body
                 # sees consistent forms. Reaching here on a `BE_T +
                 # BE_F` at the same logical shape is a code smell —
@@ -883,6 +943,54 @@ def _add_rule_canonical(invals, traced, n):
     # (n,) ndarrays and sum. Loses row-sparsity info; that's fine —
     # this branch only fires for the rare mixed-forms case after the
     # structural matrix paths above already got a chance.
+    # 1D linear-form sparse path: when all operands are 1D-linear-form
+    # representations (BE row/col vectors, 1D BCOOs, or actual 1D
+    # arrays), each can be converted to a 1D BCOO of shape `(n,)` and
+    # concatenated. Preserves sparsity through the canonical body.
+    # Only fires when all operands have static `np.ndarray` in_cols
+    # (so the 1D-BCOO indices are buildable without traced gathers).
+    # Triggered by BROYDN3DLS-class chains where post-vmap forks
+    # produce both BE_T(n, 1) (col-vector, V-at-0) and BE_F(1, n)
+    # (row-vector, V-at-(-1)) representations of the same 1D linear
+    # form (`add_any` aval is `float64[n]` 1D).
+    def _be_to_1d_bcoo(v):
+        """Convert a 1D-linear-form BE (out_size=1, end_row=1) to a
+        1D BCOO of shape (n,). Returns None if cols aren't static."""
+        if not all(isinstance(c, np.ndarray) and c.ndim == 1
+                   and c.shape[0] == 1 for c in v.in_cols):
+            return None
+        cols_concat = np.concatenate([c.reshape(1) for c in v.in_cols])
+        valid_idx = np.where(cols_concat >= 0)[0]
+        valid_cols = cols_concat[valid_idx]
+        # data is (1,) for k=1, (1, k) for k>=2 — flatten to (k,).
+        vals_flat = jnp.asarray(v.data).reshape(-1)
+        valid_vals = vals_flat[jnp.asarray(valid_idx)]
+        return sparse.BCOO(
+            (valid_vals, jnp.asarray(valid_cols[:, None])),
+            shape=(n,),
+        )
+
+    def _as_1d_bcoo(v):
+        if isinstance(v, sparse.BCOO) and v.shape == (n,):
+            return v
+        if (isinstance(v, BEllpack) and v.n_batch == 0
+                and v.out_size == 1 and v.start_row == 0
+                and v.end_row == 1):
+            return _be_to_1d_bcoo(v)
+        return None
+
+    if (len(vals) >= 2
+            and all((isinstance(v, jax.Array) and v.ndim == 1
+                     and v.shape[0] == n)
+                    or (isinstance(v, sparse.BCOO) and v.shape == (n,))
+                    or (isinstance(v, BEllpack) and v.n_batch == 0
+                        and v.out_size == 1 and v.start_row == 0
+                        and v.end_row == 1)
+                    for v in vals)):
+        as_bcoo = [_as_1d_bcoo(v) for v in vals]
+        if all(b is not None for b in as_bcoo):
+            return _bcoo_concat(as_bcoo, shape=(n,))
+
     def _as_linear_form_row(v):
         if isinstance(v, jax.Array) and v.ndim == 1 and v.shape[0] == n:
             return v
