@@ -525,23 +525,32 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
-                # BE_T + BE_F at the same logical shape: an upstream
-                # rule dropped the `transposed` flag. Raise loudly so
-                # we don't silently densify and hide the bug.
+                # Mixed transposed-flag BEllpack operands (BE_T + BE_F)
+                # — same shape OR different shape — is a code smell
+                # under the supported vmap(in_axes=-1, out_axes=-1)
+                # convention. An upstream rule must have dropped the
+                # `transposed` flag (or otherwise put V at the wrong
+                # axis) for two parallel sub-trees of the same `add`
+                # to disagree on the layout. Raise loudly rather than
+                # densify or BCOO-promote — patching the symptom in
+                # `_add_rule` hides the upstream bug. Audit the
+                # producers and fix them.
                 _be_only = [v for v in traced_vals
                             if isinstance(v, BEllpack)]
                 _non_be_traced = [v for v in traced_vals
                                   if not isinstance(v, BEllpack)]
                 if (len(_be_only) >= 2
                         and not _non_be_traced
-                        and len({v.transposed for v in _be_only}) > 1
-                        and len({tuple(v.shape) for v in _be_only}) == 1):
+                        and len({v.transposed for v in _be_only}) > 1):
                     raise AssertionError(
                         "_add_rule: mixed transposed-flag BEllpack "
-                        "operands (BE_T + BE_F) at the same logical "
-                        "shape — this should not happen. An upstream "
-                        "rule dropped the `transposed` flag. Audit "
-                        "the producer of one of these BEs:\n"
+                        "operands (BE_T + BE_F) — this should not "
+                        "happen under the supported vmap convention "
+                        "(in_axes=-1, out_axes=-1). An upstream rule "
+                        "dropped the `transposed` flag (or put V at "
+                        "the wrong axis); please audit the producers "
+                        "below and file a lineaxpr issue with the "
+                        "minimal `f(y)` that triggers this:\n"
                         + "\n".join(
                             f"  BE shape={v.shape} T={v.transposed} "
                             f"k={v.k} out_size={v.out_size} "
@@ -572,72 +581,11 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
-                # 1D linear-form sparse path: when all traced
-                # operands are BE row/col vectors representing the
-                # same 1D linear form (`add_any` aval `(n,)` 1D, but
-                # stored as 2D BEs with `out_size=1`, `end_row=1` —
-                # either BE_T(n, 1) col-vector or BE_F(1, n)
-                # row-vector layout), convert each to a 1D BCOO at
-                # shape `(n,)` and concat. Preserves sparsity through
-                # BROYDN3DLS-class chains where the same 1D form
-                # appears in both layouts via parallel sub-trees.
-                _all_1d_lf = (
-                    all(isinstance(v, BEllpack)
-                        and v.n_batch == 0
-                        and v.out_size == 1
-                        and v.start_row == 0
-                        and v.end_row == 1
-                        and (v.in_size == n if not v.transposed
-                             else v.shape[0] == n)
-                        and all(isinstance(c, np.ndarray) and c.ndim == 1
-                                and c.shape[0] == 1
-                                for c in v.in_cols)
-                        for v in traced_vals)
-                    and len(traced_vals) >= 2
-                )
-                if _all_1d_lf:
-                    # Combine the static cols + traced data per
-                    # operand, then static-dedup across operands so
-                    # any column that appears in multiple BEs gets
-                    # its data summed in the value tensor (avoids the
-                    # `BCOO concat` duplicates that the user's
-                    # "no sum_duplicates" rule disallows downstream).
-                    all_cols_per_op = []
-                    all_data_per_op = []
-                    for v in traced_vals:
-                        cols_concat = np.concatenate(
-                            [c.reshape(1) for c in v.in_cols]
-                        )
-                        valid_idx = np.where(cols_concat >= 0)[0]
-                        valid_cols = cols_concat[valid_idx]
-                        vals_flat = jnp.asarray(v.data).reshape(-1)
-                        valid_vals = vals_flat[jnp.asarray(valid_idx)]
-                        all_cols_per_op.append(valid_cols)
-                        all_data_per_op.append(valid_vals)
-                    # Static unique-col dedup: build a (unique_cols,
-                    # n_op*max_band) -indexed accumulator. For each
-                    # entry (col, op_idx, band_idx) deposit data at
-                    # `unique_idx[col]`, sum.
-                    cat_cols = np.concatenate(all_cols_per_op)
-                    cat_data = jnp.concatenate(all_data_per_op)
-                    unique_cols, inverse = np.unique(
-                        cat_cols, return_inverse=True)
-                    n_unique = unique_cols.shape[0]
-                    summed = jnp.zeros((n_unique,), cat_data.dtype).at[
-                        jnp.asarray(inverse)].add(cat_data)
-                    return sparse.BCOO(
-                        (summed,
-                         jnp.asarray(unique_cols[:, None])),
-                        shape=(n,),
-                        indices_sorted=True,
-                        unique_indices=True,
-                    )
                 # Last resort: densify T=True BEs so canonical body
-                # sees consistent forms. Reaching here on a `BE_T +
-                # BE_F` at the same logical shape is a code smell —
-                # an upstream rule dropped the `transposed` flag.
-                # Audit the producer rather than promoting both to
-                # BCOO here (which inflates nse without dedup).
+                # sees consistent forms. The mixed-flag BE+BE case is
+                # already raised above; this only fires on
+                # `BE_T + dense / BCOO / Diagonal` mixes that didn't
+                # match the structural BCOO-promote path.
                 invals = tuple(
                     (v.todense()
                      if (t and isinstance(v, BEllpack) and v.transposed)

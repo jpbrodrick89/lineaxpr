@@ -830,10 +830,12 @@ def _(op, *, n, **params):
                 if n_groups == 1:
                     return BEllpack(start_row=0, end_row=1,
                                    in_cols=(np.asarray([uniq_cols[0]], dtype=uniq_cols.dtype),),
-                                   data=summed.reshape(1), out_size=1, in_size=in_size)
+                                   data=summed.reshape(1), out_size=1, in_size=in_size,
+                                   transposed=op.transposed)
                 return BEllpack(start_row=0, end_row=1,
                                in_cols=tuple(np.asarray([c], dtype=uniq_cols.dtype) for c in uniq_cols),
-                               data=summed.reshape(1, n_groups), out_size=1, in_size=in_size)
+                               data=summed.reshape(1, n_groups), out_size=1, in_size=in_size,
+                               transposed=op.transposed)
         cols_stacked = jnp.concatenate([jnp.asarray(c) for c in per_band_cols], axis=0)
         vals_stacked = op.data if k == 1 else op.data.T.reshape(-1)
         mask = cols_stacked >= 0
