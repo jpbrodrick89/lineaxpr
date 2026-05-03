@@ -1003,19 +1003,31 @@ def _(op, *, n, padding_value, **params):
         )
         return padded_batch.pad_rows(out_before, out_after)
 
-    # Interior padding — promote to BCOO then shift rows.
+    # Interior padding — promote to BCOO then shift along the primal
+    # (out_size) axis. For T=False the primal is axis 0 (start of
+    # `(out, in)`); for T=True it's axis 1 (end of `(in, out)`).
     if len(config) == 2 and in_axis_noop:
-        before, after, interior = config[0]
+        before, after, interior = config[primal_axis]
         before, after, interior = int(before), int(after), int(interior)
         if interior > 0 and op.n_batch == 0:
             bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
             step = interior + 1
-            old_size = bcoo_op.shape[0]
+            # `bcoo_op.shape` reflects the LOGICAL view; the primal
+            # axis index in the BCOO matches the BE's frame.
+            primal_in_bcoo = primal_axis
+            old_size = bcoo_op.shape[primal_in_bcoo]
             out_size = old_size + before + after + interior * max(old_size - 1, 0)
-            new_rows = bcoo_op.indices[:, 0] * step + before
-            new_indices = jnp.stack([new_rows, bcoo_op.indices[:, 1]], axis=1)
+            new_primal_idx = bcoo_op.indices[:, primal_in_bcoo] * step + before
+            new_indices_cols = [
+                new_primal_idx if j == primal_in_bcoo
+                else bcoo_op.indices[:, j]
+                for j in range(2)
+            ]
+            new_indices = jnp.stack(new_indices_cols, axis=1)
+            new_shape = list(bcoo_op.shape)
+            new_shape[primal_in_bcoo] = out_size
             return sparse.BCOO(
-                (bcoo_op.data, new_indices), shape=(out_size, bcoo_op.shape[1])
+                (bcoo_op.data, new_indices), shape=tuple(new_shape),
             )
 
     # Dense fallback.
