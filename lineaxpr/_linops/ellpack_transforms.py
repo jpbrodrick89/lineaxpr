@@ -389,6 +389,18 @@ def _(op, *, n, **params):
         # data broadcast across the batch. Triggered by the
         # `_SYN_SCATTER_COMPACT_DUP`-class chain
         # `gather → BE_T → reduce_sum → ... → broadcast_in_dim → scatter`.
+        # Insert a new size>1 batch axis between the V (axis 0) and
+        # OUT (last) axes of an unbatched T=True BE: shape (in, out)
+        # → (in, B, out) with bd=(0, 2). Structurally equivalent to
+        # batched T=True BE with batch=(B,) and the same in_cols /
+        # data broadcast across the batch. Triggered by the
+        # `_SYN_SCATTER_COMPACT_DUP`-class chain
+        # `gather → BE_T → reduce_sum → ... → broadcast_in_dim → scatter`.
+        # Size-1 placeholder middle dims (LUKSAN16LS / SPARSINE-class:
+        # `(in, 1, ..., 1, out)`) need different downstream handling
+        # — turning those into a batched BE_T breaks subsequent muls
+        # that broadcast against the size-1 dims. Densify those
+        # patterns instead via the fallback below.
         full_shape_t = tuple(params["shape"])
         full_bd_t = tuple(params["broadcast_dimensions"])
         if (op.n_batch == 0
@@ -400,8 +412,6 @@ def _(op, *, n, **params):
                 and full_shape_t[-1] == op.shape[1]
                 and full_shape_t[1] > 1):
             new_batch = (int(full_shape_t[1]),)
-            # Data: (out, k) for k>=2 unbatched → (B, out, k). For k=1:
-            # (out,) → (B, out).
             new_data = jnp.broadcast_to(op.data, new_batch + op.data.shape)
             new_in_cols: list[ColArr] = []
             for c in op.in_cols:
