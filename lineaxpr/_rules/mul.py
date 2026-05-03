@@ -177,6 +177,44 @@ def _mul_rule(invals, traced, n, **params):
                 batch_shape=traced_op.batch_shape,
                 transposed=traced_op.transposed,
             )
+    # Per-in-col scale path: scale aligns with the matrix's IN axis
+    # (last axis of `(*batch, out, in)` for T=False, axis 1 of
+    # `(in, *batch, out)` for T=True — but for the rule we just check
+    # `traced_op.shape[-1]` since it equals the BE's logical last
+    # matrix axis when batch=()). For a BE with static `np.ndarray`
+    # in_cols, gather `scale[in_cols[b]]` (clamped at 0 for sentinels)
+    # and multiply into `data`; sentinel rows already carry data=0 so
+    # no extra masking needed (but we mask defensively for k>=1).
+    if (isinstance(traced_op, BEllpack)
+            and traced_op.n_batch == 0
+            and not traced_op.transposed
+            and hasattr(scale, "shape")
+            and scale.ndim == 1
+            and scale.shape[0] == traced_op.in_size
+            and all(isinstance(c, np.ndarray) and c.ndim == 1
+                    for c in traced_op.in_cols)):
+        scale_arr = jnp.asarray(scale)
+        gathered = []
+        masks = []
+        for c in traced_op.in_cols:
+            safe = np.maximum(c, 0)
+            gathered.append(scale_arr[safe])
+            masks.append(jnp.asarray(c >= 0))
+        if traced_op.k == 1:
+            mul_factor = jnp.where(masks[0], gathered[0], 0.0)
+            new_data = traced_op.data * mul_factor
+        else:
+            stacked = jnp.stack(gathered, axis=-1)
+            mask_stack = jnp.stack(masks, axis=-1)
+            mul_factor = jnp.where(mask_stack, stacked, 0.0)
+            new_data = traced_op.data * mul_factor
+        return BEllpack(
+            start_row=traced_op.start_row, end_row=traced_op.end_row,
+            in_cols=traced_op.in_cols, data=new_data,
+            out_size=traced_op.out_size, in_size=traced_op.in_size,
+            batch_shape=traced_op.batch_shape,
+            transposed=traced_op.transposed,
+        )
     # Dense fallback: just trust natural broadcasting. Under vmap, JAX
     # already wraps scale appropriately so `scale * dense` does the
     # right thing — manual axis-insertion logic was bogus and silently

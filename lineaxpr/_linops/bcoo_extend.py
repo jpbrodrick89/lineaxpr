@@ -100,6 +100,21 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
                 (op.data, new_indices),
                 shape=(op.shape[0], new_shape1),
             )
+        # Interior padding along axis 1: each existing col `j` maps
+        # to `j*step + before_c`. The result still has the same
+        # `op.indices.shape[0]` non-zero entries; only their col
+        # positions shift.
+        step = interior_c + 1
+        old_cols_axis = op.shape[1]
+        new_shape1 = (old_cols_axis + before_c + after_c
+                      + interior_c * max(old_cols_axis - 1, 0))
+        new_cols = op.indices[:, 1] * step + before_c
+        new_indices = jnp.stack(
+            [op.indices[:, 0], new_cols], axis=1)
+        return sparse.BCOO(
+            (op.data, new_indices),
+            shape=(op.shape[0], new_shape1),
+        )
 
     return lax.pad(op.todense(), padding_value, **params)
 

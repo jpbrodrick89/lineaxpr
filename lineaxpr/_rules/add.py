@@ -525,6 +525,28 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
+                # Mixed-flag BE / BE+CD/D at same logical shape (no
+                # BCOO operand): promote each to BCOO and concat.
+                # Each operand's `to_bcoo()` is flag-aware and emits
+                # at its `op.shape`, so concat just stacks indices.
+                # Preserves sparsity; covers LUKSAN15LS-class
+                # `BE_T (n, m) + BE_F (n, m)` patterns where the
+                # T=True operand carries column-sparsity and the
+                # T=False one carries row-sparsity at the same
+                # rectangular shape.
+                if (all(isinstance(v, (BEllpack, ConstantDiagonal, Diagonal))
+                        for v in traced_vals)
+                        and all(hasattr(v, 'shape') for v in traced_vals)
+                        and len({tuple(v.shape) for v in traced_vals}) == 1
+                        and all(getattr(v, 'n_batch', 0) == 0
+                                for v in traced_vals
+                                if isinstance(v, BEllpack))):
+                    bcoo_vals = [
+                        v.to_bcoo() if hasattr(v, 'to_bcoo') else v
+                        for v in traced_vals
+                    ]
+                    return _bcoo_concat(bcoo_vals,
+                                        shape=tuple(traced_vals[0].shape))
                 # Last resort: densify T=True BEs so canonical body
                 # sees consistent forms.
                 invals = tuple(
