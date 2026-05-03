@@ -35,7 +35,6 @@ def _concatenate_rule(invals, traced, n, **params):
     if (traced_be
             and len(traced_be) == sum(traced)
             and all(v.transposed for v in traced_be)
-            and all(v.n_batch == 0 for v in traced_be)
             and dimension >= 1):
         flipped = [
             replace_slots(v, transposed=False) if isinstance(v, BEllpack) else v
@@ -73,19 +72,39 @@ def _concatenate_rule(invals, traced, n, **params):
         nb = invals[0].n_batch
         in_size = invals[0].in_size
         if dimension < nb:
-            # Batch-axis concat: same out_size, same k assumed, just
-            # concatenate values + per-batch in_cols along that axis
-            # and grow batch_shape[dim].
-            if not all(v.k == invals[0].k for v in invals[1:]):
-                pass  # fall through to dense fallback (k mismatch rare
-                      # on batch-axis concat; avoid complexity)
-            else:
-                new_values = jnp.concatenate([v.data for v in invals], axis=dimension)
+            # Batch-axis concat: same out_size; pad shorter k to max_k
+            # with `-1` sentinel cols / 0 values, then concatenate
+            # values + per-band in_cols along the batch axis and grow
+            # batch_shape[dim]. LUKSAN11LS's
+            # `concat(BE(bs=(99,1), out=1, k=2), BE(bs=(99,1), out=1, k=1))`
+            # — different k from upstream sub vs slice — used to fall
+            # through to dense.
+            max_k = max(v.k for v in invals)
+            def _widen_values_batch(v):
+                if max_k == 1:
+                    return v.data
+                vals = v.data if v.data.ndim == nb + 2 else v.data[..., None]
+                if v.k < max_k:
+                    pad = [(0, 0)] * vals.ndim
+                    pad[-1] = (0, max_k - v.k)
+                    vals = jnp.pad(vals, pad)
+                return vals
+            if True:
+                new_values = jnp.concatenate(
+                    [_widen_values_batch(v) for v in invals],
+                    axis=dimension,
+                )
                 new_in_cols: list[ColArr] = []
-                for b in range(invals[0].k):
+                for b in range(max_k):
                     parts = []
                     has_per_batch = False
                     for v in invals:
+                        if b >= v.k:
+                            # Sentinel band: -1 cols, 0 values for the
+                            # whole batch shape.
+                            c = np.full((v.nrows,), -1, dtype=np.int64)
+                            parts.append(c)
+                            continue
                         c = v.in_cols[b]
                         if isinstance(c, slice):
                             c = np.arange(c.start or 0, c.stop or v.nrows, c.step or 1)

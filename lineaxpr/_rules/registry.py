@@ -309,13 +309,22 @@ def _transpose_rule(invals, traced, n, **params):
     """Phase B: dispatch to `op.transpose(perm)`. Each LinOp / BCOO /
     plain array implements its own transpose — symmetric forms return
     self, BE 2D cross-V swap flips the flag, identity perms early-out
-    inside the method, and unsupported cross-V perms raise."""
+    inside the method. Unsupported cross-V perms on BEllpack convert
+    to BCOO and transpose there (BCOO supports any sparse-axis perm
+    after promotion to fully-sparse via `_bcoo_to_fully_sparse`)."""
     del n
     (op,), (t,) = invals, traced
     if not t:
         return None
     perm = params["permutation"]
-    return op.transpose(perm)
+    try:
+        return op.transpose(perm)
+    except NotImplementedError:
+        bcoo = op.to_bcoo() if hasattr(op, "to_bcoo") else op
+        from .._linops.ellpack import _bcoo_to_fully_sparse  # noqa: PLC0415
+        if isinstance(bcoo, sparse.BCOO) and bcoo.n_batch > 0:
+            bcoo = _bcoo_to_fully_sparse(bcoo)
+        return bcoo.transpose(axes=perm)
 materialize_rules[lax.transpose_p] = _transpose_rule
 
 materialize_rules[lax.gather_p] = _gather_rule

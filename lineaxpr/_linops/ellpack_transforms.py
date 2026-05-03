@@ -27,6 +27,84 @@ from .ellpack import BEllpack, _bellpack_unbatch, ColArr
 
 @reshape_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
+    # T=True unbatched → batched: `(in, total) → (in, *new_batch, out)`
+    # where `total == prod(new_batch) * out`. Inverts the unbatching
+    # reshape below (LUKSAN11LS: `BE_T(100, 198) k=2 → (100, 99, 2)`).
+    if (op.transposed and op.n_batch == 0
+            and op.start_row == 0 and op.end_row == op.out_size):
+        full_new = tuple(int(s) for s in params["new_sizes"])
+        if (len(full_new) >= 3
+                and full_new[0] == op.in_size
+                and int(np.prod(full_new[1:])) == op.out_size):
+            new_batch = full_new[1:-1]
+            new_out = full_new[-1]
+            target_data_shape = new_batch + (new_out,)
+            if op.k == 1:
+                new_values = op.data.reshape(target_data_shape)
+            else:
+                new_values = op.data.reshape(target_data_shape + (op.k,))
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, np.ndarray):
+                    new_in_cols.append(c.reshape(target_data_shape))
+                elif isinstance(c, slice):
+                    rs = np.arange(
+                        c.start or 0, c.stop or op.nrows, c.step or 1)
+                    new_in_cols.append(rs.reshape(target_data_shape))
+                else:
+                    new_in_cols.append(jnp.asarray(c).reshape(
+                        target_data_shape))
+            return BEllpack(
+                start_row=0, end_row=new_out,
+                in_cols=tuple(new_in_cols), data=new_values,
+                out_size=new_out, in_size=op.in_size,
+                batch_shape=new_batch, transposed=True,
+            )
+    # T=True (V-at-0): `params["new_sizes"]` is the full V-augmented
+    # target shape WITH V at axis 0 (no walk-frame strip). Flatten
+    # `*batch, out_size → new out_size` while keeping in_size at axis 0.
+    if op.transposed and op.n_batch >= 1:
+        full_new = tuple(int(s) for s in params["new_sizes"])
+        # Expected output of an unbatching reshape: (in_size, total) where
+        # total = prod(batch) * out_size.
+        if (len(full_new) == 2
+                and full_new[0] == op.in_size
+                and full_new[1] == int(np.prod(op.batch_shape)) * op.out_size):
+            total = full_new[1]
+            nrows = total
+            if op.k == 1:
+                new_values = op.data.reshape(nrows)
+            else:
+                new_values = op.data.reshape(nrows, op.k)
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, np.ndarray):
+                    if c.ndim == 1:
+                        # 1D shared cols — broadcast across batch first,
+                        # then reshape.
+                        c_full = np.broadcast_to(
+                            c, op.batch_shape + (op.nrows,))
+                        new_in_cols.append(c_full.reshape(nrows))
+                    else:
+                        new_in_cols.append(c.reshape(nrows))
+                elif isinstance(c, slice):
+                    rs = np.arange(
+                        c.start or 0, c.stop or op.nrows, c.step or 1)
+                    c_full = np.broadcast_to(
+                        rs, op.batch_shape + (op.nrows,))
+                    new_in_cols.append(c_full.reshape(nrows))
+                else:
+                    ca = jnp.asarray(c)
+                    if ca.ndim == 1:
+                        ca = jnp.broadcast_to(
+                            ca, op.batch_shape + (op.nrows,))
+                    new_in_cols.append(ca.reshape(nrows))
+            return BEllpack(
+                start_row=0, end_row=nrows,
+                in_cols=tuple(new_in_cols), data=new_values,
+                out_size=nrows, in_size=op.in_size,
+                transposed=True,
+            )
     # Walk-frame new_sizes has n at -1; structural shape is the prefix.
     new_sizes = params["new_sizes"][:-1]
 
@@ -260,15 +338,41 @@ def _(op, *, n, **params):
             out_size=N, in_size=op.in_size, transposed=True,
         )
     # transposed=True BE with broadcast that only adds trailing
-    # size-1 axes (LUKSAN-class): convert to BCOO and use
-    # `bcoo_broadcast_in_dim` to keep the result sparse.
+    # size-1 axes (LUKSAN-class): emit a batched BE_T whose new
+    # `batch_shape` absorbs the original out_size and the trailing
+    # ones absorb the new singletons. Keeps everything as BE so
+    # downstream `concat / reshape / split / reduce_sum` rules walk
+    # via the BE-structural paths (band dedup) instead of the BCOO
+    # paths (which accumulate sentinel entries).
     if (op.transposed
+            and op.n_batch == 0
             and tuple(full_bd) == tuple(range(len(op.shape)))
             and full_shape[:len(op.shape)] == tuple(op.shape)
             and all(s == 1 for s in full_shape[len(op.shape):])):
-        return sparse.bcoo_broadcast_in_dim(
-            op.to_bcoo(), shape=full_shape,
-            broadcast_dimensions=tuple(full_bd),
+        # Original 2D BE_T: shape (in_size, out_size). Goal: 3D shape
+        # (in_size, out_size, 1), interpreted as
+        # `batch=(out_size,), in=in_size, out=1`.
+        n_extra = len(full_shape) - 2
+        new_batch = (op.out_size,) + (1,) * (n_extra - 1)
+        if op.k == 1:
+            new_data = op.data.reshape(op.out_size, *([1] * n_extra))
+        else:
+            new_data = op.data.reshape(op.out_size, *([1] * n_extra), op.k)
+        new_in_cols = []
+        for c in op.in_cols:
+            if isinstance(c, np.ndarray):
+                new_in_cols.append(
+                    c.reshape((op.out_size,) + (1,) * (n_extra - 1) + (1,))
+                )
+            else:
+                new_in_cols.append(jnp.asarray(c).reshape(
+                    (op.out_size,) + (1,) * (n_extra - 1) + (1,)
+                ))
+        return BEllpack(
+            start_row=0, end_row=1,
+            in_cols=tuple(new_in_cols), data=new_data,
+            out_size=1, in_size=op.in_size,
+            batch_shape=new_batch, transposed=True,
         )
     # Inside-vmap (transposed=True): V is at axis 0 in the jaxpr-frame
     # operand (externally), but BE's batch-at-front structure can't
@@ -633,11 +737,13 @@ def _(op, *, n, **params):
 def _(op, *, n, **params):
     sizes = params["sizes"]
     axis = params["axis"]
-    # Structural path: batched BE split along the out-axis (== n_batch).
-    # Slice values and each band's cols along the out axis; keep batch_shape.
-    # Requires full out coverage so each chunk's rows map to [0, sz) cleanly.
+    # Structural path: batched BE split along the out-axis. For T=False
+    # the out-axis is at frame index `n_batch`; for T=True (V-at-0) it
+    # shifts to `n_batch + 1`. Slice values and each band's cols along
+    # the out axis; keep batch_shape. Requires full out coverage.
+    out_axis_in_frame = (op.n_batch + 1) if op.transposed else op.n_batch
     if (op.n_batch >= 1
-            and axis == op.n_batch
+            and axis == out_axis_in_frame
             and op.start_row == 0
             and op.end_row == op.out_size):
         nb = op.n_batch
@@ -672,6 +778,7 @@ def _(op, *, n, **params):
             out.append(BEllpack(
                 0, sz_i, tuple(new_in_cols), new_values,
                 sz_i, op.in_size, batch_shape=op.batch_shape,
+                transposed=op.transposed,
             ))
             start = end
         return out

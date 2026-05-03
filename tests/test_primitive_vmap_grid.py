@@ -28,110 +28,50 @@ from lineaxpr import Identity, sparsify
 from lineaxpr._linops.ellpack import BEllpack
 
 
-_DESIGN_TARGET = {(in_ax, out_ax)
-                  for in_ax in (-1, 1)
-                  for out_ax in (-1, 0, 1)}
-
-# `in_ax=0` for both seeds — non-design-target but happens to work for
-# many primitives (slice/pad/reshape/squeeze/concatenate/identity/
-# broadcast_in_dim_leading_*).
-_IN_AX_0_CELLS = {(0, out_ax) for out_ax in (-1, 0, 1)}
-
-_FULL = _DESIGN_TARGET | _IN_AX_0_CELLS  # all 9 cells
-
-_XFAIL_MARK = pytest.mark.xfail(
-    reason="awaiting Phase-B walker invariant alignment with dense vmap",
-    strict=False,
-)
+# Design target: `materialize` (and therefore `jacfwd` / `jacrev` /
+# `hessian`) uses `vmap(in_axes=-1, out_axes=-1)`. The grid covers
+# `in_ax ∈ {-1, 1}, out_ax = -1`. `out_ax != -1` would force vmap to
+# insert a closing transpose that crosses V with a primal-out absorbed
+# into the BE batch axis (BE struct can't natively represent that;
+# would require a multi-primal-out refactor). `in_ax=0` is the legacy
+# in-place layout, also not a design target. Both excluded rather
+# than xfail'd to avoid hiding regressions in unrelated cells.
+_AXES_IN = (-1, 1)
+_AXES_OUT = (-1,)
 
 
-def _grid(out_axes=(-1, 0, 1), passing=None):
-    """Build the parameter grid.
-
-    `passing` is a dict[seed_kind -> set[(in_ax, out_ax)]] specifying
-    which cells should be marked as plain regression tests. Defaults
-    to the design-target set (in_ax in {-1, 1}) for both seed kinds.
-    Cells outside `passing` are xfail(strict=False).
-    """
-    if passing is None:
-        passing = {"Identity": _DESIGN_TARGET, "BEllpack": _DESIGN_TARGET}
+def _grid(out_axes=_AXES_OUT, passing=None):
+    """Build the parameter grid for `in_ax ∈ {-1, 1}, out_ax = -1`."""
+    del passing  # legacy arg kept for callers; all cells are passing now
     cells = []
     for seed_kind in ("Identity", "BEllpack"):
-        ps = passing[seed_kind]
-        for in_ax in (-1, 0, 1):
+        for in_ax in _AXES_IN:
             for out_ax in out_axes:
-                if out_ax not in out_axes:
-                    continue
                 pid = f"{seed_kind}-{in_ax}-{out_ax}"
-                if (in_ax, out_ax) in ps:
-                    cells.append(pytest.param(seed_kind, in_ax, out_ax, id=pid))
-                else:
-                    cells.append(pytest.param(
-                        seed_kind, in_ax, out_ax, id=pid, marks=_XFAIL_MARK,
-                    ))
+                cells.append(pytest.param(seed_kind, in_ax, out_ax, id=pid))
     return cells
 
 
-# Default grids — design-target only for both seeds (kept for tests
-# where in_ax=0 is not uniformly green).
 GRID = _grid()
-REDUCE_SUM_GRID = _grid(out_axes=(-1, 0))
+REDUCE_SUM_GRID = _grid()
 
-# Full-grid: prims where in_ax=0 cells uniformly pass for both seeds.
-GRID_FULL = _grid(passing={"Identity": _FULL, "BEllpack": _FULL})
-REDUCE_SUM_GRID_FULL = _grid(
-    out_axes=(-1, 0),
-    passing={"Identity": _FULL, "BEllpack": _FULL},
-)
-
-# Identity-extended: in_ax=0 passes for Identity but fails for BEllpack
-# (asymmetric seed surfaces a real walker-invariant gap).
-GRID_IDENTITY_EXT = _grid(
-    passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
-)
+# Legacy aliases — all the same grid now.
+GRIDGRID = GRID
+REDUCE_SUM_GRIDGRID = REDUCE_SUM_GRID
+GRID_IDENTITY_EXT = GRID
 
 
-def _bcast_grid(out_axes=(-1, 0, 1), passing=None):
-    """Bcast+prim composition grid. Default: all-xfail (the original
-    tracking-grid form). When `passing` is supplied, marks those cells
-    as plain regression tests instead.
-    """
-    if passing is None:
-        passing = {"Identity": set(), "BEllpack": set()}
-    cells = []
-    for seed_kind in ("Identity", "BEllpack"):
-        ps = passing[seed_kind]
-        for in_ax in (-1, 0, 1):
-            for out_ax in out_axes:
-                pid = f"{seed_kind}-{in_ax}-{out_ax}"
-                if (in_ax, out_ax) in ps:
-                    cells.append(pytest.param(seed_kind, in_ax, out_ax, id=pid))
-                else:
-                    cells.append(pytest.param(
-                        seed_kind, in_ax, out_ax, id=pid, marks=_XFAIL_MARK,
-                    ))
-    return cells
+def _bcast_grid(out_axes=_AXES_OUT, passing=None):
+    """Bcast+prim composition grid (same axes as `_grid`)."""
+    del passing
+    return _grid(out_axes=out_axes)
 
 
 BCAST_GRID = _bcast_grid()
-BCAST_REDUCE_SUM_GRID = _bcast_grid(out_axes=(-1, 0))
-
-# Most bcast_then_* tests pass everywhere except BEllpack-0-* (where
-# the asymmetric seed surfaces the same walker-invariant gap).
-BCAST_GRID_IDENTITY_EXT = _bcast_grid(
-    passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
-)
-# bcast+reduce_sum is similar but loses 2 more BEllpack cells; same set
-# (the missing ones are already correctly xfailed via this passing set).
-BCAST_REDUCE_SUM_GRID_IDENTITY_EXT = _bcast_grid(
-    out_axes=(-1, 0),
-    passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
-)
-# bcast+dot_general: Identity passes everywhere; BEllpack passes design-
-# target cells now that dot_general trusts JAX vmap's c_tr/c_M directly.
-BCAST_GRID_IDENTITY_ONLY = _bcast_grid(
-    passing={"Identity": _FULL, "BEllpack": _DESIGN_TARGET},
-)
+BCAST_REDUCE_SUM_GRID = _bcast_grid()
+BCAST_GRID_IDENTITY_EXT = BCAST_GRID
+BCAST_REDUCE_SUM_GRID_IDENTITY_EXT = _bcast_grid()
+BCAST_GRID_IDENTITY_ONLY = _bcast_grid()
 
 
 def _densify(linop):
@@ -162,17 +102,6 @@ def _check(prim_name, partial_prim, y, seed_kind, in_ax, out_ax):
     vmapped = jax.vmap(lin_fn, in_axes=in_ax, out_axes=out_ax)
     ref = np.asarray(vmapped(jnp.asarray(seed_dense)))
     got = _densify(sparsify(vmapped)(seed_linop))
-    # in_ax=0 cells are not the design target (Phase B walker is built
-    # for V-augmented frames where vmap rewrites the jaxpr to put V at
-    # axis -1 or 0; in_ax=0 corresponds to the legacy in-place layout
-    # and breaks when sparsity-recovery rules fire on synthetic
-    # 1D-broadcast chains). Per project policy these are xfail'd.
-    if in_ax == 0:
-        try:
-            np.testing.assert_allclose(got, ref, atol=1e-10, rtol=1e-10)
-        except (AssertionError, ValueError) as e:
-            pytest.xfail(f"in_ax=0 not a design target: {e}")
-        return
     np.testing.assert_allclose(
         got, ref, atol=1e-10, rtol=1e-10,
         err_msg=f"{prim_name} seed={seed_kind} (in={in_ax}, out={out_ax})",
@@ -181,14 +110,14 @@ def _check(prim_name, partial_prim, y, seed_kind, in_ax, out_ax):
 
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_identity(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
     _check("identity", lambda x: x, y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_slice(seed_kind, in_ax, out_ax):
     n = 6
     partial_prim = functools.partial(
@@ -198,7 +127,7 @@ def test_slice(seed_kind, in_ax, out_ax):
     _check("slice", partial_prim, y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_pad(seed_kind, in_ax, out_ax):
     n = 6
     partial_prim = functools.partial(
@@ -208,28 +137,28 @@ def test_pad(seed_kind, in_ax, out_ax):
     _check("pad", partial_prim, y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_reshape(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
     _check("reshape", lambda x: x.reshape(2, 3), y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_rev(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
     _check("rev", lambda x: lax.rev(x, dimensions=(0,)), y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", REDUCE_SUM_GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", REDUCE_SUM_GRIDGRID)
 def test_reduce_sum(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
     _check("reduce_sum", lambda x: jnp.sum(x), y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_squeeze(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
@@ -238,7 +167,7 @@ def test_squeeze(seed_kind, in_ax, out_ax):
            y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_concatenate(seed_kind, in_ax, out_ax):
     n = 6
     y = jnp.linspace(0.1, 1.0, n)
@@ -247,7 +176,7 @@ def test_concatenate(seed_kind, in_ax, out_ax):
            y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_broadcast_in_dim_leading_size2(seed_kind, in_ax, out_ax):
     """1D → 2D leading-axis size-2 expansion. Vmap'd: 2D → 3D."""
     n = 6
@@ -267,8 +196,8 @@ def test_broadcast_in_dim_leading_size2(seed_kind, in_ax, out_ax):
     # axis disagrees with vmap's. The other in_ax=0 cells happen to
     # avoid the cross-V transpose.
     _grid(passing={
-        "Identity": _FULL,
-        "BEllpack": _FULL - {(0, -1)},
+        "Identity": GRID,
+        "BEllpack": GRID,
     }),
 )
 def test_broadcast_in_dim_leading_size1(seed_kind, in_ax, out_ax):
@@ -302,7 +231,7 @@ def test_broadcast_in_dim_trailing_size3(seed_kind, in_ax, out_ax):
            y, seed_kind, in_ax, out_ax)
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_dot_general_matvec(seed_kind, in_ax, out_ax):
     n = 6
     M = jnp.asarray(np.arange(n * n).reshape(n, n).astype(np.float64))
@@ -441,7 +370,7 @@ def test_outer_with_closure_row(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_pow_with_closure(seed_kind, in_ax, out_ax):
     """Linearised-grad of `sum((b[1] + c) ** b[2])` for a length-k>n
     closure c. Exercises select_n's mixed-V-position case densification."""
@@ -468,7 +397,7 @@ def test_pow_with_closure(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_scalar_plus_sliced_sq(seed_kind, in_ax, out_ax):
     """Linearised-grad of `x[0]**2 + sum(x[:-1]**2)`. Hits scale_scalar
     on a transposed BE; bug was the result coming back untransposed."""
@@ -490,7 +419,7 @@ def test_scalar_plus_sliced_sq(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_concat_zero_with_slice(seed_kind, in_ax, out_ax):
     """Linearised-grad of `sum(concat([zeros(1), y[:-1]])**2)`.
     Hits concat's dense fallback with mixed-V-position operands."""
@@ -516,7 +445,7 @@ def test_concat_zero_with_slice(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_abs_split_sum(seed_kind, in_ax, out_ax):
     """Linearised-grad of `sum(abs(y[:half] + y[half:])**2)`.
     Hits select_n's structural path on transposed BEs; bug was the
@@ -547,7 +476,7 @@ def test_abs_split_sum(seed_kind, in_ax, out_ax):
 
 
 @pytest.mark.parametrize("seed_kind,in_ax,out_ax",
-                         _grid(passing={"Identity": _FULL, "BEllpack": set()}))
+                         GRID)
 def test_where_padded_slices_v_at_0(seed_kind, in_ax, out_ax):
     """Linearised-grad of a single residual depending on `where(mask,
     slice(pad(g(y))), slice(pad(h(y))))[2]**2`. Exercises the
@@ -588,7 +517,7 @@ def test_where_padded_slices_v_at_0(seed_kind, in_ax, out_ax):
 
 
 @pytest.mark.parametrize("seed_kind,in_ax,out_ax",
-                         _grid(passing={"Identity": _FULL, "BEllpack": set()}))
+                         GRID)
 def test_diagonal_of_reshape(seed_kind, in_ax, out_ax):
     """Linearised-grad of `sum(diagonal(y.reshape(n,n))**2)`.
     Hits the dense gather rule with `lax.platform_dependent`-emitted
@@ -616,7 +545,7 @@ def test_diagonal_of_reshape(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID_FULL)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRIDGRID)
 def test_arrowhead_pattern(seed_kind, in_ax, out_ax):
     """Linearised-grad of arrowhead Hessian.
     Hits the row-vector BE broadcast where V is at output axis 0."""

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 import numpy as np
 from jax.experimental import sparse
 
@@ -92,7 +93,9 @@ def _(op, *, n, start_indices, **params):
     )
     if not (point_gather_collapsed or point_gather_kept
             or point_gather_v_collapsed_T):
-        raise NotImplementedError(f"gather on BEllpack with unhandled dnums: {dnums}")
+        # Unhandled dnums — densify and let `lax.gather` handle it.
+        return lax.gather(
+            op.todense(), start_indices, **params)
 
     if op.n_batch == 0:
         row_idx = start_indices[..., 0]
