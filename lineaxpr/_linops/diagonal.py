@@ -208,29 +208,26 @@ def _(op, *, n, **params):
             in_cols=(cols,), data=op.data[s:e:stride],
             out_size=k_out, in_size=op.n,
         )
-    # In-axis slice with full out-axis: result has shape (n, n_cols) where
-    # n_cols = ceil((e_in - s_in) / stride_in). Each output row i has at
-    # most one non-zero (from the diagonal); for i ∈ [s_in, e_in) on a
-    # `stride_in` step the non-zero sits at column j=(i-s_in)/stride_in.
-    # Emit as BEllpack k=1 with sentinel-(-1) cols on rows that fell
-    # outside the kept-column set.
+    # Axis-1-only slice: by V-axis-detection, V was at axis 0 of the
+    # input (vmap-rewrote a primal-axis slice on a V-at-0 Diagonal).
+    # Output has shape (n, n_cols) with V at axis 0; emit a T=True
+    # BEllpack (in_size=n=V_size, out_size=n_cols=primal). Each
+    # primal-out column j has at most one non-zero, at row
+    # in_cols[0][j] = s_in + j*stride_in (which sits in [0, n)).
+    # No sentinels needed — every kept output column has a valid row.
     if (len(starts) == 2
             and starts[0] == 0 and limits[0] == op.n and strides[0] == 1):
         s_in, e_in = int(starts[1]), int(limits[1])
         stride_in = int(strides[1])
         n_cols = (e_in - s_in + stride_in - 1) // stride_in
-        rows = np.arange(op.n, dtype=np.intp)
-        col = np.full(op.n, -1, dtype=np.intp)
-        mask = (rows >= s_in) & (rows < e_in) & (((rows - s_in) % stride_in) == 0)
-        col[mask] = (rows[mask] - s_in) // stride_in
-        # Zero out data on rows where mask is False so the sentinel
-        # doesn't carry a stray value through later ops that ignore it
-        # logically but read `data` for arithmetic.
-        data = jnp.where(jnp.asarray(mask), op.data, jnp.zeros_like(op.data))
+        rows_for_cols = (s_in + np.arange(n_cols, dtype=np.intp)
+                         * stride_in)
+        data = op.data[s_in:e_in:stride_in]
         return BEllpack(
-            start_row=0, end_row=op.n,
-            in_cols=(col,), data=data,
-            out_size=op.n, in_size=n_cols,
+            start_row=0, end_row=n_cols,
+            in_cols=(rows_for_cols,), data=data,
+            out_size=n_cols, in_size=op.n,
+            transposed=True,
         )
     return lax.slice(op.todense(), **params)
 
