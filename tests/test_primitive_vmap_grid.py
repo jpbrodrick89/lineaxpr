@@ -501,6 +501,51 @@ def test_where_padded_slices_v_at_0(seed_kind, in_ax, out_ax):
 
 
 # ---------------------------------------------------------------------------
+# SBRYBND-class minimum trigger: pad+slice+where + Identity-add + quadratic.
+#
+# `f(y) = sum((y + where(mask, pad+slice(g1(y)), pad+slice(g2(y))))^2)`
+# where `g1`, `g2` are different linear functions of `y`. The
+# residual `res = y + where(...)` is linear in `y` (so the analytical
+# Hessian collapses to `2 * J^T J`), yet the structural BE+BE
+# same-cols select_n path in `_select_n_rule` produces a merged BE
+# that downstream `linearize(grad(f))`'s _where1 (the where backward)
+# splits incorrectly — H[1,1] off by 12 at n=4.
+#
+# Each ingredient is necessary: removing the `y +` term, the
+# pad/slice (so where takes Diagonal cases directly), the `sum²` outer,
+# OR making both branches identical fixes the result. See
+# `docs/RESEARCH_NOTES.md` (and the `project_sbrybnd_select_n_bug`
+# memory) for the full reduction.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason="SBRYBND-class same-cols BE+BE select_n correctness bug — "
+    "the merged BE is correct as a Jacobian but loses per-branch "
+    "identity that the downstream _where1 (linearize of the where's "
+    "backward AD) needs. See `_select_n_rule`'s `same_cols and "
+    "same_transposed` branch in `lineaxpr/_rules/control_flow.py`.",
+    strict=True,
+)
+@pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
+def test_grad_where_padded_slices_sumsq(seed_kind, in_ax, out_ax):
+    """`jax.grad` of a SBRYBND-class sum-of-squares over a where with
+    pad+slice cases on each branch. Triggers the structural BE+BE
+    select_n correctness bug at the boundary row of `mask`."""
+    n = 4
+    y = jnp.linspace(0.5, 1.5, n)
+
+    def f(y):
+        sq_region = jnp.arange(n) < 2
+        nb1 = jnp.concatenate([jnp.zeros(1, y.dtype), -y])[:n]
+        nb2 = jnp.concatenate([jnp.zeros(1, y.dtype), 2 * y])[:n]
+        res = y + jnp.where(sq_region, nb1, nb2)
+        return jnp.sum(res ** 2)
+    grad_f = jax.grad(f)
+    _check("grad_where_padded_slices_sumsq", grad_f, y, seed_kind, in_ax, out_ax)
+
+
+# ---------------------------------------------------------------------------
 # Gather pass-through regression (HADAMALS / `jnp.diagonal`-class)
 #
 # The dense gather rule did Phase-A walk-frame indexing tricks
