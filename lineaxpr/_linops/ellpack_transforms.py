@@ -426,6 +426,53 @@ def _(op, *, n, **params):
                 out_size=op.out_size, in_size=op.in_size,
                 batch_shape=new_batch, transposed=True,
             )
+        # Trailing tile pattern: `BE_T(in, out)` → `(in, out, B)` with
+        # `bd=(0, 1)`. The new trailing dim is a tile (size B>=1) —
+        # each (V, OUT) entry replicated B times. Emit a batched
+        # T=True BE that re-labels the original out as a batch and
+        # the new trailing dim as the new out: shape
+        # `(in, *batch, out)` = `(in, orig_out, B)`. The data and
+        # in_cols are broadcast across the new out axis. Triggered by
+        # YATP1LS-class chains: `gather/slice/transpose → BE_T(in, k)
+        # → broadcast_in_dim` where `bd[1]=1, len(shape)=3,
+        # shape[1]==op.shape[1]`.
+        if (op.n_batch == 0
+                and len(full_shape_t) == 3
+                and len(full_bd_t) == 2
+                and full_bd_t[0] == 0
+                and full_bd_t[1] == 1
+                and full_shape_t[0] == op.shape[0]
+                and full_shape_t[1] == op.shape[1]):
+            B = int(full_shape_t[2])
+            new_batch = (int(op.shape[1]),)  # original out becomes batch
+            # Data: (out, k) for k>=2 unbatched → (out, B, k) batched
+            # by broadcasting the new trailing tile axis. For k=1:
+            # (out,) → (out, B).
+            if op.k == 1:
+                expanded = jnp.expand_dims(op.data, axis=-1)
+                new_data = jnp.broadcast_to(expanded, op.data.shape + (B,))
+            else:
+                # data shape (out, k) → (out, B, k)
+                expanded = jnp.expand_dims(op.data, axis=-2)
+                target = op.data.shape[:-1] + (B,) + op.data.shape[-1:]
+                new_data = jnp.broadcast_to(expanded, target)
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, np.ndarray):
+                    expanded_c = c.reshape(c.shape + (1,))
+                    new_in_cols.append(np.broadcast_to(
+                        expanded_c, c.shape + (B,)).copy())
+                else:
+                    c_arr = jnp.asarray(c)
+                    expanded_c = c_arr.reshape(c_arr.shape + (1,))
+                    new_in_cols.append(jnp.broadcast_to(
+                        expanded_c, c_arr.shape + (B,)))
+            return BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), data=new_data,
+                out_size=B, in_size=op.in_size,
+                batch_shape=new_batch, transposed=True,
+            )
         return lax.broadcast_in_dim(
             op.todense(),
             tuple(params["shape"]),
