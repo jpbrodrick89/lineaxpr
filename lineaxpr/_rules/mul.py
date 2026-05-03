@@ -118,6 +118,7 @@ def _mul_rule(invals, traced, n, **params):
                 in_cols=tuple(new_in_cols), data=new_values,
                 out_size=traced_op.out_size, in_size=traced_op.in_size,
                 batch_shape=new_batch,
+                transposed=traced_op.transposed,
             )
     # Out-size-broadcast path: scale expands a size-1 out axis to
     # `scale.shape[-1]`. Triggered by the NONMSQRT / EIGENALS-class
