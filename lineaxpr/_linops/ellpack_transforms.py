@@ -382,6 +382,40 @@ def _(op, *, n, **params):
     # 1D→ND primal cases (the bcast+prim grid); sif2jax stays 2D and
     # falls through to the structural branches below with transposed=False.
     if op.transposed:
+        # Insert a new size>1 batch axis between the V (axis 0) and
+        # OUT (last) axes of an unbatched T=True BE: shape (in, out)
+        # → (in, B, out) with bd=(0, 2). Structurally equivalent to
+        # batched T=True BE with batch=(B,) and the same in_cols /
+        # data broadcast across the batch. Triggered by the
+        # `_SYN_SCATTER_COMPACT_DUP`-class chain
+        # `gather → BE_T → reduce_sum → ... → broadcast_in_dim → scatter`.
+        full_shape_t = tuple(params["shape"])
+        full_bd_t = tuple(params["broadcast_dimensions"])
+        if (op.n_batch == 0
+                and len(full_shape_t) == 3
+                and len(full_bd_t) == 2
+                and full_bd_t[0] == 0
+                and full_bd_t[1] == 2
+                and full_shape_t[0] == op.shape[0]
+                and full_shape_t[-1] == op.shape[1]
+                and full_shape_t[1] > 1):
+            new_batch = (int(full_shape_t[1]),)
+            # Data: (out, k) for k>=2 unbatched → (B, out, k). For k=1:
+            # (out,) → (B, out).
+            new_data = jnp.broadcast_to(op.data, new_batch + op.data.shape)
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, np.ndarray):
+                    new_in_cols.append(np.broadcast_to(c, new_batch + c.shape).copy())
+                else:
+                    new_in_cols.append(jnp.broadcast_to(jnp.asarray(c),
+                                                       new_batch + jnp.asarray(c).shape))
+            return BEllpack(
+                start_row=op.start_row, end_row=op.end_row,
+                in_cols=tuple(new_in_cols), data=new_data,
+                out_size=op.out_size, in_size=op.in_size,
+                batch_shape=new_batch, transposed=True,
+            )
         return lax.broadcast_in_dim(
             op.todense(),
             tuple(params["shape"]),

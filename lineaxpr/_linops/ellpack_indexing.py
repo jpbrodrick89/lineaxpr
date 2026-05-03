@@ -296,21 +296,41 @@ def _(updates, *, n, operand, scatter_indices, **params):
             be_pieces.append(BEllpack(
                 start, start + n_unique, tuple(new_in_cols), new_vals,
                 out_size, ep.in_size,
+                transposed=updates.transposed,
             ))
         if static_ok:
             return _add_rule(be_pieces, [True] * len(be_pieces), n)
-        # Traced indices fallback.
+        # Traced indices fallback. For T=True BE input, `to_bcoo()`
+        # produces BCOO at `(in, out)` ordering — the OUT axis is at
+        # index 1 of `indices`. For T=False, OUT is at index 0. Match
+        # the V-at-0 post-vmap BCOO convention by always emitting at
+        # `(in, out)` ordering for T=True inputs (and `(out, in)` for
+        # T=False), and route the scatter through the OUT axis.
         bcoo_pieces = []
         for b_idx, ep in enumerate(slices):
             bc = ep.to_bcoo()
-            old_rows = bc.indices[:, 0]
-            new_rows = out_idx[b_idx][old_rows]
-            new_indices = jnp.stack([new_rows, bc.indices[:, 1]], axis=1)
+            if ep.transposed:
+                # `(in, out)` ordering: OUT at axis 1.
+                old_out = bc.indices[:, 1]
+                new_out = out_idx[b_idx][old_out]
+                new_indices = jnp.stack(
+                    [bc.indices[:, 0], new_out], axis=1)
+                new_shape = (updates.in_size, out_size)
+            else:
+                # `(out, in)` ordering: OUT at axis 0.
+                old_out = bc.indices[:, 0]
+                new_out = out_idx[b_idx][old_out]
+                new_indices = jnp.stack(
+                    [new_out, bc.indices[:, 1]], axis=1)
+                new_shape = (out_size, updates.in_size)
             bcoo_pieces.append(sparse.BCOO(
-                (bc.data, new_indices),
-                shape=(out_size, updates.in_size),
+                (bc.data, new_indices), shape=new_shape,
             ))
-        return _bcoo_concat(bcoo_pieces, shape=(out_size, updates.in_size))
+        return _bcoo_concat(
+            bcoo_pieces,
+            shape=bcoo_pieces[0].shape if bcoo_pieces
+            else (out_size, updates.in_size),
+        )
 
     # BCOO (converted from unbatched BEllpack above). For T=True BE
     # input, BCOO is at LOGICAL `(V, struct)` layout — axis 1 is
