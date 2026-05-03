@@ -926,15 +926,30 @@ def _(op, *, n, **params):
         s, e = starts[primal_axis], limits[primal_axis]
         return op.pad_rows(-s, -(op.out_size - e))
 
-    # N-D unit-stride slice on batched BEllpack: out_axis is the
-    # second-to-last (preceding the in-axis no-op).
+    # N-D unit-stride slice on batched BEllpack. For T=False the
+    # layout is `(*batch, out, in)` (batch at front, out at -2, in at
+    # -1); for T=True it's `(in, *batch, out)` (in at 0, batch in the
+    # middle, out at -1). Pick the batch/out indices accordingly.
     if (op.n_batch > 0
             and in_axis_noop
             and len(starts) == op.n_batch + 2
-            and all(st == 1 for st in strides[:-1])):
+            and all(strides[i] == 1
+                    for i in range(len(starts)) if i != v_axis)):
+        if op.transposed:
+            # axis 0 = in (no-op), axes 1..n_batch = batch, axis -1 = out
+            batch_starts = starts[1:1 + op.n_batch]
+            batch_limits = limits[1:1 + op.n_batch]
+            out_start, out_limit = int(starts[-1]), int(limits[-1])
+        else:
+            # axes 0..n_batch-1 = batch, axis -2 = out, axis -1 = in (no-op)
+            batch_starts = starts[:op.n_batch]
+            batch_limits = limits[:op.n_batch]
+            out_start, out_limit = int(starts[-2]), int(limits[-2])
         batch_slicer = tuple(slice(int(s), int(e))
-                             for s, e in zip(starts[:-2], limits[:-2]))
-        out_start, out_limit = int(starts[-2]), int(limits[-2])
+                             for s, e in zip(batch_starts, batch_limits))
+        # `op.data` has shape `(*batch, nrows)` for k=1 or
+        # `(*batch, nrows, k)` for k>=2 — same in both T flags. Slice
+        # the leading batch dims, leave the tail untouched.
         tail = (slice(None),) * (op.data.ndim - op.n_batch)
         new_values = op.data[batch_slicer + tail]
         new_in_cols: list[ColArr] = []
@@ -948,7 +963,7 @@ def _(op, *, n, **params):
             op.start_row, op.end_row,
             tuple(new_in_cols), new_values,
             op.out_size, op.in_size,
-            batch_shape=new_batch,
+            batch_shape=new_batch, transposed=op.transposed,
         )
         return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
 
