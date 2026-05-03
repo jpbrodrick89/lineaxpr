@@ -525,6 +525,30 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
+                # BE (any flag) + Diagonal/CD at same logical shape:
+                # promote to BCOO and concat. Sparsity is preserved
+                # because Diagonal/CD has a fixed n nonzeros and the
+                # BE adds its own structural support — the result is
+                # well-bounded. NOT applied to BE+BE: that case
+                # almost always comes from an upstream `transposed`
+                # flag-drop and should be fixed at the producer.
+                _has_diag = any(isinstance(v, (ConstantDiagonal, Diagonal))
+                                for v in traced_vals)
+                if (_has_diag
+                        and all(isinstance(v, (BEllpack, ConstantDiagonal,
+                                               Diagonal))
+                                for v in traced_vals)
+                        and all(hasattr(v, 'shape') for v in traced_vals)
+                        and len({tuple(v.shape) for v in traced_vals}) == 1
+                        and all(getattr(v, 'n_batch', 0) == 0
+                                for v in traced_vals
+                                if isinstance(v, BEllpack))):
+                    bcoo_vals = [
+                        v.to_bcoo() if hasattr(v, 'to_bcoo') else v
+                        for v in traced_vals
+                    ]
+                    return _bcoo_concat(bcoo_vals,
+                                        shape=tuple(traced_vals[0].shape))
                 # Last resort: densify T=True BEs so canonical body
                 # sees consistent forms. Reaching here on a `BE_T +
                 # BE_F` at the same logical shape is a code smell —
