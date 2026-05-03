@@ -141,11 +141,14 @@ def _select_n_rule(invals, traced, n, **params):
                 0, t_case.n, (np.arange(t_case.n),), t_case.data,
                 t_case.n, t_case.n,
             )
-        # BCOO: mask data entries by row-predicate.
+        # BCOO: mask data entries by row-predicate. Under V-at-0
+        # post-vmap layout the BCOO has `(V, primal_out)` axes —
+        # `pred` indexes the primal_out axis (axis 1). Same
+        # convention as `scale_per_out_row(BCOO)` (commit 6cd78ea).
         if isinstance(t_case, sparse.BCOO):
             pred_arr = jnp.asarray(pred)
-            entry_rows = t_case.indices[:, 0]
-            entry_mask = (pred_arr[entry_rows] == t_idx)
+            entry_out = t_case.indices[:, 1]
+            entry_mask = (pred_arr[entry_out] == t_idx)
             new_data = jnp.where(entry_mask, t_case.data,
                                  jnp.zeros((), t_case.data.dtype))
             return sparse.BCOO(
@@ -241,8 +244,11 @@ def _select_n_rule(invals, traced, n, **params):
             if bc.n_batch != 0:
                 masked_bcoos = None
                 break
-            entry_rows = bc.indices[:, 0]
-            mask = pred_arr[entry_rows] == c_idx
+            # Under V-at-0 post-vmap layout the BCOO has `(V, primal_out)`
+            # axes — `pred` indexes the primal_out axis (axis 1). Same
+            # convention as `scale_per_out_row(BCOO)` (commit 6cd78ea).
+            entry_out = bc.indices[:, 1]
+            mask = pred_arr[entry_out] == c_idx
             new_data = jnp.where(mask, bc.data,
                                  jnp.zeros((), bc.data.dtype))
             masked_bcoos.append(sparse.BCOO(

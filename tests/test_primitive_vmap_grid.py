@@ -519,14 +519,6 @@ def test_where_padded_slices_v_at_0(seed_kind, in_ax, out_ax):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(
-    reason="SBRYBND-class same-cols BE+BE select_n correctness bug — "
-    "the merged BE is correct as a Jacobian but loses per-branch "
-    "identity that the downstream _where1 (linearize of the where's "
-    "backward AD) needs. See `_select_n_rule`'s `same_cols and "
-    "same_transposed` branch in `lineaxpr/_rules/control_flow.py`.",
-    strict=True,
-)
 @pytest.mark.parametrize("seed_kind,in_ax,out_ax", GRID)
 def test_grad_where_padded_slices_sumsq(seed_kind, in_ax, out_ax):
     """`jax.grad` of a SBRYBND-class sum-of-squares over a where with
