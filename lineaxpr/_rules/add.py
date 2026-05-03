@@ -525,6 +525,29 @@ def _add_rule(invals, traced, n, **params):
                     ]
                     return _bcoo_concat(bcoo_vals,
                                         shape=tuple(traced_vals[0].shape))
+                # BE_T + BE_F at the same logical shape: an upstream
+                # rule dropped the `transposed` flag. Raise loudly so
+                # we don't silently densify and hide the bug.
+                _be_only = [v for v in traced_vals
+                            if isinstance(v, BEllpack)]
+                _non_be_traced = [v for v in traced_vals
+                                  if not isinstance(v, BEllpack)]
+                if (len(_be_only) >= 2
+                        and not _non_be_traced
+                        and len({v.transposed for v in _be_only}) > 1
+                        and len({tuple(v.shape) for v in _be_only}) == 1):
+                    raise AssertionError(
+                        "_add_rule: mixed transposed-flag BEllpack "
+                        "operands (BE_T + BE_F) at the same logical "
+                        "shape — this should not happen. An upstream "
+                        "rule dropped the `transposed` flag. Audit "
+                        "the producer of one of these BEs:\n"
+                        + "\n".join(
+                            f"  BE shape={v.shape} T={v.transposed} "
+                            f"k={v.k} out_size={v.out_size} "
+                            f"in_size={v.in_size} batch={v.batch_shape}"
+                            for v in _be_only)
+                    )
                 # BE (any flag) + Diagonal/CD at same logical shape:
                 # promote to BCOO and concat. Sparsity is preserved
                 # because Diagonal/CD has a fixed n nonzeros and the
