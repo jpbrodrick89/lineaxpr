@@ -410,8 +410,33 @@ def _(op, *, n, **params):
             and op.start_row == 0 and op.end_row == 1
             and len(full_bd) == 1
             and full_bd[0] != len(full_shape) - 1):
-        # BE.todense() shape (1, in_size); squeeze leading singleton to
-        # match jaxpr's 1D input view.
+        # Inside-vmap row-vector BE viewed as 1D under jaxpr-frame:
+        # the BE's `(1, in_size)` shape represents a sparse vector of
+        # length `in_size`, and the bcast spreads it across an output
+        # whose `bd[0]` axis takes that vector's values. Structurally:
+        # build a BCOO of the output shape with one entry per non-
+        # sentinel band, placed at `axis=bd[0]` and zero on every
+        # other axis. Static cols → static indices (no sentinel
+        # contamination); traced cols fall through to dense.
+        if all(isinstance(c, np.ndarray) and c.ndim == 1 and c.shape[0] == 1
+               for c in op.in_cols):
+            # k bands × 1 row → at most k nonzeros
+            cols_concat = np.concatenate(
+                [c.reshape(1) for c in op.in_cols]
+            )
+            valid_idx = np.where(cols_concat >= 0)[0]
+            valid_cols = cols_concat[valid_idx]
+            # `op.data` is traced under jit. `valid_idx` is static, so
+            # gather via integer indexing rather than boolean indexing.
+            vals_concat = jnp.asarray(op.data).reshape(-1)
+            valid_vals = vals_concat[jnp.asarray(valid_idx)]
+            ndim = len(full_shape)
+            ax = int(full_bd[0])
+            indices = np.zeros((valid_idx.shape[0], ndim), np.intp)
+            indices[:, ax] = valid_cols
+            return sparse.BCOO(
+                (valid_vals, jnp.asarray(indices)), shape=full_shape,
+            )
         return lax.broadcast_in_dim(
             op.todense().squeeze(axis=0), full_shape, full_bd
         )
