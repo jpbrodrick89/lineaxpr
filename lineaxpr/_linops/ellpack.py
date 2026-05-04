@@ -630,38 +630,52 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     behaviour to `BEllpack.to_bcoo`. Mixing the two helpers is safe —
     both produce BCOOs at the LOGICAL view regardless of the BE's flag.
     """
-    if e.transposed:
-        canonical = replace_slots(e, transposed=False)
-        bcoo = _ellpack_to_bcoo(canonical)
-        return _bcoo_rotate_in_to_front(bcoo, n_batch=len(e.batch_shape))
     if e.n_batch > 0:
         return _ellpack_to_bcoo_batched(e)
+    # Unbatched. For T=True we build BCOO indices with cols first
+    # (V-axis at output 0), shape `e.shape = (in, out)`. Same data
+    # tensor as T=False; only the index column order differs. Avoids
+    # the prior `canonical → _bcoo_swap_last_two_sparse_axes` round-
+    # trip whose `bcoo.transpose` emits an HLO index-permute op.
     rows_1d = np.arange(e.start_row, e.end_row)
     k = e.k
+
+    def _stack(rows, cols, axis):
+        # T=True wants cols first (V at axis 0 of BCOO indices); T=False
+        # wants rows first (V at axis -1 of BCOO indices).
+        if e.transposed:
+            return (np.stack if isinstance(rows, np.ndarray)
+                    else jnp.stack)([cols, rows], axis=axis)
+        return (np.stack if isinstance(rows, np.ndarray)
+                else jnp.stack)([rows, cols], axis=axis)
 
     # k=1 fast path — single band, values already 1D.
     if k == 1:
         cols_b = e.in_cols[0]
         if isinstance(cols_b, np.ndarray):
             if (cols_b >= 0).all():
-                indices = np.stack([rows_1d, cols_b], axis=1)
+                indices = _stack(rows_1d, cols_b, axis=1)
                 # pyrefly: ignore [bad-argument-type]
                 return sparse.BCOO((e.data, indices), shape=e.shape,
-                                   indices_sorted=True, unique_indices=True)
+                                   indices_sorted=not e.transposed,
+                                   unique_indices=True)
             keep = np.nonzero(cols_b >= 0)[0]
-            indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
+            indices = _stack(rows_1d[keep], cols_b[keep], axis=1)
             # pyrefly: ignore [bad-argument-type]
             return sparse.BCOO((jnp.take(e.data, keep), indices),
                                shape=e.shape,
-                               indices_sorted=True, unique_indices=True)
+                               indices_sorted=not e.transposed,
+                               unique_indices=True)
         # Traced cols — mask values.
         cols_j = jnp.asarray(cols_b)
         mask = cols_j >= 0
         cols_safe = jnp.where(mask, cols_j, 0)
         vals_safe = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
-        indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
+        indices = _stack(jnp.asarray(rows_1d), cols_safe, axis=1)
+        # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((vals_safe, indices), shape=e.shape,
-                           indices_sorted=True, unique_indices=True)
+                           indices_sorted=not e.transposed,
+                           unique_indices=True)
 
     # k>=2 path — values is (nrows, k). Dispatch by cols-type and k:
     #   * Static cols: always vectorize. Indices are built in pure np
@@ -688,11 +702,11 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         vals_flat = e.data.T.reshape(-1)
         mask = cols_flat >= 0
         if mask.all():
-            indices = np.stack([rows_flat, cols_flat], axis=1)
+            indices = _stack(rows_flat, cols_flat, axis=1)
             # pyrefly: ignore [bad-argument-type]
             return sparse.BCOO((vals_flat, indices), shape=e.shape)
         keep = np.nonzero(mask)[0]
-        indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
+        indices = _stack(rows_flat[keep], cols_flat[keep], axis=1)
         # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((jnp.take(vals_flat, keep), indices),
                            shape=e.shape)
@@ -710,7 +724,8 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         rows_flat = jnp.concatenate(rows_parts)
         cols_flat = jnp.concatenate(cols_parts)
         vals_flat = jnp.concatenate(vals_parts)
-        indices = jnp.stack([rows_flat, cols_flat], axis=1)
+        indices = _stack(rows_flat, cols_flat, axis=1)
+        # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((vals_flat, indices), shape=e.shape)
     # Vectorized for small nrows (traced cols). `per_band_cols` is
     # already a list of K 1D arrays (mixed np/jnp); `jnp.concatenate`
@@ -722,7 +737,8 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     mask = cols_flat >= 0
     cols_safe = jnp.where(mask, cols_flat, 0)
     vals_safe = jnp.where(mask, vals_flat, jnp.zeros((), e.dtype))
-    indices = jnp.stack([jnp.asarray(rows_flat_np), cols_safe], axis=1)
+    indices = _stack(jnp.asarray(rows_flat_np), cols_safe, axis=1)
+    # pyrefly: ignore [bad-argument-type]
     return sparse.BCOO((vals_safe, indices), shape=e.shape)
 
 
