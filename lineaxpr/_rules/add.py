@@ -140,6 +140,49 @@ def _broadcast_be_to_batch(be, target_batch_shape):
     )
 
 
+def _bcoo_move_v_to_front(bc):
+    """BCOO with V at axis -1 → BCOO with V at axis 0, n_batch=0.
+
+    BCOO.transpose forbids permuting batch axes with non-batch axes,
+    so the natural `(ndim-1, 0, ..., ndim-2)` permutation we'd need to
+    bring V from the trailing axis to the leading axis is unsupported
+    for batched BCOOs. We bypass the restriction by flattening the
+    batch axes into the index columns and emitting an unbatched
+    (n_batch=0) BCOO at the V-at-0 layout.
+
+    Only handles n_dense=0 BCOOs. Returns None on other forms so the
+    caller can fall back to densify-and-transpose.
+    """
+    if not isinstance(bc, sparse.BCOO):
+        return None
+    if bc.n_dense != 0:
+        return None
+    n_batch = bc.n_batch
+    sh = tuple(bc.shape)
+    V = sh[-1]
+    sparse_shape = sh[n_batch:]            # includes V at -1
+    n_sparse = len(sparse_shape)
+    batch_shape = sh[:n_batch]
+    B = int(np.prod(batch_shape)) if batch_shape else 1
+    nse_per = bc.data.shape[-1]
+    # Flatten batch and per-batch nse together.
+    flat_data = bc.data.reshape(B * nse_per)
+    flat_indices = bc.indices.reshape(B * nse_per, n_sparse)
+    if batch_shape:
+        # Build per-row batch index columns from a meshgrid.
+        grids = np.indices(batch_shape).reshape(n_batch, B)
+        batch_cols = np.repeat(grids, nse_per, axis=1).T  # (B*nse, n_batch)
+        batch_cols = jnp.asarray(batch_cols, dtype=flat_indices.dtype)
+    else:
+        batch_cols = jnp.zeros((B * nse_per, 0), dtype=flat_indices.dtype)
+    v_col = flat_indices[:, -1:]                # (rows, 1)
+    sparse_other = flat_indices[:, :-1]         # (rows, n_sparse - 1)
+    new_indices = jnp.concatenate(
+        [v_col, batch_cols, sparse_other], axis=1)
+    new_shape = (V,) + batch_shape + sparse_shape[:-1]
+    return sparse.BCOO((flat_data, new_indices), shape=new_shape)
+
+
 def _densify_if_wider_than_dense(op, n):
     """Densify a BEllpack whose k >= in_size — no storage win over dense.
 
@@ -408,11 +451,9 @@ def _add_rule(invals, traced, n, **params):
                 if res.ndim == 2:
                     return res.transpose(axes=(1, 0))
                 if res.ndim >= 3:
-                    # BCOO.transpose forbids permuting batch axes with
-                    # non-batch axes; the move-V-from-tail-to-front
-                    # permutation we'd need crosses that boundary. Fall
-                    # back to dense; structural sparsity is recovered if
-                    # a downstream rule resparsifies.
+                    moved = _bcoo_move_v_to_front(res)
+                    if moved is not None:
+                        return moved
                     perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
                     return jnp.transpose(res.todense(), perm)
                 return res
@@ -520,6 +561,9 @@ def _add_rule(invals, traced, n, **params):
                         if res.ndim == 2:
                             return res.transpose(axes=(1, 0))
                         if res.ndim >= 3:
+                            moved = _bcoo_move_v_to_front(res)
+                            if moved is not None:
+                                return moved
                             perm = ((res.ndim - 1,)
                                     + tuple(range(res.ndim - 1)))
                             return jnp.transpose(res.todense(), perm)

@@ -50,6 +50,10 @@ def _concatenate_rule(invals, traced, n, **params):
             if res.ndim == 2:
                 return res.transpose(axes=(1, 0))
             if res.ndim >= 3:
+                from .add import _bcoo_move_v_to_front
+                moved = _bcoo_move_v_to_front(res)
+                if moved is not None:
+                    return moved
                 perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
                 return jnp.transpose(res.todense(), perm)
             return res
