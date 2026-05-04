@@ -473,6 +473,103 @@ def _(op, *, n, **params):
                 out_size=B, in_size=op.in_size,
                 batch_shape=new_batch, transposed=True,
             )
+        # Prepend leading batch axes to an already-batched BE_T (V-at-0
+        # analogue of main's "Prepend leading batch axes" path). Used by
+        # LUKSAN16LS step 22: BE_T(in=V, batch=(4,), out=49) bid'd to
+        # `(V, 3, 4, 49)` with `bd=(0, 2, 3)` — V stays at 0, the existing
+        # batch+out shift right by `n_prepend`, new prepend axes occupy
+        # positions 1..n_prepend.
+        input_rank = op.n_batch + 2  # V + batch + out for T=True
+        if (input_rank >= 2
+                and len(full_bd_t) == input_rank
+                and len(full_shape_t) > input_rank
+                and full_bd_t[0] == 0
+                and full_bd_t[1:] == tuple(
+                    range(len(full_shape_t) - (input_rank - 1),
+                          len(full_shape_t)))
+                and full_shape_t[0] == op.in_size
+                and full_shape_t[-1] == op.out_size):
+            n_prepend = len(full_shape_t) - input_rank
+            prepend = tuple(int(s) for s in full_shape_t[1:1 + n_prepend])
+            new_batch = prepend + op.batch_shape
+            new_values_shape = prepend + op.data.shape
+            new_data = jnp.broadcast_to(op.data, new_values_shape)
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                if isinstance(c, slice):
+                    new_in_cols.append(c)  # pyrefly: ignore [bad-argument-type]
+                elif isinstance(c, np.ndarray):
+                    if c.ndim == 1:
+                        new_in_cols.append(c)  # 1D shared across batch
+                    else:
+                        new_in_cols.append(
+                            np.broadcast_to(c, prepend + c.shape).copy())
+                else:
+                    c_arr = jnp.asarray(c)
+                    if c_arr.ndim == 1:
+                        new_in_cols.append(c_arr)
+                    else:
+                        new_in_cols.append(
+                            jnp.broadcast_to(c_arr, prepend + c_arr.shape))
+            return BEllpack(
+                start_row=op.start_row, end_row=op.end_row,
+                in_cols=tuple(new_in_cols), data=new_data,
+                out_size=op.out_size, in_size=op.in_size,
+                batch_shape=new_batch, transposed=True,
+            )
+        # Multi-axis size-1 placeholder middle-dims pattern (LUKSAN16LS-class):
+        # `BE_T(in, out) → (in, 1, ..., 1, out)` with `bd=(0, ndim-1)`.
+        # This is the V-at-0 analogue of the historical "trailing-singleton"
+        # path (commit 0123250) for the user's pre-vmap `bid(vec → (1,..,1,k))`
+        # pattern. Emit a batched T=True BE with `batch_shape=(1,...,1)` so
+        # subsequent muls broadcast the size-1 placeholders against closures
+        # of larger size and the chain stays structural.
+        # Keep 1D cols as 1D (shared across batch) — this is the load-bearing
+        # invariant for downstream `reduce_sum` partial-batch-reduction safe
+        # check, which skips 1D cols (`c.ndim == 1: continue`) and so allows
+        # the structural reduction over batch axes after `mul`s have expanded
+        # the values' batch_shape but left cols 1D.
+        if (op.n_batch == 0
+                and len(full_shape_t) >= 4
+                and len(full_bd_t) == 2
+                and full_bd_t[0] == 0
+                and full_bd_t[1] == len(full_shape_t) - 1
+                and full_shape_t[0] == op.shape[0]
+                and full_shape_t[-1] == op.shape[1]
+                and all(s == 1 for s in full_shape_t[1:-1])):
+            new_batch = tuple(int(s) for s in full_shape_t[1:-1])  # all 1s
+            n_new = len(new_batch)
+            new_data = op.data
+            for _ in range(n_new):
+                new_data = jnp.expand_dims(new_data, axis=0)
+            new_in_cols: list[ColArr] = []
+            for c in op.in_cols:
+                # Leave 1D cols 1D (shared across batch). Multi-D / traced
+                # cols get the size-1 axes prepended.
+                if isinstance(c, np.ndarray):
+                    if c.ndim == 1:
+                        new_in_cols.append(c)
+                    else:
+                        c_b = c
+                        for _ in range(n_new):
+                            c_b = np.expand_dims(c_b, 0)
+                        new_in_cols.append(c_b)
+                elif isinstance(c, slice):
+                    new_in_cols.append(c)  # pyrefly: ignore [bad-argument-type]
+                else:
+                    c_arr = jnp.asarray(c)
+                    if c_arr.ndim == 1:
+                        new_in_cols.append(c_arr)
+                    else:
+                        for _ in range(n_new):
+                            c_arr = jnp.expand_dims(c_arr, 0)
+                        new_in_cols.append(c_arr)
+            return BEllpack(
+                start_row=op.start_row, end_row=op.end_row,
+                in_cols=tuple(new_in_cols), data=new_data,
+                out_size=op.out_size, in_size=op.in_size,
+                batch_shape=new_batch, transposed=True,
+            )
         return lax.broadcast_in_dim(
             op.todense(),
             tuple(params["shape"]),
@@ -694,7 +791,8 @@ def _(op, *, n, **params):
 
 @reduce_sum_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    axes = params["axes"]
+    raw_axes = tuple(params["axes"])
+    axes = raw_axes
     # Translate V-augmented axes to structural axes (batch + out).
     # transposed=True: V at axis 0, structural axes shift down by 1.
     # transposed=False: V at axis -1, structural axes are 0..n_batch.
@@ -731,8 +829,10 @@ def _(op, *, n, **params):
                 new_values = op.data.sum(axis=axes_t)
                 new_in_cols: list[ColArr] = []
                 for c in op.in_cols:
-                    if c.ndim == 1:
+                    if hasattr(c, "ndim") and c.ndim == 1:
                         new_in_cols.append(c)
+                    elif isinstance(c, slice):
+                        new_in_cols.append(c)  # pyrefly: ignore [bad-argument-type]
                     else:
                         new_in_cols.append(c.squeeze(axis=axes_t))
                 new_batch = tuple(
@@ -743,6 +843,7 @@ def _(op, *, n, **params):
                     tuple(new_in_cols), new_values,
                     op.out_size, op.in_size,
                     batch_shape=new_batch,
+                    transposed=op.transposed,
                 )
         # Out-axis-only reduction on single-batch-axis BEllpack.
         if (axes_t == (op.n_batch,) and op.n_batch == 1
@@ -868,9 +969,11 @@ def _(op, *, n, **params):
             return jnp.sum(unbatched, axis=0)
         return unbatched
 
-    # Dense fallback.
+    # Dense fallback. `op.todense()` is V-augmented (V at axis 0 for
+    # T=True, axis -1 for T=False), so we sum the original RAW axes —
+    # not the structurally-shifted `axes`.
     dense = op.todense()
-    return jnp.sum(dense, axis=tuple(axes))
+    return jnp.sum(dense, axis=raw_axes)
 
 
 # ---------------------------------------------------------------------------

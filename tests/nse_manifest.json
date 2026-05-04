@@ -2,6 +2,11 @@
   "_format_version": 1,
   "_note": "nse (number of stored entries) regression manifest for bcoo_jacobian over sif2jax CUTEst problems. Increases fail tests. Decreases require a manifest bump \u2014 run `uv run python -m tests.update_nse_manifest` to regenerate.",
   "problems": {
+    "AIRCRFTB": {
+      "n": 8,
+      "nse": 60,
+      "group": "bounded"
+    },
     "ARWHEAD": {
       "n": 5000,
       "nse": 14998,
@@ -126,6 +131,11 @@
       "n": 3,
       "nse": 3,
       "group": "unconstrained"
+    },
+    "DGOSPEC": {
+      "n": 3,
+      "nse": 7,
+      "group": "bounded"
     },
     "DIAGIQB": {
       "n": 10,
@@ -591,6 +601,66 @@
       "n": 5000,
       "nse": 34988,
       "group": "unconstrained"
+    },
+    "TORSION1": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION2": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION3": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION4": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION5": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION6": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSIONA": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONB": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONC": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIOND": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONE": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONF": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
     },
     "WOODS": {
       "n": 4000,
