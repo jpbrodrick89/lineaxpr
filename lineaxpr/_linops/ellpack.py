@@ -989,12 +989,19 @@ def _(op, *, n, padding_value, **params):
             return op.pad_rows(int(before), int(after))
 
     # N-D zero-interior pad on batched BEllpack.
+    non_v_axes = tuple(i for i in range(len(config)) if i != v_axis)
     if (op.n_batch > 0
             and in_axis_noop
             and len(config) == op.n_batch + 2
-            and all(int(c[2]) == 0 for c in config[:-1])):
-        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-2])
-        out_before, out_after = int(config[-2][0]), int(config[-2][1])
+            and all(int(config[i][2]) == 0 for i in non_v_axes)):
+        if op.transposed:
+            # config layout = (V, *batch, out)
+            batch_pads = tuple((int(c[0]), int(c[1])) for c in config[1:-1])
+            out_before, out_after = int(config[-1][0]), int(config[-1][1])
+        else:
+            # config layout = (*batch, out, V)
+            batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-2])
+            out_before, out_after = int(config[-2][0]), int(config[-2][1])
         new_batch_shape = tuple(
             b + s + a for (b, a), s in zip(batch_pads, op.batch_shape)
         )
@@ -1015,6 +1022,7 @@ def _(op, *, n, padding_value, **params):
             tuple(new_in_cols), new_values,
             op.out_size, op.in_size,
             batch_shape=new_batch_shape,
+            transposed=op.transposed,
         )
         return padded_batch.pad_rows(out_before, out_after)
 

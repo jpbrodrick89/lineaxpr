@@ -44,13 +44,17 @@ def _concatenate_rule(invals, traced, n, **params):
         res = _concatenate_rule(flipped, traced, n, **new_params)
         if isinstance(res, BEllpack):
             return replace_slots(res, transposed=True)
-        if (isinstance(res, sparse.BCOO)
-                and res.indices.ndim == 2
-                and res.indices.shape[-1] == 2):
-            return res.transpose(axes=(1, 0))
+        # The recurse computed in canonical V-at-(-1) frame; we need V
+        # back at axis 0.
+        if isinstance(res, sparse.BCOO):
+            if res.ndim == 2:
+                return res.transpose(axes=(1, 0))
+            if res.ndim >= 3:
+                perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+                return jnp.transpose(res.todense(), perm)
+            return res
         if hasattr(res, "ndim") and res.ndim >= 2:
-            perm = (tuple(range(res.ndim - 2))
-                    + (res.ndim - 1, res.ndim - 2))
+            perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
             return jnp.transpose(res, perm)
         return res
 

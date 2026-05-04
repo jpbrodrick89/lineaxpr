@@ -401,10 +401,23 @@ def _add_rule(invals, traced, n, **params):
             res = _add_rule_canonical(flipped, traced, n)
             if isinstance(res, BEllpack):
                 return replace_slots(res, transposed=True)
-            if isinstance(res, sparse.BCOO) and res.indices.ndim == 2 and res.indices.shape[-1] == 2:
-                return res.transpose(axes=(1, 0))
+            # The recurse computed in canonical V-at-(-1) frame; we need
+            # V back at axis 0. For ndim==2 that's a swap; for ndim>2
+            # it's "move last axis to front".
+            if isinstance(res, sparse.BCOO):
+                if res.ndim == 2:
+                    return res.transpose(axes=(1, 0))
+                if res.ndim >= 3:
+                    # BCOO.transpose forbids permuting batch axes with
+                    # non-batch axes; the move-V-from-tail-to-front
+                    # permutation we'd need crosses that boundary. Fall
+                    # back to dense; structural sparsity is recovered if
+                    # a downstream rule resparsifies.
+                    perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+                    return jnp.transpose(res.todense(), perm)
+                return res
             if hasattr(res, "ndim") and res.ndim >= 2:
-                perm = tuple(range(res.ndim - 2)) + (res.ndim - 1, res.ndim - 2)
+                perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
                 return jnp.transpose(res, perm)
             return res
         if True in be_flags:
@@ -501,13 +514,19 @@ def _add_rule(invals, traced, n, **params):
                     res = _add_rule_canonical(flipped, traced, n)
                     if isinstance(res, BEllpack):
                         return replace_slots(res, transposed=True)
-                    if (isinstance(res, sparse.BCOO)
-                            and res.indices.ndim == 2
-                            and res.indices.shape[-1] == 2):
-                        return res.transpose(axes=(1, 0))
+                    # The recurse computed in canonical V-at-(-1) frame;
+                    # we need V back at axis 0.
+                    if isinstance(res, sparse.BCOO):
+                        if res.ndim == 2:
+                            return res.transpose(axes=(1, 0))
+                        if res.ndim >= 3:
+                            perm = ((res.ndim - 1,)
+                                    + tuple(range(res.ndim - 1)))
+                            return jnp.transpose(res.todense(), perm)
+                        return res
                     if hasattr(res, "ndim") and res.ndim >= 2:
-                        perm = (tuple(range(res.ndim - 2))
-                                + (res.ndim - 1, res.ndim - 2))
+                        perm = ((res.ndim - 1,)
+                                + tuple(range(res.ndim - 1)))
                         return jnp.transpose(res, perm)
                     return res
                 # If a BCOO operand is present and all operands have a

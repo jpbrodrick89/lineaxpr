@@ -300,18 +300,26 @@ def _(op, *, n, **params):
 
 @reshape_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    # Walk-frame new_sizes has n at -1; structural shape is the prefix.
-    new_sizes = params["new_sizes"][:-1]
-    if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
-        batch_shape = new_sizes[:-1]
-        nrows = new_sizes[-1]
-        flat_idx = np.arange(op.n).reshape(new_sizes)
-        data = jnp.broadcast_to(jnp.asarray(op.data), new_sizes)
+    # V-at-0 walk-frame: new_sizes[0] == op.n (V) and the trailing axes
+    # factor to op.n. Empirically the only branch that fires for any
+    # sweep problem (a previous V-at-(-1) branch — `prod(new_sizes[:-1])
+    # == op.n` — was dead code on the full sweep, removed). Emit a
+    # T=True BE so V stays at axis 0; verified equivalent to the
+    # build-BE_F-then-transpose construction.
+    full = params["new_sizes"]
+    if (len(full) >= 2 and full[0] == op.n
+            and int(np.prod(full[1:])) == op.n):
+        structural = full[1:]
+        batch_shape = structural[:-1]
+        nrows = structural[-1]
+        flat_idx = np.arange(op.n).reshape(structural)
+        data = jnp.broadcast_to(jnp.asarray(op.data), structural)
         return BEllpack(
             start_row=0, end_row=nrows,
             in_cols=(flat_idx,), data=data,
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
+            transposed=True,
         )
     return lax.reshape(op.todense(), params["new_sizes"],
                        dimensions=params.get("dimensions"),
