@@ -141,30 +141,36 @@ class BEllpack:
         # the "never loop over arrays" rule (CLAUDE.md). Cols stack is
         # static (tuple iteration at trace time), values is passed
         # whole (no per-band slicing).
-        dense = (self._todense_batched() if self.n_batch > 0
-                 else self._todense_unbatched())
-        if self.transposed:
-            # Canonical layout is (*batch_shape, out_size, in_size).
-            # transposed=True moves in_size (V) to axis 0.
-            ndim = dense.ndim
-            perm = (ndim - 1,) + tuple(range(ndim - 1))
-            dense = jnp.transpose(dense, perm)
-        return dense
+        #
+        # `transposed=True` scatters directly into a V-at-0 canvas
+        # (`(in_size, *batch, out_size)`), avoiding a real-data
+        # `lax.transpose` of a `(*batch, out, in)` tensor afterwards.
+        # Same data, swapped (row, col) → (col, row) index pair on the
+        # scatter target.
+        return (self._todense_batched() if self.n_batch > 0
+                else self._todense_unbatched())
 
     def _todense_unbatched(self):
         rows_1d = np.arange(self.start_row, self.end_row)
-        dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
+        if self.transposed:
+            dense = jnp.zeros((self.in_size, self.out_size), self.dtype)
+        else:
+            dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
         if k == 1:
             cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
-                return dense.at[rows_1d, cols_b].add(
+                idx = ((cols_b, rows_1d) if self.transposed
+                       else (rows_1d, cols_b))
+                return dense.at[idx].add(
                     self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_b >= 0
             safe_cols = jnp.where(mask, cols_b, 0)
             safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
-            return dense.at[rows_1d, safe_cols].add(
+            idx = ((safe_cols, rows_1d) if self.transposed
+                   else (rows_1d, safe_cols))
+            return dense.at[idx].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
@@ -176,15 +182,27 @@ class BEllpack:
             static_ok = False
         rows_nk = np.broadcast_to(rows_1d[:, None], (self.nrows, k))
         if static_ok:
-            return dense.at[rows_nk, cols_nk].add(self.data)
+            idx = ((cols_nk, rows_nk) if self.transposed
+                   else (rows_nk, cols_nk))
+            return dense.at[idx].add(self.data)
         mask = cols_nk >= 0
         safe_cols = jnp.where(mask, cols_nk, 0)
         safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
-        return dense.at[rows_nk, safe_cols].add(safe_vals)
+        idx = ((safe_cols, rows_nk) if self.transposed
+               else (rows_nk, safe_cols))
+        return dense.at[idx].add(safe_vals)
 
     def _todense_batched(self):
-        out = jnp.zeros(self.batch_shape + (self.out_size, self.in_size),
-                        self.dtype)
+        # T=False canvas: (*batch, out, in). T=True canvas:
+        # (in, *batch, out) so the trailing transpose is unnecessary.
+        if self.transposed:
+            out = jnp.zeros(
+                (self.in_size,) + self.batch_shape + (self.out_size,),
+                self.dtype)
+        else:
+            out = jnp.zeros(
+                self.batch_shape + (self.out_size, self.in_size),
+                self.dtype)
         k = self.k
         batch_grids = np.meshgrid(
             *[np.arange(d) for d in self.batch_shape],
@@ -200,13 +218,21 @@ class BEllpack:
             else:
                 cols_nd = jnp.asarray(cols_b)
             if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
-                return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(
+                if self.transposed:
+                    idx = (cols_nd,) + tuple(batch_idx_arrays) + (row_idx,)
+                else:
+                    idx = tuple(batch_idx_arrays) + (row_idx, cols_nd)
+                return out.at[idx].add(
                     self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_nd >= 0
             safe_cols = jnp.where(mask, cols_nd, 0)
             safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
-            return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(
+            if self.transposed:
+                idx = (safe_cols,) + tuple(batch_idx_arrays) + (row_idx,)
+            else:
+                idx = tuple(batch_idx_arrays) + (row_idx, safe_cols)
+            return out.at[idx].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
@@ -233,11 +259,19 @@ class BEllpack:
         batch_idx_k = tuple(_expand(a) for a in batch_idx_arrays)
         row_idx_k = _expand(row_idx)
         if static_ok:
-            return out.at[batch_idx_k + (row_idx_k, cols_ndk)].add(self.data)
+            if self.transposed:
+                idx = (cols_ndk,) + batch_idx_k + (row_idx_k,)
+            else:
+                idx = batch_idx_k + (row_idx_k, cols_ndk)
+            return out.at[idx].add(self.data)
         mask = cols_ndk >= 0
         safe_cols = jnp.where(mask, cols_ndk, 0)
         safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
-        return out.at[batch_idx_k + (row_idx_k, safe_cols)].add(safe_vals)
+        if self.transposed:
+            idx = (safe_cols,) + batch_idx_k + (row_idx_k,)
+        else:
+            idx = batch_idx_k + (row_idx_k, safe_cols)
+        return out.at[idx].add(safe_vals)
 
     def __neg__(self):
         return replace_slots(self, data=-self.data)
