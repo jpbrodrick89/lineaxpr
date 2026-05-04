@@ -391,7 +391,8 @@ class BEllpack:
             )
             return BEllpack(self.start_row, self.end_row, new_in_cols,
                            new_values, new_out_size, self.in_size,
-                           batch_shape=new_batch_shape)
+                           batch_shape=new_batch_shape,
+                           transposed=self.transposed)
 
         # General case: out axis moves. Pad the compressed row axis to
         # full out_size, then apply the full permutation to values and
@@ -415,7 +416,8 @@ class BEllpack:
         )
         return BEllpack(0, new_out_size, new_in_cols, new_values,
                        new_out_size, self.in_size,
-                       batch_shape=new_batch_shape)
+                       batch_shape=new_batch_shape,
+                       transposed=self.transposed)
 
 
 def _transpose_col_batch(col, batch_perm):
