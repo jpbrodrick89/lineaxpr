@@ -842,16 +842,31 @@ def _(op, *, n, **params):
         return jnp.zeros((in_size,), op.dtype).at[
             jnp.where(mask, cols_stacked, 0)].add(jnp.where(mask, vals_stacked, jnp.zeros((), op.dtype)))
 
-    # T=True structural-fallthrough: convert to BCOO and let
-    # `bcoo_reduce_sum` handle it. Preserves sparsity for cases where
-    # we don't have a direct BE branch (e.g. simultaneous batch+out
-    # reduction on multi-batch BE_T — FMINSURF-class chains).
-    if op.transposed:
-        # Recover the original V-augmented axes (we shifted by -1
-        # at the top for T=True structural lookup).
-        raw_axes = tuple(a + 1 for a in axes)
-        bcoo_op = op.to_bcoo()
-        return sparse.bcoo_reduce_sum(bcoo_op, axes=raw_axes)
+    # Full structural reduction: all batch axes + out axis. Decompose
+    # into "reduce batch via unbatch+add" then "reduce out via row-sum"
+    # — both steps already have BE-preserving branches. Triggered by
+    # FMINSURF-class chains where simultaneous batch+out reduction on
+    # multi-batch BE doesn't match any single existing branch.
+    if (op.n_batch > 0
+            and tuple(sorted(axes)) == tuple(range(op.n_batch + 1))
+            and op.start_row == 0 and op.end_row == op.out_size):
+        from lineaxpr._rules.add import _add_rule  # noqa: PLC0415
+        slices = _bellpack_unbatch(op)
+        if len(slices) == 1:
+            unbatched = slices[0]
+        else:
+            unbatched = _add_rule(list(slices), [True] * len(slices), n)
+        # Reduce remaining out axis. The unbatched LinOp may be BE or
+        # BCOO; dispatch accordingly. For BE we pass V-augmented axes
+        # (axis 1 for T=True, axis 0 for T=False — the out axis).
+        if isinstance(unbatched, BEllpack):
+            out_axis = 1 if unbatched.transposed else 0
+            return reduce_sum_op(unbatched, n=n, axes=(out_axis,))
+        if isinstance(unbatched, sparse.BCOO):
+            return sparse.bcoo_reduce_sum(unbatched, axes=(0,))
+        if hasattr(unbatched, 'ndim') and unbatched.ndim >= 1:
+            return jnp.sum(unbatched, axis=0)
+        return unbatched
 
     # Dense fallback.
     dense = op.todense()
