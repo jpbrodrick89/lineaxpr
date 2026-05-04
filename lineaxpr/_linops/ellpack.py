@@ -1069,6 +1069,43 @@ def _(op, *, n, **params):
     if (op.n_batch == 0 and dimensions == (out_axis,)
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1):
         return op
+    # T=True: shape (V, *batch, 1). Squeezing the trailing size-1 out
+    # axis (`n_batch + 1`) collapses batch into out, producing
+    # BE_T(in=V, batch=(), out=prod(batch)).
+    if (op.transposed and op.n_batch >= 1
+            and op.out_size == 1
+            and op.start_row == 0 and op.end_row == 1
+            and dimensions == (op.n_batch + 1,)):
+        B = int(np.prod(op.batch_shape))
+        if op.k == 1:
+            new_values = op.data.reshape(B)
+        else:
+            new_values = op.data.reshape(B, op.k)
+        new_in_cols: list[ColArr] = []
+        ok = True
+        for c in op.in_cols:
+            if isinstance(c, np.ndarray):
+                if c.ndim == op.n_batch + 1:
+                    new_in_cols.append(c.reshape(B))
+                elif c.ndim == 1 and c.shape[0] == B:
+                    new_in_cols.append(c)
+                else:
+                    ok = False; break
+            elif isinstance(c, slice):
+                rs = np.arange(c.start or 0, c.stop or 1, c.step or 1)
+                if len(rs) == 1:
+                    new_in_cols.append(np.broadcast_to(rs, (B,)).copy())
+                else:
+                    ok = False; break
+            else:
+                ok = False; break
+        if ok:
+            return BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), data=new_values,
+                out_size=B, in_size=op.in_size,
+                transposed=True,
+            )
     if (op.n_batch >= 1
             and op.out_size == 1
             and op.start_row == 0 and op.end_row == 1
