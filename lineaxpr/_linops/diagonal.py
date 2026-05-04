@@ -361,7 +361,17 @@ def _(op, *, n, **params):
     full_shape = tuple(params["shape"])
     full_bd = tuple(params["broadcast_dimensions"])
     if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
-        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
+        # Stay sparse: Diagonal has only n nonzeros. Densifying via
+        # `lax.broadcast_in_dim` produces a (n, n, ...) dense tensor
+        # that downstream multiplies blow up to n^3 (PENALTY3 hits this:
+        # `bid(Diag) -> (n,n,1)` and `bid(Diag) -> (n,1,n)` then mul →
+        # (n,n,n) intermediate). Going via BCOO keeps it at n entries.
+        try:
+            bcoo = op.to_bcoo()
+            return sparse.bcoo_broadcast_in_dim(
+                bcoo, shape=full_shape, broadcast_dimensions=full_bd)
+        except (NotImplementedError, ValueError):
+            return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
     # for the spatial-only structural checks below.
     shape = full_shape[:-1]
@@ -413,7 +423,17 @@ def _(op, *, n, **params):
     full_shape = tuple(params["shape"])
     full_bd = tuple(params["broadcast_dimensions"])
     if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
-        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
+        # Stay sparse: Diagonal has only n nonzeros. Densifying via
+        # `lax.broadcast_in_dim` produces a (n, n, ...) dense tensor
+        # that downstream multiplies blow up to n^3 (PENALTY3 hits this:
+        # `bid(Diag) -> (n,n,1)` and `bid(Diag) -> (n,1,n)` then mul →
+        # (n,n,n) intermediate). Going via BCOO keeps it at n entries.
+        try:
+            bcoo = op.to_bcoo()
+            return sparse.bcoo_broadcast_in_dim(
+                bcoo, shape=full_shape, broadcast_dimensions=full_bd)
+        except (NotImplementedError, ValueError):
+            return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
     # for the spatial-only structural checks below.
     shape = full_shape[:-1]
