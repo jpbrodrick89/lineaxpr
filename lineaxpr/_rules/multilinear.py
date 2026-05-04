@@ -77,6 +77,7 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
         start_row=0, end_row=new_out,
         in_cols=new_in_cols, data=new_vals,
         out_size=new_out, in_size=in_size, batch_shape=new_batch,
+        transposed=be.transposed,
     )
     if not traced_is_first:
         # dot_general(closure, BE) aval is (*remaining_M, *remaining_BE);
@@ -123,27 +124,43 @@ def _dot_general_rule(invals, traced, n, **params):
             tensor = lax.transpose(M, remaining + c_M)
         return traced_op.data * tensor
 
-    # Structural BEllpack × closure-matrix path: only fires for
-    # BE.transposed=False (V at -1, walk-space convention). Skip for
-    # transposed BE — let it fall through to the dense path where
-    # jaxpr params apply directly. `c_tr_use` here is in walk-space
-    # (V removed); for unbatched 1D primal that's `c_tr - 1` if c_tr
-    # pointed at V, else `c_tr` itself.
+    # Structural BEllpack × closure-matrix path. Maps the jaxpr's
+    # contract axis (in V-augmented coords) to walk-space:
+    # * T=False BE: shape (*batch, out, V), V at axis -1. Structural
+    #   axes are 0..n_batch (in_size at -1 = V is excluded). So
+    #   c_be = c_tr when c_tr <= n_batch (else c_tr points at V,
+    #   which we can't contract structurally — fall through to dense).
+    # * T=True BE: shape (V, *batch, out), V at axis 0. Structural
+    #   axes are 1..n_batch+1 (V excluded). So c_be = c_tr - 1 when
+    #   1 <= c_tr <= n_batch+1.
+    # T=True case is restricted to `traced_is_first=True` because the
+    # `not traced_is_first` branch in `_be_dot_closure_matrix` permutes
+    # batch↔out for T=False output layout; the equivalent T=True
+    # permutation isn't implemented yet (V would land at the wrong
+    # position vs vmap's choice for BE-second dot_general).
     if (isinstance(traced_op, BEllpack)
-            and not traced_op.transposed
             and M.ndim == 2
             and len(c_tr) == 1 and len(c_M) == 1
             and traced_op.start_row == 0
-            and traced_op.end_row == traced_op.out_size):
-        # For BE.transposed=False under vmap(-1, -1), operand has V at -1
-        # (axis 1 of 2D BE shape). c_tr=(0,) (primal=out axis) is the
-        # natural contraction; c_be should be 0 in walk-space.
-        c_be = c_tr[0]
-        be_result = _be_dot_closure_matrix(
-            traced_op, M, c_be, c_M[0], traced_is_first,
-        )
-        if be_result is not None:
-            return be_result
+            and traced_op.end_row == traced_op.out_size
+            and (not traced_op.transposed or traced_is_first)):
+        n_batch = traced_op.n_batch
+        if traced_op.transposed:
+            if 1 <= c_tr[0] <= n_batch + 1:
+                c_be = c_tr[0] - 1
+            else:
+                c_be = None
+        else:
+            if 0 <= c_tr[0] <= n_batch:
+                c_be = c_tr[0]
+            else:
+                c_be = None
+        if c_be is not None:
+            be_result = _be_dot_closure_matrix(
+                traced_op, M, c_be, c_M[0], traced_is_first,
+            )
+            if be_result is not None:
+                return be_result
 
     # Dense fallback: just trust JAX vmap's c_tr/c_M (they already
     # account for V's position in each operand). No translation needed.
