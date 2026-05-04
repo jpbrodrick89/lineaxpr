@@ -306,17 +306,64 @@ materialize_rules[lax.cumsum_p] = _cumsum_rule
 materialize_rules[lax.div_p] = _div_rule
 
 def _transpose_rule(invals, traced, n, **params):
-    """Phase B: dispatch to `op.transpose(perm)`. Each LinOp / BCOO /
-    plain array implements its own transpose — symmetric forms return
-    self, BE 2D cross-V swap flips the flag, identity perms early-out
-    inside the method. Unsupported cross-V perms on BEllpack convert
-    to BCOO and transpose there (BCOO supports any sparse-axis perm
-    after promotion to fully-sparse via `_bcoo_to_fully_sparse`)."""
-    del n
+    """Translate the jaxpr perm to walk-frame, then dispatch to
+    `op.transpose(walk_perm)`. For BE LinOps:
+
+    1. Find V's input position `bdim` from the T flag (0 for T=True,
+       -1 for T=False).
+    2. Find V's output position `n_out = perm.index(bdim)`.
+    3. If `n_out == 0`: output BE T=True (V at LinOp axis 0).
+       If `n_out == ndim-1`: output BE T=False (V at LinOp axis -1).
+       Otherwise V lands at middle — not structurally representable;
+       fall back to dense.
+    4. For the structural cases, the walk perm strips V from in/out
+       (a length `ndim-1` perm over non-V axes). Apply via BE.transpose
+       and set output flag accordingly. Identity walk perms early-out
+       with just a flag adjustment (free flag flip when V crosses).
+
+    This is origin/main's perm-translation trick generalized to
+    handle phase-b's V-at-0 (T=True) layout in addition to V-at-(-1).
+    """
     (op,), (t,) = invals, traced
     if not t:
         return None
-    perm = params["permutation"]
+    perm = tuple(int(p) for p in params["permutation"])
+    ndim = len(perm)
+
+    if isinstance(op, BEllpack):
+        bdim = 0 if op.transposed else ndim - 1
+        n_out = perm.index(bdim)
+        # Output T flag: V at JAXPR output axis 0 → T=True; at -1 → T=False.
+        # V at middle → can't represent structurally.
+        if n_out == 0:
+            out_transposed = True
+        elif n_out == ndim - 1:
+            out_transposed = False
+        else:
+            out_transposed = None
+        if out_transposed is not None:
+            # Walk perm: strip V from both sides, shift remaining axes.
+            walk_perm = tuple(
+                (perm[j] if perm[j] < bdim else perm[j] - 1)
+                for j in range(ndim) if j != n_out
+            )
+            # Apply structural perm; if identity, op stays as-is. Then
+            # set the output flag (free flag flip if it differs).
+            if walk_perm == tuple(range(ndim - 1)):
+                structural = op
+            else:
+                try:
+                    structural = op.transpose(walk_perm)
+                except NotImplementedError:
+                    structural = None
+            if structural is not None:
+                if structural.transposed != out_transposed:
+                    from .._linops.base import replace_slots  # noqa: PLC0415
+                    structural = replace_slots(
+                        structural, transposed=out_transposed)
+                return structural
+
+    # Fall back: BCOO / dense / unsupported BE perm.
     try:
         return op.transpose(perm)
     except NotImplementedError:
