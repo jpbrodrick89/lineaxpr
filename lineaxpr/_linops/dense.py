@@ -100,9 +100,20 @@ def _(op, *, n, **params):
     # of inflating to a full `(n, n)` dense matrix. The (n,) ndarray
     # typically arrived here via `reduce_sum_op(BEllpack)`'s dense
     # fallback (full-cover row-sum case).
+    #
+    # Skip recovery for tiny n (< _BID_BCOO_RECOVERY_MIN_N): the
+    # downstream pad/add chain would leave nse close to total and
+    # BCOO storage (data + 2 int64 indices per entry, ~3× dense byte
+    # cost) plus extra HLO from index manipulation makes BCOO net-
+    # negative. AIRCRFTB (n=8) hit this — final nse=60 in (8, 8)
+    # BCOO is 1.4× denser than dense storage. Pre-existing problems
+    # rely on the recovery (e.g. HS110/PENALTY3 chains keep sparsity
+    # this way), so don't disable it; just gate by size.
+    _BID_BCOO_RECOVERY_MIN_N = 10
     shape = tuple(params["shape"])
     if (op.ndim == 1 and len(bd) == 1 and bd[0] == 0
             and len(shape) >= 2 and shape[0] == op.shape[0]
+            and op.shape[0] >= _BID_BCOO_RECOVERY_MIN_N
             and all(s == 1 for s in shape[1:])):
         n_in = int(op.shape[0])
         # BCOO at shape `shape` with `nse = n_in` entries, all at

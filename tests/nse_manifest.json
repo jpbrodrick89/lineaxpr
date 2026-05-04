@@ -2,11 +2,6 @@
   "_format_version": 1,
   "_note": "nse (number of stored entries) regression manifest for bcoo_jacobian over sif2jax CUTEst problems. Increases fail tests. Decreases require a manifest bump \u2014 run `uv run python -m tests.update_nse_manifest` to regenerate.",
   "problems": {
-    "AIRCRFTB": {
-      "n": 8,
-      "nse": 60,
-      "group": "bounded"
-    },
     "ARWHEAD": {
       "n": 5000,
       "nse": 14998,
@@ -131,11 +126,6 @@
       "n": 3,
       "nse": 3,
       "group": "unconstrained"
-    },
-    "DGOSPEC": {
-      "n": 3,
-      "nse": 7,
-      "group": "bounded"
     },
     "DIAGIQB": {
       "n": 10,
