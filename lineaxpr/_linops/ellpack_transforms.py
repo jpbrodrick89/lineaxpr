@@ -842,6 +842,17 @@ def _(op, *, n, **params):
         return jnp.zeros((in_size,), op.dtype).at[
             jnp.where(mask, cols_stacked, 0)].add(jnp.where(mask, vals_stacked, jnp.zeros((), op.dtype)))
 
+    # T=True structural-fallthrough: convert to BCOO and let
+    # `bcoo_reduce_sum` handle it. Preserves sparsity for cases where
+    # we don't have a direct BE branch (e.g. simultaneous batch+out
+    # reduction on multi-batch BE_T — FMINSURF-class chains).
+    if op.transposed:
+        # Recover the original V-augmented axes (we shifted by -1
+        # at the top for T=True structural lookup).
+        raw_axes = tuple(a + 1 for a in axes)
+        bcoo_op = op.to_bcoo()
+        return sparse.bcoo_reduce_sum(bcoo_op, axes=raw_axes)
+
     # Dense fallback.
     dense = op.todense()
     return jnp.sum(dense, axis=tuple(axes))
