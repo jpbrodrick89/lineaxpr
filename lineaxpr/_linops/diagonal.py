@@ -360,22 +360,18 @@ def _is_inside_vmap_bcast(shape, bd, op_n):
 def _(op, *, n, **params):
     full_shape = tuple(params["shape"])
     full_bd = tuple(params["broadcast_dimensions"])
-    if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
-        # Stay sparse: Diagonal has only n nonzeros. Densifying via
-        # `lax.broadcast_in_dim` produces a (n, n, ...) dense tensor
-        # that downstream multiplies blow up to n^3 (PENALTY3 hits this:
-        # `bid(Diag) -> (n,n,1)` and `bid(Diag) -> (n,1,n)` then mul →
-        # (n,n,n) intermediate). Going via BCOO keeps it at n entries.
-        try:
-            bcoo = op.to_bcoo()
-            return sparse.bcoo_broadcast_in_dim(
-                bcoo, shape=full_shape, broadcast_dimensions=full_bd)
-        except (NotImplementedError, ValueError):
-            return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
-    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
-    # for the spatial-only structural checks below.
-    shape = full_shape[:-1]
-    broadcast_dimensions = full_bd[:-1]
+    inside_vmap = _is_inside_vmap_bcast(full_shape, full_bd, op.n)
+    # V is at output axis 0 (transposed-style) when `_is_inside_vmap_bcast`,
+    # else at output axis -1. Strip the V axis to get the structural frame.
+    # See comment in the `Diagonal` rule below for the V-at-0 derivation.
+    if inside_vmap:
+        shape = full_shape[1:]
+        broadcast_dimensions = tuple(int(d) - 1 for d in full_bd[1:])
+        out_transposed = True
+    else:
+        shape = full_shape[:-1]
+        broadcast_dimensions = full_bd[:-1]
+        out_transposed = False
     # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where all
     # non-n axes are size-1.
     if (len(broadcast_dimensions) == 1
@@ -397,6 +393,7 @@ def _(op, *, n, **params):
                 in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
+                transposed=out_transposed,
             )
         cols_2d = np.arange(op.n).reshape(
             (1,) * len(leading_singletons) + (op.n,)
@@ -414,7 +411,14 @@ def _(op, *, n, **params):
             in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
+            transposed=out_transposed,
         )
+    if inside_vmap:
+        # V-at-0 fallback: structural BE didn't match, but we know V
+        # is at output axis 0. Densify on the original full params
+        # rather than calling `_bid_with_extra_batch` (which assumes
+        # V-at-(-1) and would re-add V at the wrong place).
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
@@ -422,22 +426,22 @@ def _(op, *, n, **params):
 def _(op, *, n, **params):
     full_shape = tuple(params["shape"])
     full_bd = tuple(params["broadcast_dimensions"])
-    if _is_inside_vmap_bcast(full_shape, full_bd, op.n):
-        # Stay sparse: Diagonal has only n nonzeros. Densifying via
-        # `lax.broadcast_in_dim` produces a (n, n, ...) dense tensor
-        # that downstream multiplies blow up to n^3 (PENALTY3 hits this:
-        # `bid(Diag) -> (n,n,1)` and `bid(Diag) -> (n,1,n)` then mul →
-        # (n,n,n) intermediate). Going via BCOO keeps it at n entries.
-        try:
-            bcoo = op.to_bcoo()
-            return sparse.bcoo_broadcast_in_dim(
-                bcoo, shape=full_shape, broadcast_dimensions=full_bd)
-        except (NotImplementedError, ValueError):
-            return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
-    # Walk-frame: shape ends in n, bd ends in n's mapping. Strip both
-    # for the spatial-only structural checks below.
-    shape = full_shape[:-1]
-    broadcast_dimensions = full_bd[:-1]
+    inside_vmap = _is_inside_vmap_bcast(full_shape, full_bd, op.n)
+    if inside_vmap:
+        # V is at output axis 0 ("transposed" layout): bd[0]=0 maps
+        # input V to output axis 0. Strip axis 0 from shape and the
+        # first (V-mapping) entry from bd; remaining bd entries
+        # mapped to output axes >=1 shift down by 1. The structural
+        # check then runs on the V-stripped frame, and we emit a BE
+        # with `transposed=True` so V lands back at axis 0 of the
+        # output.
+        shape = full_shape[1:]
+        broadcast_dimensions = tuple(int(d) - 1 for d in full_bd[1:])
+        out_transposed = True
+    else:
+        shape = full_shape[:-1]
+        broadcast_dimensions = full_bd[:-1]
+        out_transposed = False
     if (len(broadcast_dimensions) == 1
             and shape[broadcast_dimensions[0]] == op.n
             and all(s == 1 for i, s in enumerate(shape)
@@ -457,6 +461,7 @@ def _(op, *, n, **params):
                 in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
+                transposed=out_transposed,
             )
         cols_2d = np.arange(op.n).reshape(
             (1,) * len(leading_singletons) + (op.n,)
@@ -474,7 +479,10 @@ def _(op, *, n, **params):
             in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
+            transposed=out_transposed,
         )
+    if inside_vmap:
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
     return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
