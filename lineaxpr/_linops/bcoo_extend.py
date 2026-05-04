@@ -47,6 +47,75 @@ def _(op: sparse.BCOO, v) -> sparse.BCOO:
 
 @slice_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
+    # Common case: 1D stride-1 slice on unbatched BCOO. Hand-roll
+    # to avoid `sparse.bcoo_slice`'s `(idx-start) % stride` and
+    # `(idx-start+stride-1) // stride` chain, which JAX wraps in
+    # `jit[name=floor_divide]` / `jit[name=remainder]` sub-jaxprs
+    # that XLA can't fuse with surrounding ops. Each such call adds
+    # 2 jit boundaries to the jaxpr; in HS110 with 5 slice calls
+    # that's 10 boundaries removed and ~50% of the HLO size delta
+    # vs main. (Mirrors main's `slice_op(BCOO)` handling.)
+    starts = tuple(int(s) for s in params["start_indices"])
+    limits = tuple(int(l) for l in params["limit_indices"])
+    strides_p = params.get("strides")
+    strides = (tuple(int(s) for s in strides_p)
+               if strides_p else (1,) * len(starts))
+
+    # Apply only to 2D unbatched stride-1 slice along axis 0 (the
+    # most common shape we see). Other patterns delegate.
+    if (len(starts) == 2 and strides == (1, 1) and op.n_batch == 0
+            and starts[1] == 0 and limits[1] == op.shape[1]):
+        s, e = starts[0], limits[0]
+        k = e - s
+        try:
+            indices_np = np.asarray(op.indices)
+        except (jax.errors.TracerArrayConversionError, TypeError):
+            indices_np = None
+        if isinstance(indices_np, np.ndarray):
+            rows_np = indices_np[:, 0]
+            keep = np.nonzero((rows_np >= s) & (rows_np < e))[0]
+            new_indices = np.stack(
+                [rows_np[keep] - s, indices_np[keep, 1]], axis=1)
+            new_data = jnp.take(op.data, jnp.asarray(keep))
+            return sparse.BCOO(
+                (new_data, jnp.asarray(new_indices)),  # pyrefly: ignore [bad-argument-type]
+                shape=(k, op.shape[1]))
+        rows = op.indices[:, 0]
+        in_range = (rows >= s) & (rows < e)
+        new_rows = jnp.where(in_range, rows - s, 0)
+        new_data = jnp.where(in_range, op.data,
+                             jnp.zeros((), op.data.dtype))
+        new_indices = jnp.stack(
+            [new_rows, op.indices[:, 1]], axis=1)
+        return sparse.BCOO(
+            (new_data, new_indices), shape=(k, op.shape[1]))
+    if (len(starts) == 2 and strides == (1, 1) and op.n_batch == 0
+            and starts[0] == 0 and limits[0] == op.shape[0]):
+        # Stride-1 slice along axis 1 (primal-axis on V-at-0 layout).
+        s, e = starts[1], limits[1]
+        k = e - s
+        try:
+            indices_np = np.asarray(op.indices)
+        except (jax.errors.TracerArrayConversionError, TypeError):
+            indices_np = None
+        if isinstance(indices_np, np.ndarray):
+            cols_np = indices_np[:, 1]
+            keep = np.nonzero((cols_np >= s) & (cols_np < e))[0]
+            new_indices = np.stack(
+                [indices_np[keep, 0], cols_np[keep] - s], axis=1)
+            new_data = jnp.take(op.data, jnp.asarray(keep))
+            return sparse.BCOO(
+                (new_data, jnp.asarray(new_indices)),  # pyrefly: ignore [bad-argument-type]
+                shape=(op.shape[0], k))
+        cols = op.indices[:, 1]
+        in_range = (cols >= s) & (cols < e)
+        new_cols = jnp.where(in_range, cols - s, 0)
+        new_data = jnp.where(in_range, op.data,
+                             jnp.zeros((), op.data.dtype))
+        new_indices = jnp.stack(
+            [op.indices[:, 0], new_cols], axis=1)
+        return sparse.BCOO(
+            (new_data, new_indices), shape=(op.shape[0], k))
     return sparse.bcoo_slice(op, **params)
 
 
@@ -60,6 +129,21 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
         before, after, interior = int(before), int(after), int(interior)
         if interior == 0:
             out_size = op.shape[0] + before + after
+            # Negative pad cropping: drop entries whose row falls outside
+            # the kept window. Without this, OOB indices pass through
+            # and corrupt downstream gathers (e.g. `scale * BCOO`).
+            if before < 0 or after < 0:
+                rows = op.indices[:, 0]
+                lo = max(-before, 0)
+                hi = op.shape[0] - max(-after, 0)
+                in_range = (rows >= lo) & (rows < hi)
+                new_rows = jnp.where(in_range, rows - lo, 0)
+                new_data = jnp.where(in_range, op.data,
+                                     jnp.zeros((), op.data.dtype))
+                new_indices = jnp.stack(
+                    [new_rows, op.indices[:, 1]], axis=1)
+                return sparse.BCOO(
+                    (new_data, new_indices), shape=(out_size, op.shape[1]))
             new_rows = op.indices[:, 0] + before
             new_indices = jnp.stack([new_rows, op.indices[:, 1]], axis=1)
             return sparse.BCOO(
@@ -86,6 +170,21 @@ def _(op: sparse.BCOO, *, n, padding_value, **params):
             int(before_c), int(after_c), int(interior_c))
         if interior_c == 0:
             new_shape1 = op.shape[1] + before_c + after_c
+            # Negative pad cropping along axis 1: drop entries whose
+            # col falls outside the kept window.
+            if before_c < 0 or after_c < 0:
+                cols = op.indices[:, 1]
+                lo = max(-before_c, 0)
+                hi = op.shape[1] - max(-after_c, 0)
+                in_range = (cols >= lo) & (cols < hi)
+                new_cols = jnp.where(in_range, cols - lo, 0)
+                new_data = jnp.where(in_range, op.data,
+                                     jnp.zeros((), op.data.dtype))
+                new_indices = jnp.stack(
+                    [op.indices[:, 0], new_cols], axis=1)
+                return sparse.BCOO(
+                    (new_data, new_indices),
+                    shape=(op.shape[0], new_shape1))
             if before_c == 0:
                 return sparse.BCOO(
                     (op.data, op.indices),
@@ -236,15 +335,17 @@ def _bcoo_concat(bcoo_vals, shape):
 
 @squeeze_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    return sparse.bcoo_squeeze(op, **params)
+    # Squeeze on BCOO is almost always `(1, k)` or `(k, 1)` to a 1D
+    # vector. Dense is cheap at that size and the dense
+    # broadcast_in_dim path has structural sparsity-recovery for
+    # `(n,) → (n, 1...)` re-sparsification. (Mirrors main's behavior.)
+    return lax.squeeze(op.todense(), params["dimensions"])
 
 
 @broadcast_in_dim_op.register(sparse.BCOO)
 def _(op: sparse.BCOO, *, n, **params):
-    # `bcoo_broadcast_in_dim` raises NotImplementedError when adding
-    # sparse dims with size != 1; fall back to dense broadcast in that
-    # case rather than crashing.
-    try:
-        return sparse.bcoo_broadcast_in_dim(op, **params)
-    except NotImplementedError:
-        return lax.broadcast_in_dim_p.bind(op.todense(), **params)
+    # Densify and route through the dense path's sparsity-recovery.
+    # Keeping BCOO machinery alive through `bcoo_broadcast_in_dim`
+    # produces large amounts of int64 index broadcast HLO without
+    # measurable speed benefit. (Mirrors main's behavior.)
+    return lax.broadcast_in_dim_p.bind(op.todense(), **params)
