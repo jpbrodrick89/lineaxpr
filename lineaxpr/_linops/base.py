@@ -1,13 +1,18 @@
 """Singledispatch op functions and LinOpProtocol.
 
-`negate`, `scale_scalar`, `scale_per_out_row` are operations that our native
-LinOp classes implement as methods but BCOO/CSR do not. They live here as
-singledispatch functions so every format (LinOp, BCOO, future CSR) shares
-one call-site; bcoo_extend.py registers the BCOO implementations.
+`scale_scalar`, `scale_per_out_row` are operations that our native LinOp
+classes implement as methods but BCOO/CSR do not. They live here as
+singledispatch functions so every format (LinOp, BCOO, future CSR)
+shares one call-site; bcoo_extend.py registers the BCOO implementations.
+
+`replace_slots(op, **changes)` is the structural primitive the
+zero-preserving-linear-unary rule registry uses to push neg/copy/conj/etc.
+through any LinOp form uniformly:
+`replace_slots(op, data=prim.bind(op.data, **params))`.
 
 LinOpProtocol is the minimal structural interface that BCOO, BCSR, and our
 own LinOp classes all satisfy by duck-typing. It deliberately excludes
-negate/scale_* (handled by singledispatch, not the protocol) so that external
+scale_* (handled by singledispatch, not the protocol) so that external
 sparse formats can be passed as LinOps without any adapter code.
 Note: BCOO.to_bcoo() does not exist (BCOO is already BCOO); call sites that
 need a BCOO should use `op.to_bcoo() if hasattr(op, 'to_bcoo') else op`.
@@ -25,7 +30,6 @@ from typing import Any, Protocol, Sequence, runtime_checkable
 
 import jax
 import jax.numpy as jnp
-from jax import lax
 from jax.experimental import sparse
 
 
@@ -45,15 +49,43 @@ class LinOpProtocol(Protocol):
     @property
     def dtype(self) -> Any: ...
 
+    @property
+    def data(self) -> Any: ...
+
     def todense(self) -> jnp.ndarray: ...
 
     def transpose(self, axes: Sequence[int] | None = None) -> Any: ...
 
 
-@singledispatch
-def negate(op) -> Any:
-    """Negate a LinOp or BCOO. Raises for unregistered types."""
-    raise NotImplementedError(f"negate not implemented for {type(op)}")
+def replace_slots(obj, **changes) -> Any:
+    """Generic `dataclasses.replace` analogue for `__slots__` classes.
+
+    Constructs a new instance via `__new__`, copies every attribute the
+    original holds (whether stored in `__slots__` walked across the MRO
+    or in `__dict__`), then applies overrides from `changes`. Bypasses
+    `__init__` — caller is responsible for ensuring overridden values
+    are already in the canonical form the class expects (e.g. for
+    BEllpack, `data` must already be normalised by `_normalize_data`).
+
+    Handles BCOO uniformly with our own LinOps despite BCOO declaring
+    `__slots__ = ()` and storing its fields in `__dict__`.
+
+    Used to push zero-preserving linear unary primitives through any
+    LinOp form: `replace_slots(op, data=prim.bind(op.data, **params))`.
+    Mirrors `jax.experimental.sparse.transform`'s SparsifyEnv-mediated
+    rebuild — same idea, different mechanism since we don't have an env.
+    """
+    cls = type(obj)
+    new = cls.__new__(cls)  # pyrefly: ignore [no-matching-overload]
+    if hasattr(obj, "__dict__"):
+        new.__dict__.update(obj.__dict__)
+    for c in cls.__mro__:
+        for slot in getattr(c, "__slots__", ()):
+            if hasattr(obj, slot):
+                setattr(new, slot, getattr(obj, slot))
+    for k, v in changes.items():
+        setattr(new, k, v)
+    return new
 
 
 @singledispatch
@@ -77,116 +109,38 @@ def scale_per_out_row(op, v) -> Any:
 # rules flowing through the walk) — no isinstance checks needed here.
 # ---------------------------------------------------------------------------
 
-@singledispatch
-def identity_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Pass-through: return op unchanged (used by convert_element_type, copy)."""
-    return op
+def _unimplemented(name):
+    # Annotated return type prevents pyrefly from narrowing the inferred
+    # singledispatch base to `Never`, which would then reject every
+    # `@base.register(...)` registration that returns an array.
+    def base(op, *args, **kwargs) -> "LinOpProtocol | sparse.BCOO | jax.Array":
+        raise NotImplementedError(
+            f"{name}: no registration for {type(op).__name__}. "
+            f"Register the type in dense.py (jax.Array / DynamicJaxprTracer) "
+            f"or in the corresponding LinOp module."
+        )
+    base.__name__ = name
+    return base
+
+
+# All explicit registrations live in: dense.py (jax.Array / DynamicJaxprTracer),
+# diagonal.py (CD/Diagonal), ellpack.py + ellpack_transforms.py +
+# ellpack_indexing.py (BEllpack), bcoo_extend.py (sparse.BCOO).
+squeeze_op = singledispatch(_unimplemented("squeeze_op"))
+rev_op = singledispatch(_unimplemented("rev_op"))
+slice_op = singledispatch(_unimplemented("slice_op"))
+pad_op = singledispatch(_unimplemented("pad_op"))
+reshape_op = singledispatch(_unimplemented("reshape_op"))
+broadcast_in_dim_op = singledispatch(_unimplemented("broadcast_in_dim_op"))
+reduce_sum_op = singledispatch(_unimplemented("reduce_sum_op"))
+gather_op = singledispatch(_unimplemented("gather_op"))
+scatter_add_op = singledispatch(_unimplemented("scatter_add_op"))
 
 
 @singledispatch
-def squeeze_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Squeeze output axes. Plain-array fallback."""
-    return lax.squeeze(op, params["dimensions"])
-
-
-@singledispatch
-def rev_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Reverse output axes. Plain-array fallback."""
-    return lax.rev(op, params["dimensions"])
-
-
-@singledispatch
-def slice_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Slice output axes. Plain-array fallback."""
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(op, s_full, l_full, str_full)
-
-
-@singledispatch
-def pad_op(op, *, n, padding_value, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Pad output axes. Plain-array fallback."""
-    config = params["padding_config"]
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(op, jnp.asarray(0.0, dtype=op.dtype), full_config)
-
-
-@singledispatch
-def cumsum_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Cumulative sum. Plain-array fallback."""
-    return lax.cumsum(op, axis=params["axis"],
-                      reverse=params.get("reverse", False))
-
-
-@singledispatch
-def reshape_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Reshape output axes. Plain-array fallback."""
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
-    return lax.reshape(op, tuple(new_sizes) + (n,))
-
-
-@singledispatch
-def broadcast_in_dim_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Broadcast-in-dim. Plain-array fallback."""
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
-    dense = op
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
-
-
-@singledispatch
-def reduce_sum_op(op, *, n, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Reduce sum. Plain-array fallback."""
-    return jnp.sum(op, axis=tuple(params["axes"]))
-
-
-@singledispatch
-def gather_op(op, *, n, start_indices, **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Gather rows. Plain-array fallback."""
-    dnums = params["dimension_numbers"]
-    point_gather_kept = (
-        dnums.offset_dims == (1,)
-        and dnums.collapsed_slice_dims == ()
-        and dnums.start_index_map == (0,)
-        and params["slice_sizes"] == (1,)
+def split_op(op, *, n, **params) -> "list[LinOpProtocol | sparse.BCOO | jax.Array]":
+    raise NotImplementedError(
+        f"split_op: no registration for {type(op).__name__}. "
+        f"Register the type in dense.py (jax.Array / DynamicJaxprTracer) "
+        f"or in the corresponding LinOp module."
     )
-    row_idx = start_indices[..., 0]
-    if point_gather_kept:
-        return op[row_idx][..., None, :]
-    return op[row_idx]
-
-
-@singledispatch
-def scatter_add_op(updates, *, n, operand, scatter_indices,
-                   **params) -> LinOpProtocol | sparse.BCOO | jax.Array:
-    """Scatter-add updates into rows. Plain-array fallback."""
-    out_idx = scatter_indices[..., 0]
-    out_idx_flat = out_idx.reshape(-1)
-    out_size = operand.shape[0]
-    flat_updates = updates.reshape(-1, n)
-    return (jnp.zeros((out_size, n), flat_updates.dtype)
-            .at[out_idx_flat].add(flat_updates))
-
-
-@singledispatch
-def split_op(op, *, n, **params) -> list[LinOpProtocol | sparse.BCOO | jax.Array]:
-    """Split output axis. Plain-array fallback — returns a list of arrays."""
-    sizes = params["sizes"]
-    axis = params["axis"]
-    out = []
-    start = 0
-    for sz in sizes:
-        slc = [slice(None)] * op.ndim
-        slc[axis] = slice(int(start), int(start) + int(sz))
-        out.append(op[tuple(slc)])
-        start += int(sz)
-    return out

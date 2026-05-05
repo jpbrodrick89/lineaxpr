@@ -29,7 +29,12 @@ def _index(path):
 
 
 def main():
-    old_path, new_path = sys.argv[1], sys.argv[2]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    flags = {a.split("=")[0]: a.split("=", 1)[1] if "=" in a else True
+             for a in sys.argv[1:] if a.startswith("--")}
+    old_path, new_path = args[0], args[1]
+    ratio_thr = float(flags.get("--ratio", 1.3))
+    abs_thr = float(flags.get("--abs", 15))
     old, new = _index(old_path), _index(new_path)
     common = sorted(set(old) & set(new))
     only_new = sorted(set(new) - set(old))
@@ -41,9 +46,9 @@ def main():
         nt, nn = new[key]
         ratio = nt / ot
         delta = nt - ot
-        if ratio >= 1.3 and delta >= 15:
+        if ratio >= ratio_thr and delta >= abs_thr:
             regrs.append((key, ot, nt, ratio, nn))
-        if ratio <= 0.77 and -delta >= 15:
+        if ratio <= 1 / ratio_thr and -delta >= abs_thr:
             wins.append((key, ot, nt, ratio, nn))
 
     regrs.sort(key=lambda r: -r[3])
@@ -52,11 +57,11 @@ def main():
     print(f"old={Path(old_path).name}  new={Path(new_path).name}")
     print(f"common={len(common)}  only_new={len(only_new)}  only_old={len(only_old)}")
     print()
-    print(f"=== REGRESSIONS (>=1.3x AND >=15us) — {len(regrs)} ===")
+    print(f"=== REGRESSIONS (>={ratio_thr}x AND >={abs_thr}us) — {len(regrs)} ===")
     for (m, p), ot, nt, r, n in regrs:
         print(f"  {m:16s} {p:18s} n={n:<6d}  {ot:8.1f}us -> {nt:8.1f}us  ({r:.2f}x)")
     print()
-    print(f"=== WINS (<=0.77x AND <=-15us) — {len(wins)} ===")
+    print(f"=== WINS (<={1/ratio_thr:.3f}x AND <=-{abs_thr}us) — {len(wins)} ===")
     for (m, p), ot, nt, r, n in wins:
         print(f"  {m:16s} {p:18s} n={n:<6d}  {ot:8.1f}us -> {nt:8.1f}us  ({r:.2f}x)")
     if only_new:

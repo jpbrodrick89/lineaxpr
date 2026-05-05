@@ -3,8 +3,6 @@
 from .add import _add_rule
 from .mul import _mul_rule
 from .registry import (
-    _identity_rule,
-    _neg_rule,
     _pad_rule,
     _gather_rule,
     _scatter_add_rule,
@@ -35,7 +33,6 @@ from .._linops import (
     reshape_op as _reshape_rule,
     broadcast_in_dim_op as _broadcast_in_dim_rule,
     reduce_sum_op as _reduce_sum_rule,
-    cumsum_op as _cumsum_rule,
 
     gather_op as _gather_rule_dispatch,
     scatter_add_op as _scatter_add_rule_dispatch,
@@ -45,8 +42,6 @@ __all__ = [
     "materialize_rules",
     "_add_rule",
     "_mul_rule",
-    "_identity_rule",
-    "_neg_rule",
     "_pad_rule",
     "_gather_rule",
     "_scatter_add_rule",
@@ -58,5 +53,5 @@ __all__ = [
     "_cond_rule",
     "_jit_rule",
     "_select_n_rule",
-    "_broadcast_in_dim_rule", "_cumsum_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
+    "_broadcast_in_dim_rule", "_gather_rule_dispatch", "_pad_rule_dispatch", "_reduce_sum_rule", "_reshape_rule", "_rev_rule", "_scatter_add_rule_dispatch", "_slice_rule", "_squeeze_rule",
 ]

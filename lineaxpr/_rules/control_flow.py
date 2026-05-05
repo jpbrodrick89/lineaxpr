@@ -133,19 +133,22 @@ def _select_n_rule(invals, traced, n, **params):
         if isinstance(t_case, ConstantDiagonal):
             t_case = BEllpack(
                 0, t_case.n, (np.arange(t_case.n),),
-                jnp.broadcast_to(jnp.asarray(t_case.value), (t_case.n,)),
+                jnp.broadcast_to(jnp.asarray(t_case.data), (t_case.n,)),
                 t_case.n, t_case.n,
             )
         elif isinstance(t_case, Diagonal):
             t_case = BEllpack(
-                0, t_case.n, (np.arange(t_case.n),), t_case.values,
+                0, t_case.n, (np.arange(t_case.n),), t_case.data,
                 t_case.n, t_case.n,
             )
-        # BCOO: mask data entries by row-predicate.
+        # BCOO: mask data entries by row-predicate. Under V-at-0
+        # post-vmap layout the BCOO has `(V, primal_out)` axes —
+        # `pred` indexes the primal_out axis (axis 1). Same
+        # convention as `scale_per_out_row(BCOO)` (commit 6cd78ea).
         if isinstance(t_case, sparse.BCOO):
             pred_arr = jnp.asarray(pred)
-            entry_rows = t_case.indices[:, 0]
-            entry_mask = (pred_arr[entry_rows] == t_idx)
+            entry_out = t_case.indices[:, 1]
+            entry_mask = (pred_arr[entry_out] == t_idx)
             new_data = jnp.where(entry_mask, t_case.data,
                                  jnp.zeros((), t_case.data.dtype))
             return sparse.BCOO(
@@ -164,12 +167,13 @@ def _select_n_rule(invals, traced, n, **params):
                 mask = (pred_slice == t_idx)
                 if t_case.k >= 2:
                     mask = mask[..., None]
-            new_values = jnp.where(mask, t_case.values,
+            new_values = jnp.where(mask, t_case.data,
                                    jnp.zeros((), t_case.dtype))
             return BEllpack(
                 t_case.start_row, t_case.end_row, t_case.in_cols,
                 new_values, t_case.out_size, t_case.in_size,
                 batch_shape=t_case.batch_shape,
+                transposed=t_case.transposed,
             )
 
     # Structural fast path: all cases are BEllpack with matching
@@ -190,7 +194,8 @@ def _select_n_rule(invals, traced, n, **params):
                     for a, b in zip(c.in_cols, first.in_cols))
             for c in cases[1:]
         )
-        if same_cols:
+        same_transposed = all(c.transposed == first.transposed for c in cases[1:])
+        if same_cols and same_transposed:
             pred_arr = jnp.asarray(pred)
             if pred_arr.ndim == 0:
                 # Scalar pred applies uniformly across rows (HELIX /
@@ -199,18 +204,19 @@ def _select_n_rule(invals, traced, n, **params):
                 pred_b = pred_arr
             else:
                 pred_slice = pred_arr[first.start_row:first.end_row]
-                pred_b = pred_slice[:, None] if first.values.ndim > 1 else pred_slice
+                pred_b = pred_slice[:, None] if first.data.ndim > 1 else pred_slice
             # select_n with bool pred: cases[0] when pred is False, cases[1] when True
             # (matching lax.select_n semantics for 2-case).
             if len(cases) == 2:
-                new_values = jnp.where(pred_b, cases[1].values, cases[0].values)
+                new_values = jnp.where(pred_b, cases[1].data, cases[0].data)
             else:
                 # N-way: use lax.select_n on stacked values.
-                stacked = jnp.stack([c.values for c in cases], axis=0)
+                stacked = jnp.stack([c.data for c in cases], axis=0)
                 new_values = lax.select_n(pred_b, *[stacked[i] for i in range(len(cases))])
             return BEllpack(
                 first.start_row, first.end_row, first.in_cols,
                 new_values, first.out_size, first.in_size,
+                transposed=first.transposed,
             )
 
     # Multi-traced BCOO / BE (mismatched cols): mask each traced case by
@@ -238,8 +244,11 @@ def _select_n_rule(invals, traced, n, **params):
             if bc.n_batch != 0:
                 masked_bcoos = None
                 break
-            entry_rows = bc.indices[:, 0]
-            mask = pred_arr[entry_rows] == c_idx
+            # Under V-at-0 post-vmap layout the BCOO has `(V, primal_out)`
+            # axes — `pred` indexes the primal_out axis (axis 1). Same
+            # convention as `scale_per_out_row(BCOO)` (commit 6cd78ea).
+            entry_out = bc.indices[:, 1]
+            mask = pred_arr[entry_out] == c_idx
             new_data = jnp.where(mask, bc.data,
                                  jnp.zeros((), bc.data.dtype))
             masked_bcoos.append(sparse.BCOO(
@@ -250,32 +259,101 @@ def _select_n_rule(invals, traced, n, **params):
         if masked_bcoos:
             return _bcoo_concat(masked_bcoos, shape=masked_bcoos[0].shape)
 
-    # Densify each case to shape (*var_shape, n). Non-traced cases contribute
-    # zero to the linear-in-input part (their dependence on the traced input
-    # is zero), so we represent them as a zero tensor of the right shape.
+    # Densify each case. Non-traced cases contribute zero to the
+    # linear-in-input part (their dependence on the traced input is
+    # zero), so we represent them as a zero tensor with V appended in
+    # the convention-appropriate position.
+    #
+    # Inside-vmap, the traced cases may have V at axis 0 (when their
+    # upstream chain came through a transposed-BE → densify path)
+    # rather than at axis -1. Detect that via shape inspection (only
+    # unambiguous for non-square traced shapes, but those are the ones
+    # that actually crash) and build closure zeros with V at 0 to
+    # match.
+    # Determine V position from the traced LinOp inputs:
+    # transposed=True BEs render with V at axis 0; everything else
+    # (Diagonal/CD/BCOO/already-dense) follows shape inspection.
+    # Square dense shapes are ambiguous — default to V-at-0 to match
+    # the post-vmap convention used elsewhere.
+    traced_be_flags = [
+        c.transposed for c, t in zip(cases, case_traced)
+        if t and isinstance(c, BEllpack)
+    ]
+    raw_traced = [
+        c.todense() if isinstance(c, LinOpProtocol) else c
+        for c, t in zip(cases, case_traced) if t
+    ]
+    if traced_be_flags:
+        v_at_zero = any(traced_be_flags)
+    else:
+        # Default V-at-0 unless every dense traced operand is
+        # unambiguously V-at-(-1) (`shape[-1]==n, shape[0]!=n`).
+        any_v_at_0_unambiguous = any(
+            d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+            for d in raw_traced
+        )
+        all_v_at_last_unambiguous = (
+            len(raw_traced) > 0
+            and all(d.ndim >= 2 and d.shape[-1] == n and d.shape[0] != n
+                    for d in raw_traced)
+        )
+        if any_v_at_0_unambiguous:
+            v_at_zero = True
+        elif all_v_at_last_unambiguous:
+            v_at_zero = False
+        else:
+            # Ambiguous (e.g., square shapes): default to V-at-0.
+            v_at_zero = True
+    # Determine traced operand shape — closures are zero, so they
+    # need to match the traced shape exactly (not just the V dim).
+    # Otherwise numpy broadcast can explode (e.g. (3, 1) traced +
+    # (3,) closure → (3, 3) under standard rules — wrong here, since
+    # the closure represents zero contribution and should keep the
+    # traced shape unchanged).
+    traced_shapes = [d.shape for d in raw_traced]
+    traced_target_shape = traced_shapes[0] if traced_shapes else None
     case_dense = []
+    traced_iter = iter(raw_traced)
     for c, t in zip(cases, case_traced):
         if t:
-            case_dense.append(c.todense() if isinstance(c, LinOpProtocol) else c)
+            case_dense.append(next(traced_iter))
         else:
             arr = jnp.asarray(c)
-            zero_shape = arr.shape + (n,)
-            case_dense.append(jnp.zeros(zero_shape, dtype=arr.dtype))
+            if traced_target_shape is not None:
+                # Build zeros matching traced operand shape so the
+                # numpy broadcast against the traced cases is a no-op.
+                case_dense.append(jnp.zeros(traced_target_shape, dtype=arr.dtype))
+            else:
+                zero_shape = (n,) + arr.shape if v_at_zero else arr.shape + (n,)
+                case_dense.append(jnp.zeros(zero_shape, dtype=arr.dtype))
     # Normalise densified cases to the lowest aval-rank by squeezing
-    # leading size-1 axes. A 1-row BEllpack (aval ndim 0) densifies to
-    # `(1, n)`; a scalar-aval LinOp densifies to `(n,)`. Without this
-    # align, `lax.select_n` rejects mismatched case shapes (HELIX n=3
-    # repro: one case `(1, 3)` vs another `(3,)`).
+    # leading size-1 axes only. A 1-row BEllpack (aval ndim 0)
+    # densifies to `(1, n)`; a scalar-aval LinOp densifies to `(n,)`.
+    # Without this align, `lax.select_n` rejects mismatched case shapes
+    # (HELIX n=3 repro: one case `(1, 3)` vs another `(3,)`). Only
+    # squeeze size-1 leading axes — a leading non-1 axis is meaningful
+    # data (e.g. a closure zero of shape `(out_dim, n, V)` should NOT
+    # be sliced down to `(n, V)`; that would pick its 0-th slice).
+    def _squeeze_leading_ones(d, target_ndim):
+        while d.ndim > target_ndim and d.shape[0] == 1:
+            d = d[0]
+        return d
     min_ndim = min(d.ndim for d in case_dense)
-    case_dense = [
-        d if d.ndim == min_ndim
-        else d[(0,) * (d.ndim - min_ndim)]
-        for d in case_dense
-    ]
+    case_dense = [_squeeze_leading_ones(d, min_ndim) for d in case_dense]
+    # Broadcast all cases to a common shape (handles vmap-accumulated batch dims).
+    target_shape = case_dense[0].shape
+    for d in case_dense[1:]:
+        target_shape = jnp.broadcast_shapes(target_shape, d.shape)
+    case_dense = [jnp.broadcast_to(d, target_shape) for d in case_dense]
 
     pred_arr = jnp.asarray(pred)
-    # pred has shape (*var_shape,); broadcast it to (*var_shape, n) so each
-    # row across the input-coord axis is selected the same way.
     target_shape = case_dense[0].shape
-    pred_b = jnp.broadcast_to(pred_arr[..., None], target_shape)
+    while pred_arr.ndim >= len(target_shape):
+        pred_arr = pred_arr[0]
+    # pred carries var_shape axes; insert V at the convention-appropriate
+    # position to make broadcast_to work.
+    if v_at_zero:
+        pred_b = jnp.broadcast_to(pred_arr[None, ...], target_shape)
+    else:
+        pred_b = jnp.broadcast_to(pred_arr[..., None], target_shape)
     return lax.select_n(pred_b, *case_dense)

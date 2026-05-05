@@ -22,6 +22,46 @@ def _concatenate_rule(invals, traced, n, **params):
     dimension = params["dimension"]
     traced_idxs = [i for i, t in enumerate(traced) if t]
 
+    # Phase B: all-traced BE_T concat — flip all to canonical (free
+    # flag flip), shift `dimension` to the canonical frame (V was at
+    # axis 0, now at axis -1; structural axes shift down by 1), recurse
+    # through the canonical body, flip the BE result back to T=True.
+    # Bridges concat-along-out chains (BROYDN3DLS-class:
+    # `concat([BE_T(n,1), BE_T(n,m), BE_T(n,1)], dim=1)`) whose
+    # canonical-frame analogue is `dim=0` and hits the existing
+    # out-axis structural path (line ~116).
+    from .._linops.base import replace_slots  # noqa: PLC0415
+    traced_be = [v for v, t in zip(invals, traced) if t and isinstance(v, BEllpack)]
+    if (traced_be
+            and len(traced_be) == sum(traced)
+            and all(v.transposed for v in traced_be)
+            and dimension >= 1):
+        flipped = [
+            replace_slots(v, transposed=False) if isinstance(v, BEllpack) else v
+            for v in invals
+        ]
+        new_params = dict(params, dimension=dimension - 1)
+        res = _concatenate_rule(flipped, traced, n, **new_params)
+        if isinstance(res, BEllpack):
+            return replace_slots(res, transposed=True)
+        # The recurse computed in canonical V-at-(-1) frame; we need V
+        # back at axis 0.
+        if isinstance(res, sparse.BCOO):
+            if res.ndim == 2:
+                return res.transpose(axes=(1, 0))
+            if res.ndim >= 3:
+                from .add import _bcoo_move_v_to_front
+                moved = _bcoo_move_v_to_front(res)
+                if moved is not None:
+                    return moved
+                perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+                return jnp.transpose(res.todense(), perm)
+            return res
+        if hasattr(res, "ndim") and res.ndim >= 2:
+            perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+            return jnp.transpose(res, perm)
+        return res
+
     # Structural path: all-traced BEllpack concat, each operand spans
     # its full (0, out_size) range, same batch_shape and same in_size.
     # `dimension` in the aval is either a batch axis (dim < n_batch) or
@@ -40,19 +80,39 @@ def _concatenate_rule(invals, traced, n, **params):
         nb = invals[0].n_batch
         in_size = invals[0].in_size
         if dimension < nb:
-            # Batch-axis concat: same out_size, same k assumed, just
-            # concatenate values + per-batch in_cols along that axis
-            # and grow batch_shape[dim].
-            if not all(v.k == invals[0].k for v in invals[1:]):
-                pass  # fall through to dense fallback (k mismatch rare
-                      # on batch-axis concat; avoid complexity)
-            else:
-                new_values = jnp.concatenate([v.values for v in invals], axis=dimension)
+            # Batch-axis concat: same out_size; pad shorter k to max_k
+            # with `-1` sentinel cols / 0 values, then concatenate
+            # values + per-band in_cols along the batch axis and grow
+            # batch_shape[dim]. LUKSAN11LS's
+            # `concat(BE(bs=(99,1), out=1, k=2), BE(bs=(99,1), out=1, k=1))`
+            # — different k from upstream sub vs slice — used to fall
+            # through to dense.
+            max_k = max(v.k for v in invals)
+            def _widen_values_batch(v):
+                if max_k == 1:
+                    return v.data
+                vals = v.data if v.data.ndim == nb + 2 else v.data[..., None]
+                if v.k < max_k:
+                    pad = [(0, 0)] * vals.ndim
+                    pad[-1] = (0, max_k - v.k)
+                    vals = jnp.pad(vals, pad)
+                return vals
+            if True:
+                new_values = jnp.concatenate(
+                    [_widen_values_batch(v) for v in invals],
+                    axis=dimension,
+                )
                 new_in_cols: list[ColArr] = []
-                for b in range(invals[0].k):
+                for b in range(max_k):
                     parts = []
                     has_per_batch = False
                     for v in invals:
+                        if b >= v.k:
+                            # Sentinel band: -1 cols, 0 values for the
+                            # whole batch shape.
+                            c = np.full((v.nrows,), -1, dtype=np.int64)
+                            parts.append(c)
+                            continue
                         c = v.in_cols[b]
                         if isinstance(c, slice):
                             c = np.arange(c.start or 0, c.stop or v.nrows, c.step or 1)
@@ -119,8 +179,8 @@ def _concatenate_rule(invals, traced, n, **params):
             max_k = max(v.k for v in invals)
             def _widen_values(v):
                 if max_k == 1:
-                    return v.values
-                vals = v.values if v.values.ndim == nb + 2 else v.values[..., None]
+                    return v.data
+                vals = v.data if v.data.ndim == nb + 2 else v.data[..., None]
                 if v.k < max_k:
                     pad = [(0, 0)] * vals.ndim
                     pad[-1] = (0, max_k - v.k)
@@ -168,26 +228,38 @@ def _concatenate_rule(invals, traced, n, **params):
                 batch_shape=invals[0].batch_shape,
             )
 
-    # Structural fast path: `concatenate([C, ..., traced_op, ..., C], axis=0)`
-    # — exactly one traced operand sandwiched by closures. Closures have no
-    # dependency on the traced input, so their Jacobian rows are zero and the
-    # result is structurally `op.pad_rows(left_total, right_total)`. Promote
-    # (Constant)Diagonal to BEllpack first so pad_rows is available.
-    if dimension == 0 and len(traced_idxs) == 1:
+    # Structural fast path: `concatenate([C, ..., traced_op, ..., C])`
+    # along the primal out_size axis — exactly one traced operand
+    # sandwiched by closures. Closures from `jax.linearize` are
+    # structurally zero, so the result is `op.pad_rows(left, right)`.
+    # `pad_rows` preserves the transposed flag and pads `out_size`,
+    # which is the primal-output axis under either flag.
+    closures_1d = all(
+        len(v.shape) == 1
+        for v, t in zip(invals, traced) if not t and hasattr(v, "shape")
+    )
+    fast_path_dim = (dimension == 0) or (dimension == 1 and closures_1d)
+    if fast_path_dim and len(traced_idxs) == 1:
         idx = traced_idxs[0]
         op = invals[idx]
         left_total = sum(int(invals[i].shape[0]) for i in range(idx))
         right_total = sum(int(invals[i].shape[0])
                           for i in range(idx + 1, len(invals)))
+        # Promote symmetric LinOps to BE. ConstantDiagonal/Diagonal
+        # are symmetric so dense rendering is identical either way; use
+        # `transposed=True` (V at axis 0) when entering via vmap rewrite
+        # so downstream rules see the canonical V-at-0 layout.
+        promote_transposed = (dimension == 1)
         if isinstance(op, ConstantDiagonal):
             op = BEllpack(
                 0, op.n, (np.arange(op.n),),
-                jnp.broadcast_to(jnp.asarray(op.value), (op.n,)),
-                op.n, op.n,
+                jnp.broadcast_to(jnp.asarray(op.data), (op.n,)),
+                op.n, op.n, transposed=promote_transposed,
             )
         elif isinstance(op, Diagonal):
             op = BEllpack(
-                0, op.n, (np.arange(op.n),), op.values, op.n, op.n,
+                0, op.n, (np.arange(op.n),), op.data, op.n, op.n,
+                transposed=promote_transposed,
             )
         if isinstance(op, BEllpack) and op.n_batch == 0:
             return op.pad_rows(left_total, right_total)
@@ -198,12 +270,34 @@ def _concatenate_rule(invals, traced, n, **params):
             return sparse.BCOO(
                 (op.data, new_indices), shape=(out_size, op.shape[1])
             )
-    # Fallback: densify everything.
+    # All-traced BCOO concat: delegate to `sparse.bcoo_concatenate`
+    # for an all-sparse result. Closes the LUKSAN11LS-class chain
+    # `concat(BCOO(...), BCOO(...)) → BCOO(...)` that previously
+    # densified at this rule's dense fallback below. Closures
+    # contribute structural zeros, so we'd need to materialize them
+    # as BCOO too — keep this path narrow to all-traced for now.
+    if (len(traced_idxs) == len(invals)
+            and all(isinstance(v, sparse.BCOO) for v in invals)
+            and all(v.n_batch == invals[0].n_batch for v in invals[1:])):
+        return sparse.bcoo_concatenate(
+            list(invals), dimension=dimension,
+        )
+
+    # Fallback: densify everything. When any traced operand has V at
+    # axis 0 (densified-from-transposed-BE chain — detected by
+    # `shape[0]==n, shape[-1]!=n`), build closure zeros with V at 0 to
+    # match. Otherwise V at -1 (Phase B default).
+    raw_traced = [v.todense() if isinstance(v, LinOpProtocol) else v
+                  for v, t in zip(invals, traced) if t]
+    v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+                    for d in raw_traced)
     parts = []
+    traced_iter = iter(raw_traced)
     for v, t in zip(invals, traced):
         if t:
-            parts.append(v.todense() if isinstance(v, LinOpProtocol) else v)
+            parts.append(next(traced_iter))
         else:
-            # Closure constant: extend with a zero "input axis" of size n.
-            parts.append(jnp.broadcast_to(v[..., None] * 0, v.shape + (n,)))
+            zero_shape = (n,) + v.shape if v_at_zero else v.shape + (n,)
+            parts.append(jnp.broadcast_to(v[None] * 0 if v_at_zero
+                                          else v[..., None] * 0, zero_shape))
     return lax.concatenate(parts, dimension)

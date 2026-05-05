@@ -1,0 +1,68 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\def\@LN@column{1}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}State of the art}{1}{section.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Sparse representations}{1}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}You only linearize once}{1}{section.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}}{1}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Partial separability and the limits of coloring}{1}{section.6}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Walk for $f(x) = \mathrm  {pad}\bigl  ((c\odot x)_{1:} - (c\odot x)_{:-1}\bigr  )$ with $c=(3,5,7,9,11)$, $\mathrm  {len}(x)=5$. The mathematical Jacobian (parentheses, right-aligned for sign clarity) is contrasted with the BEllpack representation (square brackets, the literal in-memory tensors). Elementwise scaling rewrites \texttt  {values} in place; slicing shifts the columnfband; subtraction concatenates two $k{=}1$ bands into a $k{=}2$ band; pad updates only \texttt  {start}/\texttt  {end}.}}{2}{table.1}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Categorised list of linear JAX primitives supported by Ellpax (trailing \texttt  {\_p} dropped).}}{2}{table.2}\protected@file@percent }
+\citation{curtispowellreid1974sparse}
+\citation{colemanmore1983jacobian,colemanmore1984hessian}
+\citation{curtispowellreid1974sparse,powelltoint1979sparse,colemanmore1983jacobian}
+\citation{gebremedhin2005color}
+\citation{hilldalle2025sparser,dallehill2026common}
+\citation{griewanktoint1982partitioned,conngouldtoint1992lancelot}
+\citation{duffreid1983multifrontal,liu1992multifrontal}
+\citation{gouldorbantoint2014cutest,bongartz1995cute}
+\citation{pearlmutter1994fast}
+\citation{griewankwalther2008evaluating,baydin2018automatic,saad2003iterative}
+\citation{frostigjohnsonleary2018compiling,jax2018github}
+\bibstyle{plainnat}
+\bibdata{references}
+\bibcite{baydin2018automatic}{{1}{2018}{{Baydin et~al.}}{{Baydin, Pearlmutter, Radul, and Siskind}}}
+\bibcite{bongartz1995cute}{{2}{1995}{{Bongartz et~al.}}{{Bongartz, Conn, Gould, and Toint}}}
+\def\@LN@column{1}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Each summand admits a valid 3-coloring of its column-conflict graph (columns sharing $i$ never co-occur in a $g_1$-line; similarly $j$ for $g_2$). Their union makes \emph  {every} pair of grid points share a line --- the column conflict graph becomes $K_9$, requiring 9 colors. The highlighted edges in (c) show two pairs each covered by exactly one summand.}}{3}{figure.1}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Boolean Jacobian patterns at $P=3$. Each summand is $9{\times }9$ with $3$ nonzeros per row; the column-conflict graph of $J(g_1)$ admits a $3$-colouring grouped by row index $i$ (panel a, columns of grid points sharing $i$ never co-occur in a $g_1$-line), and likewise $J(g_2)$ admits a $3$-colouring by $j$ (panel b, the transverse partition). When the two Jacobians are added, every pair of distinct columns is joined by some $g_1$- or $g_2$-line, so the aggregate column-conflict graph is complete and no compression below $9$ colours exists (panel c, shown without colouring).}}{3}{figure.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Bib test}{3}{section.7}\protected@file@percent }
+\newlabel{sec:bibtest}{{7}{3}{Bib test}{section.7}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusions}{3}{section.8}\protected@file@percent }
+\bibcite{jax2018github}{{3}{2018}{{Bradbury et~al.}}{{Bradbury, Frostig, Hawkins, Johnson, Leary, Maclaurin, Necula, Paszke, Vander{P}las, Wanderman-{M}ilne, and Zhang}}}
+\bibcite{colemanmore1983jacobian}{{4}{1983}{{Coleman and Moré}}{{}}}
+\bibcite{colemanmore1984hessian}{{5}{1984}{{Coleman and Moré}}{{}}}
+\bibcite{conngouldtoint1992lancelot}{{6}{1992}{{Conn et~al.}}{{Conn, Gould, and Toint}}}
+\bibcite{curtispowellreid1974sparse}{{7}{1974}{{CURTIS et~al.}}{{CURTIS, POWELL, and REID}}}
+\bibcite{dallehill2026common}{{8}{2026}{{Dalle and Hill}}{{}}}
+\bibcite{duffreid1983multifrontal}{{9}{1983}{{Duff and Reid}}{{}}}
+\bibcite{frostigjohnsonleary2018compiling}{{10}{2018}{{Frostig et~al.}}{{Frostig, Johnson, and Leary}}}
+\bibcite{gebremedhin2005color}{{11}{2005}{{Gebremedhin et~al.}}{{Gebremedhin, Manne, and Pothen}}}
+\bibcite{gouldorbantoint2014cutest}{{12}{2014}{{Gould et~al.}}{{Gould, Orban, and Toint}}}
+\bibcite{griewanktoint1982partitioned}{{13}{1982}{{Griewank and Toint}}{{}}}
+\bibcite{griewankwalther2008evaluating}{{14}{2008}{{Griewank and Walther}}{{}}}
+\bibcite{hilldalle2025sparser}{{15}{2025}{{Hill and Dalle}}{{}}}
+\bibcite{liu1992multifrontal}{{16}{1992}{{Liu}}{{}}}
+\bibcite{pearlmutter1994fast}{{17}{1994}{{Pearlmutter}}{{}}}
+\def\@LN@column{1}
+\bibcite{powelltoint1979sparse}{{18}{1979}{{Powell and Toint}}{{}}}
+\bibcite{saad2003iterative}{{19}{2003}{{Saad}}{{}}}
+\gdef \LT@i {\LT@entry 
+    {1}{164.99156pt}\LT@entry 
+    {4}{201.09435pt}}
+\def\@LN@column{1}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Technical appendices and supplementary material}{5}{appendix.A}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {B}Action of primitive rules on a BEllpack operand}{5}{appendix.B}\protected@file@percent }
+\newlabel{app:bellpack-rules}{{B}{5}{Action of primitive rules on a BEllpack operand}{appendix.B}{}}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\def\@LN@column{1}
+\gdef \@abspage@last{13}

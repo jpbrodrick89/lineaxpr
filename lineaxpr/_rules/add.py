@@ -19,6 +19,7 @@ from .._linops import (
     LinOpProtocol,
     _bcoo_concat,
     _ellpack_to_bcoo_batched,
+    replace_slots,
 )
 
 # ---------------------------------------------------------------------------
@@ -113,10 +114,10 @@ def _broadcast_be_to_batch(be, target_batch_shape):
         return None
     # Broadcast values.
     if be.k == 1:
-        new_values = jnp.broadcast_to(be.values, target_batch_shape + (be.nrows,))
+        new_values = jnp.broadcast_to(be.data, target_batch_shape + (be.nrows,))
     else:
         new_values = jnp.broadcast_to(
-            be.values, target_batch_shape + (be.nrows, be.k))
+            be.data, target_batch_shape + (be.nrows, be.k))
     # Broadcast cols.
     new_in_cols: list[ColArr] = []
     for c in be.in_cols:
@@ -133,10 +134,53 @@ def _broadcast_be_to_batch(be, target_batch_shape):
             )
     return BEllpack(
         start_row=be.start_row, end_row=be.end_row,
-        in_cols=tuple(new_in_cols), values=new_values,
+        in_cols=tuple(new_in_cols), data=new_values,
         out_size=be.out_size, in_size=be.in_size,
         batch_shape=target_batch_shape,
     )
+
+
+def _bcoo_move_v_to_front(bc):
+    """BCOO with V at axis -1 → BCOO with V at axis 0, n_batch=0.
+
+    BCOO.transpose forbids permuting batch axes with non-batch axes,
+    so the natural `(ndim-1, 0, ..., ndim-2)` permutation we'd need to
+    bring V from the trailing axis to the leading axis is unsupported
+    for batched BCOOs. We bypass the restriction by flattening the
+    batch axes into the index columns and emitting an unbatched
+    (n_batch=0) BCOO at the V-at-0 layout.
+
+    Only handles n_dense=0 BCOOs. Returns None on other forms so the
+    caller can fall back to densify-and-transpose.
+    """
+    if not isinstance(bc, sparse.BCOO):
+        return None
+    if bc.n_dense != 0:
+        return None
+    n_batch = bc.n_batch
+    sh = tuple(bc.shape)
+    V = sh[-1]
+    sparse_shape = sh[n_batch:]            # includes V at -1
+    n_sparse = len(sparse_shape)
+    batch_shape = sh[:n_batch]
+    B = int(np.prod(batch_shape)) if batch_shape else 1
+    nse_per = bc.data.shape[-1]
+    # Flatten batch and per-batch nse together.
+    flat_data = bc.data.reshape(B * nse_per)
+    flat_indices = bc.indices.reshape(B * nse_per, n_sparse)
+    if batch_shape:
+        # Build per-row batch index columns from a meshgrid.
+        grids = np.indices(batch_shape).reshape(n_batch, B)
+        batch_cols = np.repeat(grids, nse_per, axis=1).T  # (B*nse, n_batch)
+        batch_cols = jnp.asarray(batch_cols, dtype=flat_indices.dtype)
+    else:
+        batch_cols = jnp.zeros((B * nse_per, 0), dtype=flat_indices.dtype)
+    v_col = flat_indices[:, -1:]                # (rows, 1)
+    sparse_other = flat_indices[:, :-1]         # (rows, n_sparse - 1)
+    new_indices = jnp.concatenate(
+        [v_col, batch_cols, sparse_other], axis=1)
+    new_shape = (V,) + batch_shape + sparse_shape[:-1]
+    return sparse.BCOO((flat_data, new_indices), shape=new_shape)
 
 
 def _densify_if_wider_than_dense(op, n):
@@ -159,16 +203,16 @@ def _tile_1row_bellpack(ep, target_rows):
     """Tile a 1-row BEllpack (out_size=1) to have `target_rows` output rows.
 
     All rows share the same column pattern (ep.in_cols). Values broadcast
-    by repeating ep.values `target_rows` times along the row axis.
+    by repeating ep.data `target_rows` times along the row axis.
     Returns a BEllpack with start_row=0, end_row=target_rows.
     """
     assert ep.out_size == 1 and ep.n_batch == 0
     # k=1: values shape (1,) → (target_rows,) via broadcast.
     # k>=2: values shape (1, k) → (target_rows, k).
     if ep.k == 1:
-        new_values = jnp.broadcast_to(ep.values, (target_rows,))
+        new_values = jnp.broadcast_to(ep.data, (target_rows,))
     else:
-        new_values = jnp.broadcast_to(ep.values, (target_rows, ep.k))
+        new_values = jnp.broadcast_to(ep.data, (target_rows, ep.k))
     # Cols: 1D (nrows=1,) → broadcast to (target_rows,).
     new_in_cols: list[ColArr] = []
     for c in ep.in_cols:
@@ -180,7 +224,7 @@ def _tile_1row_bellpack(ep, target_rows):
             new_in_cols.append(jnp.broadcast_to(jnp.asarray(c), (target_rows,)))
     return BEllpack(
         start_row=0, end_row=target_rows,
-        in_cols=tuple(new_in_cols), values=new_values,
+        in_cols=tuple(new_in_cols), data=new_values,
         out_size=target_rows, in_size=ep.in_size,
     )
 
@@ -194,10 +238,10 @@ def _slice_be_rows(ep, lo, hi):
         for c in ep.in_cols
     )
     if ep.n_batch == 0:
-        new_values = ep.values[rel_lo:rel_hi] if ep.k == 1 else ep.values[rel_lo:rel_hi, :]
+        new_values = ep.data[rel_lo:rel_hi] if ep.k == 1 else ep.data[rel_lo:rel_hi, :]
     else:
         sl = (slice(None),) * ep.n_batch + (slice(rel_lo, rel_hi),)
-        new_values = ep.values[sl]
+        new_values = ep.data[sl]
     return BEllpack(lo, hi, new_in_cols, new_values,
                    ep.out_size, ep.in_size, batch_shape=ep.batch_shape)
 
@@ -270,7 +314,7 @@ def _add_be_dedup(vals, first, n):
             s1 = bool(np.all(np.diff(order1) >= 0)) if len(order1) > 1 else True
             s2 = bool(np.all(np.diff(order2) >= 0)) if len(order2) > 1 else True
             def _ov(v):
-                return v.values_2d
+                return v.data_2d
             v1r = _ov(v1).at[..., order1].get(
                 unique_indices=True, indices_are_sorted=s1)
             v2r = _ov(v2).at[..., order2].get(
@@ -297,7 +341,7 @@ def _add_be_dedup(vals, first, n):
     band_idx = 0
     for v in vals:
         for b in range(v.k):
-            vals_b = v.values_2d[..., b]
+            vals_b = v.data_2d[..., b]
             g = int(inverse[band_idx])
             if group_values[g] is None:
                 group_values[g] = vals_b
@@ -349,8 +393,8 @@ def _add_be_overlap_merge(ep1, ep2, n):
             extra_cols = tuple(
                 np.full(p.nrows, -1, dtype=np.intp) for _ in range(extra_k)
             )
-            extra_vals = jnp.zeros((p.nrows, extra_k), dtype=p.values.dtype)
-            base = p.values_2d
+            extra_vals = jnp.zeros((p.nrows, extra_k), dtype=p.data.dtype)
+            base = p.data_2d
             padded.append(BEllpack(
                 p.start_row, p.end_row,
                 p.in_cols + extra_cols,
@@ -367,8 +411,332 @@ def _add_be_overlap_merge(ep1, ep2, n):
 
 def _add_rule(invals, traced, n, **params):
     """Handle `lax.add_p` / `add_any_p`: sum compatible LinOps, promoting to
-    the least-specific form needed. Dispatch is on the set of input kinds."""
+    the least-specific form needed. Dispatch is on the set of input kinds.
+
+    Phase B transposed-flag handling: if all traced BEllpack operands
+    have `transposed=True`, flip them to canonical (free flag flip),
+    run the rest of the rule, flip the result back. If flags are
+    mixed, densify any transposed=True BE first (lossy but correct;
+    structural sparsity could be recovered later by adding native
+    BE row/col-swap real-motion).
+    """
     del params
+
+    # ---- Phase B: pre-process transposed flags -----
+    # Flip-and-flip-back only safe when ALL traced operands are BE with
+    # the same transposed flag. If any traced operand is non-BE (BCOO,
+    # dense, CD/Diagonal which are symmetric), or flags are mixed,
+    # densify the transposed=True BEs so the rest of the rule sees
+    # logical-view dense or canonical BEs.
+    all_traced = [v for v, t in zip(invals, traced) if t]
+    traced_be = [v for v in all_traced if isinstance(v, BEllpack)]
+
+    # V-axis-middle fast path: all traced are BE with same v_axis (set,
+    # i.e. middle), same shape, same in_cols, same row range. Merge by
+    # summing data directly. Used by EIGEN-class chains where two
+    # parallel BEs converge at v_axis=middle before a final transpose.
+    if (traced_be
+            and len(traced_be) == len(all_traced)
+            and all(b.v_axis is not None for b in traced_be)
+            and len({b.v_axis for b in traced_be}) == 1
+            and len({b.transposed for b in traced_be}) == 1
+            and len({b.shape for b in traced_be}) == 1
+            and len({(b.start_row, b.end_row) for b in traced_be}) == 1
+            and len({tuple(c.tobytes() if hasattr(c, 'tobytes') else id(c)
+                           for c in b.in_cols) for b in traced_be}) == 1):
+        first = traced_be[0]
+        summed = sum(b.data for b in traced_be[1:]) + traced_be[0].data
+        return replace_slots(first, data=summed)
+
+    if traced_be:
+        be_flags = {v.transposed for v in traced_be}
+        all_be = len(traced_be) == len(all_traced)
+        if all_be and be_flags == {True}:
+            # Pre-densify shortcut: when all T=True BEs would band-widen
+            # past `k >= in_size` (e.g. PENALTY3's 200-way reduce_sum
+            # add), flip-flip-back's `_add_rule_canonical` densifies into
+            # a V-at-(-1) Tracer, then needs a real `jnp.transpose` to
+            # restore V-at-0. Build the widened BE at T=True directly
+            # (single concat of data + cols) and densify at T=True
+            # (scatters into V-at-0 canvas) — saves the trailing
+            # transpose vs flip-flip-back.
+            same_range_T = all(
+                v.start_row == traced_be[0].start_row
+                and v.end_row == traced_be[0].end_row
+                and v.out_size == traced_be[0].out_size
+                and v.in_size == traced_be[0].in_size
+                and v.batch_shape == traced_be[0].batch_shape
+                and v.v_axis is None
+                for v in traced_be
+            )
+            if same_range_T:
+                K_total = sum(v.k for v in traced_be)
+                first = traced_be[0]
+                # Only shortcut when even after dedup the result would
+                # densify — count unique col keys; if unique_K >= in_size
+                # then dedup can't bring it below the densify threshold.
+                # (If dedup could rescue sparsity, fall through so the
+                # canonical path takes that branch — see HS38/EGGCRATE,
+                # which have many duplicate cols across operands.)
+                if K_total >= first.in_size:
+                    def _col_key(c):
+                        if isinstance(c, np.ndarray):
+                            return ("np", c.shape, c.tobytes())
+                        if isinstance(c, slice):
+                            return ("slc", c.start, c.stop, c.step)
+                        return ("id", id(c))
+                    unique_keys = set()
+                    for v in traced_be:
+                        for c in v.in_cols:
+                            unique_keys.add(_col_key(c))
+                    if len(unique_keys) >= first.in_size:
+                        # Build widened T=True BE in one shot, densify.
+                        band_axis = first.n_batch + 1
+                        parts = [v.data_2d for v in traced_be]
+                        new_values = (jnp.concatenate(parts, axis=band_axis)
+                                      if len(parts) > 1 else parts[0])
+                        widened = BEllpack(
+                            first.start_row, first.end_row,
+                            tuple(c for v in traced_be for c in v.in_cols),
+                            new_values,
+                            first.out_size, first.in_size,
+                            batch_shape=first.batch_shape,
+                            transposed=True,
+                        )
+                        return widened.todense()
+            # All transposed=True BEs: flip all to canonical (free),
+            # recurse, flip result back. If all operands share the same
+            # v_axis (set or None), restore it on the result so band-
+            # widening preserves the V-at-middle invariant.
+            common_v_axis = (traced_be[0].v_axis
+                             if len({b.v_axis for b in traced_be}) == 1
+                             else None)
+            flipped = [
+                replace_slots(v, transposed=False)
+                if t and isinstance(v, BEllpack) else v
+                for v, t in zip(invals, traced)
+            ]
+            res = _add_rule_canonical(flipped, traced, n)
+            if isinstance(res, BEllpack):
+                return replace_slots(res, transposed=True,
+                                     v_axis=common_v_axis)
+            # The recurse computed in canonical V-at-(-1) frame; we need
+            # V back at axis 0. For ndim==2 that's a swap; for ndim>2
+            # it's "move last axis to front".
+            if isinstance(res, sparse.BCOO):
+                if res.ndim == 2:
+                    return res.transpose(axes=(1, 0))
+                if res.ndim >= 3:
+                    moved = _bcoo_move_v_to_front(res)
+                    if moved is not None:
+                        return moved
+                    perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+                    return jnp.transpose(res.todense(), perm)
+                return res
+            if hasattr(res, "ndim") and res.ndim >= 2:
+                perm = (res.ndim - 1,) + tuple(range(res.ndim - 1))
+                return jnp.transpose(res, perm)
+            return res
+        if True in be_flags:
+            # `(n,)` linear-form + no-op-squeezed BE_T `(n, 1)` mix
+            # remains a special case: extract the BE as `(n,)` so the
+            # broadcast lines up with the dense vector. The BE_T's
+            # `(n, 1)` `.todense()` would broadcast to `(n, n)` here.
+            other_is_linear_form = any(
+                t and (
+                    (isinstance(v, jax.Array) and v.ndim == 1
+                     and v.shape[0] == n)
+                    or (isinstance(v, sparse.BCOO) and v.ndim == 1
+                        and v.shape[0] == n)
+                )
+                for v, t in zip(invals, traced)
+            )
+            if other_is_linear_form:
+                # Extract BE_T `(n, 1)` no-op-squeezed col-vector to a
+                # `(n,)` ndarray — and densify a 1D BCOO too so all
+                # operands sum at logical 1D shape (the eqn's expected
+                # output aval is 1D in this V-augmented chain).
+                invals = tuple(
+                    (v.todense()[:, 0]
+                     if (t and isinstance(v, BEllpack) and v.transposed
+                         and v.n_batch == 0 and v.out_size == 1
+                         and v.start_row == 0 and v.end_row == 1)
+                     else v.todense()
+                     if (t and isinstance(v, sparse.BCOO) and v.ndim == 1)
+                     else v)
+                    for v, t in zip(invals, traced)
+                )
+            else:
+                # Pre-process: BE_T `(n, 1)` no-op-squeezed col-vector
+                # mixed with a square `(n, n)` LinOp (Diagonal /
+                # ConstantDiagonal / BEllpack) — broadcast the BE_T to
+                # `(n, n)` by tiling its single column n times. Reuses
+                # `_tile_1row_bellpack` via the user's transpose
+                # pattern: flag-flip BE_T → BE_F (now `(1, n)` row),
+                # tile to `(n, n)` BE_F, flag-flip back to BE_T.
+                _shapes = [tuple(v.shape) for v, t in zip(invals, traced)
+                           if t and hasattr(v, "shape")]
+                if _shapes and any(s == (n, n) for s in _shapes):
+                    invals = tuple(
+                        (replace_slots(
+                            _tile_1row_bellpack(
+                                replace_slots(v, transposed=False), n,
+                            ),
+                            transposed=True,
+                        )
+                         if (t and isinstance(v, BEllpack) and v.transposed
+                             and v.n_batch == 0 and v.out_size == 1
+                             and v.start_row == 0 and v.end_row == 1
+                             and v.in_size == n
+                             and tuple(v.shape) != (n, n))
+                         else v)
+                        for v, t in zip(invals, traced)
+                    )
+                traced_vals = [v for v, t in zip(invals, traced) if t]
+                # Mixed `BE_T + (Diagonal/CD)` (no BCOO/ndarray): flip
+                # all BE_T to canonical (free flag flip), recurse via
+                # canonical body. If it returns a BE result, flip the
+                # flag back to T=True. If it returns a BCOO (e.g. via
+                # the canonical `kinds <= {CD, D, BE, BCOO}` branch
+                # when full-rows isn't met), keep it at canonical
+                # `(out, in)` layout — downstream BCOO rules
+                # (`_select_n_rule`, `_scatter_add_rule`) assume that
+                # convention.
+                # Only fire when the BE_T occupies its full row range:
+                # the canonical body's `kinds <= {CD, D, BE}` branch
+                # requires `full_rows_ok` and would otherwise fall
+                # through to BCOO concat — emitting a BCOO at canonical
+                # layout would clash with downstream rules expecting a
+                # BE here. Partial-row BE_T's keep the densify path.
+                _all_be_full = (
+                    all(isinstance(v, (BEllpack, ConstantDiagonal, Diagonal))
+                        for v in traced_vals)
+                    and all(hasattr(v, 'shape') for v in traced_vals)
+                    and len({tuple(v.shape) for v in traced_vals}) == 1
+                    and all(getattr(v, 'n_batch', 0) == 0
+                            for v in traced_vals
+                            if isinstance(v, BEllpack))
+                    and all(len(v.shape) == 2 and v.shape[0] == v.shape[1]
+                            for v in traced_vals)
+                    and all(v.start_row == 0 and v.end_row == v.shape[0]
+                            for v in traced_vals
+                            if isinstance(v, BEllpack))
+                )
+                if _all_be_full:
+                    flipped = [
+                        replace_slots(v, transposed=False)
+                        if t and isinstance(v, BEllpack) else v
+                        for v, t in zip(invals, traced)
+                    ]
+                    res = _add_rule_canonical(flipped, traced, n)
+                    if isinstance(res, BEllpack):
+                        return replace_slots(res, transposed=True)
+                    # The recurse computed in canonical V-at-(-1) frame;
+                    # we need V back at axis 0.
+                    if isinstance(res, sparse.BCOO):
+                        if res.ndim == 2:
+                            return res.transpose(axes=(1, 0))
+                        if res.ndim >= 3:
+                            moved = _bcoo_move_v_to_front(res)
+                            if moved is not None:
+                                return moved
+                            perm = ((res.ndim - 1,)
+                                    + tuple(range(res.ndim - 1)))
+                            return jnp.transpose(res.todense(), perm)
+                        return res
+                    if hasattr(res, "ndim") and res.ndim >= 2:
+                        perm = ((res.ndim - 1,)
+                                + tuple(range(res.ndim - 1)))
+                        return jnp.transpose(res, perm)
+                    return res
+                # If a BCOO operand is present and all operands have a
+                # `to_bcoo` route at matching shape, promote each to
+                # BCOO and concat (preserves sparsity).
+                if (any(isinstance(v, sparse.BCOO) for v in traced_vals)
+                        and all(hasattr(v, 'shape') for v in traced_vals)
+                        and len({tuple(v.shape) for v in traced_vals}) == 1
+                        and all(isinstance(v, (BEllpack, sparse.BCOO,
+                                                ConstantDiagonal, Diagonal))
+                                for v in traced_vals)):
+                    bcoo_vals = [
+                        v.to_bcoo() if hasattr(v, 'to_bcoo') else v
+                        for v in traced_vals
+                    ]
+                    return _bcoo_concat(bcoo_vals,
+                                        shape=tuple(traced_vals[0].shape))
+                # Mixed transposed-flag BEllpack operands (BE_T + BE_F)
+                # — same shape OR different shape — is a code smell
+                # under the supported vmap(in_axes=-1, out_axes=-1)
+                # convention. An upstream rule must have dropped the
+                # `transposed` flag (or otherwise put V at the wrong
+                # axis) for two parallel sub-trees of the same `add`
+                # to disagree on the layout. Raise loudly rather than
+                # densify or BCOO-promote — patching the symptom in
+                # `_add_rule` hides the upstream bug. Audit the
+                # producers and fix them.
+                _be_only = [v for v in traced_vals
+                            if isinstance(v, BEllpack)]
+                _non_be_traced = [v for v in traced_vals
+                                  if not isinstance(v, BEllpack)]
+                if (len(_be_only) >= 2
+                        and not _non_be_traced
+                        and len({v.transposed for v in _be_only}) > 1):
+                    raise AssertionError(
+                        "_add_rule: mixed transposed-flag BEllpack "
+                        "operands (BE_T + BE_F) — this should not "
+                        "happen under the supported vmap convention "
+                        "(in_axes=-1, out_axes=-1). An upstream rule "
+                        "dropped the `transposed` flag (or put V at "
+                        "the wrong axis); please audit the producers "
+                        "below and file a lineaxpr issue with the "
+                        "minimal `f(y)` that triggers this:\n"
+                        + "\n".join(
+                            f"  BE shape={v.shape} T={v.transposed} "
+                            f"k={v.k} out_size={v.out_size} "
+                            f"in_size={v.in_size} batch={v.batch_shape}"
+                            for v in _be_only)
+                    )
+                # BE (any flag) + Diagonal/CD at same logical shape:
+                # promote to BCOO and concat. Sparsity is preserved
+                # because Diagonal/CD has a fixed n nonzeros and the
+                # BE adds its own structural support — the result is
+                # well-bounded. NOT applied to BE+BE: that case
+                # almost always comes from an upstream `transposed`
+                # flag-drop and should be fixed at the producer.
+                _has_diag = any(isinstance(v, (ConstantDiagonal, Diagonal))
+                                for v in traced_vals)
+                if (_has_diag
+                        and all(isinstance(v, (BEllpack, ConstantDiagonal,
+                                               Diagonal))
+                                for v in traced_vals)
+                        and all(hasattr(v, 'shape') for v in traced_vals)
+                        and len({tuple(v.shape) for v in traced_vals}) == 1
+                        and all(getattr(v, 'n_batch', 0) == 0
+                                for v in traced_vals
+                                if isinstance(v, BEllpack))):
+                    bcoo_vals = [
+                        v.to_bcoo() if hasattr(v, 'to_bcoo') else v
+                        for v in traced_vals
+                    ]
+                    return _bcoo_concat(bcoo_vals,
+                                        shape=tuple(traced_vals[0].shape))
+                # Last resort: densify T=True BEs so canonical body
+                # sees consistent forms. The mixed-flag BE+BE case is
+                # already raised above; this only fires on
+                # `BE_T + dense / BCOO / Diagonal` mixes that didn't
+                # match the structural BCOO-promote path.
+                invals = tuple(
+                    (v.todense()
+                     if (t and isinstance(v, BEllpack) and v.transposed)
+                     else v)
+                    for v, t in zip(invals, traced)
+                )
+    return _add_rule_canonical(invals, traced, n)
+
+
+def _add_rule_canonical(invals, traced, n):
+    """Body of _add_rule, expecting all traced BE operands to be at
+    `transposed=False` canonical layout."""
     vals = [v for v, t in zip(invals, traced) if t]
     if not vals:
         return None
@@ -410,17 +778,17 @@ def _add_rule(invals, traced, n, **params):
 
     # All-ConstantDiagonal with matching n: sum the scalar values.
     if kinds == {ConstantDiagonal} and all(v.n == vals[0].n for v in vals):
-        return ConstantDiagonal(vals[0].n, sum(v.value for v in vals))
+        return ConstantDiagonal(vals[0].n, sum(v.data for v in vals))
 
     # Subset of {ConstantDiagonal, Diagonal} with matching n: emit Diagonal.
     if kinds <= {ConstantDiagonal, Diagonal} and all(v.n == vals[0].n for v in vals):
-        dtype = next((v.values.dtype for v in vals if isinstance(v, Diagonal)),
+        dtype = next((v.data.dtype for v in vals if isinstance(v, Diagonal)),
                      jnp.result_type(float))
         total = jnp.zeros(vals[0].n, dtype=dtype)
         for v in vals:
             total = total + (
-                jnp.broadcast_to(v.value, (v.n,))
-                if isinstance(v, ConstantDiagonal) else v.values
+                jnp.broadcast_to(v.data, (v.n,))
+                if isinstance(v, ConstantDiagonal) else v.data
             )
         return Diagonal(total)
 
@@ -473,9 +841,9 @@ def _add_rule(invals, traced, n, **params):
                 for v in vals[1:]
             )
             if same_cols:
-                summed_values = vals[0].values
+                summed_values = vals[0].data
                 for v in vals[1:]:
-                    summed_values = summed_values + v.values
+                    summed_values = summed_values + v.data
                 return BEllpack(first.start_row, first.end_row,
                                first.in_cols, summed_values,
                                first.out_size, first.in_size,
@@ -497,7 +865,7 @@ def _add_rule(invals, traced, n, **params):
             # Values shape for n_batch=0 is (nrows,) for k=1 or (nrows, k)
             # for k>=2; concat along the band axis (axis=1 i.e. the k dim).
             # For batched values (n_batch>0) the band axis is n_batch+1.
-            parts = [v.values_2d for v in vals]
+            parts = [v.data_2d for v in vals]
             new_values = jnp.concatenate(parts, axis=band_axis) if len(parts) > 1 else parts[0]
             return _densify_if_wider_than_dense(BEllpack(
                 first.start_row, first.end_row,
@@ -524,10 +892,10 @@ def _add_rule(invals, traced, n, **params):
             if abut:
                 k_new = first.k
                 if k_new == 1:
-                    parts = [v.values_2d[..., 0] for v in sorted_vals]
+                    parts = [v.data_2d[..., 0] for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 else:
-                    parts = [v.values for v in sorted_vals]
+                    parts = [v.data for v in sorted_vals]
                     new_values = jnp.concatenate(parts, axis=0)
                 new_in_cols: list[ColArr] = []
                 for b in range(k_new):
@@ -580,12 +948,12 @@ def _add_rule(invals, traced, n, **params):
                     if isinstance(v, ConstantDiagonal):
                         ep_vals.append(BEllpack(
                             0, n_sq, (arange_n,),
-                            jnp.broadcast_to(jnp.asarray(v.value), (n_sq,)),
+                            jnp.broadcast_to(jnp.asarray(v.data), (n_sq,)),
                             n_sq, n_sq,
                         ))
                     elif isinstance(v, Diagonal):
                         ep_vals.append(BEllpack(
-                            0, n_sq, (arange_n,), v.values, n_sq, n_sq,
+                            0, n_sq, (arange_n,), v.data, n_sq, n_sq,
                         ))
                     else:
                         ep_vals.append(v)
@@ -662,20 +1030,86 @@ def _add_rule(invals, traced, n, **params):
     # (n,) ndarrays and sum. Loses row-sparsity info; that's fine —
     # this branch only fires for the rare mixed-forms case after the
     # structural matrix paths above already got a chance.
+    # 1D linear-form sparse path: when all operands are 1D-linear-form
+    # representations (BE row/col vectors, 1D BCOOs, or actual 1D
+    # arrays), each can be converted to a 1D BCOO of shape `(n,)` and
+    # concatenated. Preserves sparsity through the canonical body.
+    # Only fires when all operands have static `np.ndarray` in_cols
+    # (so the 1D-BCOO indices are buildable without traced gathers).
+    # Triggered by BROYDN3DLS-class chains where post-vmap forks
+    # produce both BE_T(n, 1) (col-vector, V-at-0) and BE_F(1, n)
+    # (row-vector, V-at-(-1)) representations of the same 1D linear
+    # form (`add_any` aval is `float64[n]` 1D).
+    def _be_to_1d_bcoo(v):
+        """Convert a 1D-linear-form BE (out_size=1, end_row=1) to a
+        1D BCOO of shape (n,). Returns None if cols aren't static."""
+        if not all(isinstance(c, np.ndarray) and c.ndim == 1
+                   and c.shape[0] == 1 for c in v.in_cols):
+            return None
+        cols_concat = np.concatenate([c.reshape(1) for c in v.in_cols])
+        valid_idx = np.where(cols_concat >= 0)[0]
+        valid_cols = cols_concat[valid_idx]
+        # data is (1,) for k=1, (1, k) for k>=2 — flatten to (k,).
+        vals_flat = jnp.asarray(v.data).reshape(-1)
+        valid_vals = vals_flat[jnp.asarray(valid_idx)]
+        return sparse.BCOO(
+            (valid_vals, jnp.asarray(valid_cols[:, None])),
+            shape=(n,),
+        )
+
+    def _as_1d_bcoo(v):
+        if isinstance(v, sparse.BCOO) and v.shape == (n,):
+            return v
+        if (isinstance(v, BEllpack) and v.n_batch == 0
+                and v.out_size == 1 and v.start_row == 0
+                and v.end_row == 1):
+            return _be_to_1d_bcoo(v)
+        return None
+
+    if (len(vals) >= 2
+            and all((isinstance(v, jax.Array) and v.ndim == 1
+                     and v.shape[0] == n)
+                    or (isinstance(v, sparse.BCOO) and v.shape == (n,))
+                    or (isinstance(v, BEllpack) and v.n_batch == 0
+                        and v.out_size == 1 and v.start_row == 0
+                        and v.end_row == 1)
+                    for v in vals)):
+        as_bcoo = [_as_1d_bcoo(v) for v in vals]
+        if all(b is not None for b in as_bcoo):
+            return _bcoo_concat(as_bcoo, shape=(n,))
+
     def _as_linear_form_row(v):
         if isinstance(v, jax.Array) and v.ndim == 1 and v.shape[0] == n:
             return v
         if (isinstance(v, BEllpack) and v.n_batch == 0
                 and v.out_size == 1 and v.start_row == 0
                 and v.end_row == 1):
-            return v.todense()[0]
+            # transposed=False: dense (1, n); transposed=True: dense (n, 1).
+            d = v.todense()
+            return d[0] if not v.transposed else d[:, 0]
         if isinstance(v, sparse.BCOO) and v.shape == (1, n):
             return v.todense()[0]
+        if isinstance(v, sparse.BCOO) and v.shape == (n, 1):
+            return v.todense()[:, 0]
         return None
     linear_form_rows = [_as_linear_form_row(v) for v in vals]
     if all(r is not None for r in linear_form_rows):
         return functools.reduce(operator.add, linear_form_rows)
 
-    # Dense fallback: densify everything and sum.
+    # Dense fallback: densify everything and sum. Align V positions
+    # if any operand has V at axis 0 (densified-from-transposed-BE
+    # chain) — transpose the V-at-(-1) ones to match.
     dense_vals = [v.todense() if isinstance(v, LinOpProtocol) else v for v in vals]
+    v_at_zero = any(d.ndim >= 2 and d.shape[0] == n and d.shape[-1] != n
+                    for d in dense_vals)
+    if v_at_zero:
+        aligned = []
+        for d in dense_vals:
+            if d.ndim >= 2 and d.shape[-1] == n and d.shape[0] != n:
+                # V at -1; move to 0.
+                perm = (d.ndim - 1,) + tuple(range(d.ndim - 1))
+                aligned.append(jnp.transpose(d, perm))
+            else:
+                aligned.append(d)
+        dense_vals = aligned
     return functools.reduce(operator.add, dense_vals)

@@ -1,0 +1,596 @@
+\documentclass{article}
+
+% Numbered, compressed citations: \cite{a} -> [1], \cite{a,b,c} -> [1-3].
+\PassOptionsToPackage{numbers, compress}{natbib}
+
+% The authors should use one of these tracks.
+% Before accepting by the NeurIPS conference, select one of the options below.
+% 0. "default" for submission
+\usepackage{neurips_2026}
+% the "default" option is equal to the "main" option, which is used for the Main Track with double-blind reviewing.
+% 1. "main" option is used for the Main Track
+%  \usepackage[main]{neurips_2026}
+% 2. "position" option is used for the Position Paper Track
+%  \usepackage[position]{neurips_2026}
+% 3. "eandd" option is used for the Evaluations & Datasets Track
+ % \usepackage[eandd]{neurips_2026}
+ % if you need to opt-in for a single-blind submission in the E&D track:
+ %\usepackage[eandd, nonanonymous]{neurips_2026}
+% 4. "creativeai" option is used for the Creative AI Track
+%  \usepackage[creativeai]{neurips_2026}
+% 5. "sglblindworkshop" option is used for the Workshop with single-blind reviewing
+ % \usepackage[sglblindworkshop]{neurips_2026}
+% 6. "dblblindworkshop" option is used for the Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop]{neurips_2026}
+
+% After being accepted, the authors should add "final" behind the track to compile a camera-ready version.
+% 1. Main Track
+ % \usepackage[main, final]{neurips_2026}
+% 2. Position Paper Track
+%  \usepackage[position, final]{neurips_2026}
+% 3. Evaluations & Datasets Track
+ % \usepackage[eandd, final]{neurips_2026}
+% 4. Creative AI Track
+%  \usepackage[creativeai, final]{neurips_2026}
+% 5. Workshop with single-blind reviewing
+%  \usepackage[sglblindworkshop, final]{neurips_2026}
+% 6. Workshop with double-blind reviewing
+%  \usepackage[dblblindworkshop, final]{neurips_2026}
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote.
+% For workshops (5., 6.), the authors should add the name of the workshop, "\workshoptitle" command is used to set the workshop title.
+% \workshoptitle{WORKSHOP TITLE}
+
+% "preprint" option is used for arXiv or other preprint submissions
+ % \usepackage[preprint]{neurips_2026}
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{neurips_2026}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{tabularx}
+\usepackage{amsmath}
+  \usepackage{mathtools}
+ \usepackage{tikz}
+  \usetikzlibrary{positioning,arrows.meta,fit,backgrounds}
+\usepackage{longtable}
+
+% Note. For the workshop paper template, both \title{} and \workshoptitle{} are required, with the former indicating the paper title shown in the title and the latter indicating the workshop title displayed in the footnote. 
+\title{A coloring-free approach to materialising Jacobians and Hessians in JAX by leveraging sparsity}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  Jonathan Brodrick\\
+  Pasteur Labs\\
+  Newlab, 19 Morris Street\\
+  Brooklyn, NY 11205 \\
+  \texttt{jonathan.brodrick@simulation.science} \\
+  % examples of more authors
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \AND
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+  % \And
+  % Coauthor \\
+  % Affiliation \\
+  % Address \\
+  % \texttt{email} \\
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+Automatic differentiation (AD) has proven indispensable in powering the ML revolution by enabling accelerated
+gradient-based learning without hard-to-maintain hand-coded analytic derivatives.
+However, modern AD libraries such as JAX still leave significant room for improvement when it comes to computation of 
+full Jacobians and Hessians which are central to root finding (e.g. in implicit ODE solvers or deep equilibrium models)
+or second-order constrained optimisation (relevant to robotic and optimal control).
+In this work, we show that leveraging JAX's functional transformations and introducing new sparse formats,
+including batched Ellpack, can reduce redundant computation and exploit internal structure achieving orders of 
+magnitude speedups in structured nonlinear problems (including the CUTEst suite).
+This functionality is made available in an open source library with a drop-in API mirroring JAX's
+(including hessian, jacfwd and jacrev with a choice of output formmats).
+Our methodology is competitive with colouring methods and outperforms it on some problems
+without requiring the user to manually provide the sparsity pattern 
+and avoiding the sometimes expensive coloring phase.
+Furthermore, when the sparsity pattern is statically known it can be obtained for free at trace time.
+We envisage the key use case to be coupling the accelerated Jacobian/Hessian computation to a sparse solver such as 
+CudSS.
+\end{abstract}doe
+
+
+\section{Introduction}
+
+The JAX library provides a powerful framework for implementing large ML models/simulators 
+and training/optimizing them using gradient-based methods (e.g. Adam, L-BFGS) on modern accelerators.
+For these cases, the computational efficiency of the gradient as obtained by JAX's automatic differentiation will usually be competitive with
+any handcoded version, greatly reducing development time and improving maintainability.
+However, the same cannot be said for the case of root finding (e.g. in implicit ODE solvers or deep equilibrium models) 
+ and second-order optimisation using direct solvers (relevant to robotics and optimal control)
+ where the entire Jacobian and Hessian must be obtained.
+This is because JAX computes these simply by applying the jvp/hvp to a batch of basis vectors rather than 
+leveraging structural sparsity;
+the resulting $\mathcal{O}(n^2)$ cost of computing the Jacobian/Hessian is most acute when 
+the matrices possess structure (e.g. sparsity) that enables 
+Traditional ways . 
+function transformation
+
+
+\section{State of the art}
+
+section{Methodology}
+
+\subsection{Sparse representations}
+
+\subsection{You only linearize once}
+
+\section{Experiments}
+
+\subsection{Nonlinear Heat Equation}
+
+\begin{equation}
+\frac{partial T_i }{\partial t} = \nabla \kappa \nabla T_i = (\kappa_{i+1/2})
+\end{equation}
+
+%\subsection{Extreme Learning MLP PINN}
+
+\subsection{CUTEst problems}
+
+\subsection{Pole-cart collocation}
+
+  \begingroup
+  \setlength{\arraycolsep}{4pt}
+  \renewcommand{\arraystretch}{1.25}
+  \begin{table}
+  \centering
+  \footnotesize
+  \begin{tabular}{@{}l c c c c c@{}}
+  \toprule
+  Operation & Dense & values & in\_cols & start & end \\
+  \midrule
+  \textit{(seed)}\ $x = \texttt{Identity}(5)$ &
+    $\begin{pmatrix*}[r]
+      1 & 0 & 0 & 0 & 0 \\ 
+      0 & 1 & 0 & 0 & 0 \\
+      0 & 0 & 1 & 0 & 0 \\
+      0 & 0 & 0 & 1 & 0 \\
+      0 & 0 & 0 & 0 & 1
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}1\\1\\1\\1\\1\end{bmatrix}$ &
+    $\begin{bmatrix}0\\1\\2\\3\\4\end{bmatrix}$ &
+    $0$ & $5$ \\\addlinespace[8pt]
+
+  $a = c \odot x$,\ $c=(3,5,7,9,11)$ &
+    $\begin{pmatrix*}[r]
+      3 & 0 & 0 & 0 &  0 \\
+      0 & 5 & 0 & 0 &  0 \\
+      0 & 0 & 7 & 0 &  0 \\
+      0 & 0 & 0 & 9 &  0 \\
+      0 & 0 & 0 & 0 & 11
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}3\\5\\7\\9\\11\end{bmatrix}$ &
+    $\begin{bmatrix}0\\1\\2\\3\\4\end{bmatrix}$ &
+    $0$ & $5$ \\ \addlinespace[8pt]
+
+  $b = a_{1:5}$ &
+    $\begin{pmatrix*}[r]
+      0 & 5 & 0 & 0 &  0 \\
+      0 & 0 & 7 & 0 &  0 \\
+      0 & 0 & 0 & 9 &  0 \\
+      0 & 0 & 0 & 0 & 11
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}5\\7\\9\\11\end{bmatrix}$ &
+    $\begin{bmatrix}1\\2\\3\\4\end{bmatrix}$ &
+    $0$ & $4$ \\ \addlinespace[8pt]
+
+  $d = a_{0:4}$ &
+    $\begin{pmatrix*}[r]
+      3 & 0 & 0 & 0 & 0 \\
+      0 & 5 & 0 & 0 & 0 \\
+      0 & 0 & 7 & 0 & 0 \\
+      0 & 0 & 0 & 9 & 0
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}3\\5\\7\\9\end{bmatrix}$ &
+    $\begin{bmatrix}0\\1\\2\\3\end{bmatrix}$ &
+    $0$ & $4$ \\ \addlinespace[8pt]
+
+  $e = b - d$ &
+    $\begin{pmatrix*}[r]
+      -3 & 5 & 0 & 0 &  0 \\
+       0 & -5 & 7 & 0 &  0 \\
+       0 & 0 & -7 & 9 &  0 \\
+       0 & 0 & 0 & -9 & 11
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}
+      -3 & 5 \\
+      -5 & 7 \\
+      -7 & 9 \\
+      -9 & 11
+    \end{bmatrix}$ &
+    $\begin{bmatrix}
+      0 & 1 \\
+      1 & 2 \\
+      2 & 3 \\
+      3 & 4
+    \end{bmatrix}$ &
+    $0$ & $4$ \\ \addlinespace[8pt]
+
+  $f = \texttt{pad}(e,\,1\!\rightarrow\!0)$ &
+    $\begin{pmatrix*}[r]
+       0 & 0 & 0 & 0 &  0 \\
+      -3 & 5 & 0 & 0 &  0 \\
+       0 & -5 & 7 & 0 &  0 \\
+       0 & 0 & -7 & 9 &  0 \\
+       0 & 0 & 0 & -9 & 11
+    \end{pmatrix*}$ &
+    $\begin{bmatrix}
+      -3 & 5 \\
+      -5 & 7 \\
+      -7 & 9 \\
+      -9 & 11
+    \end{bmatrix}$ &
+    $\begin{bmatrix}
+      0 & 1 \\
+      1 & 2 \\
+      2 & 3 \\
+      3 & 4
+    \end{bmatrix}$ &
+    $1$ & $5$ \\
+  \bottomrule
+  \end{tabular}
+  \caption{Walk for $f(x) = \mathrm{pad}\bigl((c\odot x)_{1:} - (c\odot x)_{:-1}\bigr)$ with $c=(3,5,7,9,11)$, $\mathrm{len}(x)=5$.
+  The mathematical Jacobian (parentheses, right-aligned for sign clarity) is contrasted with the BEllpack
+  representation (square brackets, the literal in-memory tensors). Elementwise scaling rewrites
+  \texttt{values} in place; slicing shifts the columnfband; subtraction concatenates two $k{=}1$ bands
+  into a $k{=}2$ band; pad updates only \texttt{start}/\texttt{end}.}
+  \end{table}
+  \endgroup
+
+\begin{equation*}
+\text{Identity} \rightarrow \text{Constant Diagonal} \rightarrow \text{Diagonal} \rightarrow \text{BEllpack} \rightarrow \text{BCOO}
+\end{equation*}
+
+\begin{table}
+\centering
+\caption{Categorised list of linear JAX primitives supported by Ellpax (trailing \texttt{\_p} dropped).}
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{0.85\textwidth}{lX}
+\toprule
+Group & Primitive \\
+\midrule
+Shape-preserving unary & \texttt{conj, copy, imag, neg, real, cumsum, convert\_element\_type\footnote{cumsum is the only primitive that always densifies}} \\
+Shape-affecting unary & \texttt{pad, reshape, broadcast\_in\_dim, reduce\_sum, squeeze}  \\
+Indexing & \texttt{slice, rev, gather, transpose, scatter\_add} \\
+Shape-preserving multilinear & \texttt{add\footnote{Including add\_any and add\_jaxvals}, sub, mul, div} \\%($+$, $-$, $\times$, $\/$,  $+=$)} \\
+Shape-affecting multilinear & \texttt{dot\_general, concatenate} \\ %($@$, $\parallel$) \\
+Control flow & \texttt{cond, select\_n, (jit)}\\
+Multi-output unary & \texttt{split} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Coloring-pathologic projective planes}
+
+Many of the CUTEst problems involve objective functions of the form:
+
+\begin{equation}
+f(x) = \sum_i f_i(x),
+\end{equation}
+
+where 
+
+
+
+
+  % \begin{figure}
+  % \centering
+  % \begin{tikzpicture}[
+  %   scale=0.9,
+  %   pt/.style={circle, fill=black, inner sep=1.5pt},
+  %   lbl/.style={font=\scriptsize},
+  % ]
+  % % ---- (a) g1 lines (j = s*i + t mod 3) ----
+  % \begin{scope}
+  %   \node[lbl,above] at (1, 2.55) {(a) $g_1$: $j \equiv s\,i + t$};
+  %   \foreach \i in {0,1,2}\foreach \j in {0,1,2} \node[pt] at (\i,\j) {};
+  %   % representative lines, one per slope, t=0
+  %   \draw[blue!70, thick]   (-0.2,0)   -- (2.2,0);                % s=0
+  %   \draw[red!70,  thick]   (-0.2,-0.2)-- (2.2,2.2);              % s=1
+  %   \draw[orange!85!black, thick] (0,0) -- (1,2) -- (2,1);        % s=2 (wraps)
+  %   \node[lbl] at (1,-0.7) {chrom.\ no.\ $= 3$};
+  % \end{scope}
+
+  % % ---- (b) g2 lines (i = s*j + t mod 3) ----
+  % \begin{scope}[xshift=4.4cm]
+  %   \node[lbl,above] at (1, 2.55) {(b) $g_2$: $i \equiv s\,j + t$};
+  %   \foreach \i in {0,1,2}\foreach \j in {0,1,2} \node[pt] at (\i,\j) {};
+  %   \draw[blue!70, thick]   (0,-0.2)   -- (0,2.2);
+  %   \draw[red!70,  thick]   (-0.2,-0.2)-- (2.2,2.2);
+  %   \draw[orange!85!black, thick] (0,0) -- (2,1) -- (1,2);
+  %   \node[lbl] at (1,-0.7) {chrom.\ no.\ $= 3$};
+  % \end{scope}
+
+  % % ---- (c) union: every pair of points joined by some line ----
+  % \begin{scope}[xshift=8.8cm]
+  %   \node[lbl,above] at (1, 2.55) {(c) $g_1 + g_2$: $K_9$};
+  %   % all 36 pairwise edges, faint
+  %   \foreach \i in {0,...,8} {\foreach \k in {0,...,8} {
+  %     \ifnum\i<\k
+  %       \pgfmathtruncatemacro{\xa}{int(\i/3)} \pgfmathtruncatemacro{\ya}{mod(\i,3)}
+  %       \pgfmathtruncatemacro{\xb}{int(\k/3)} \pgfmathtruncatemacro{\yb}{mod(\k,3)}
+  %       \draw[gray!35,thin] (\xa,\ya) -- (\xb,\yb);
+  %     \fi
+  %   }}
+  %   % highlight: pair (0,0)-(1,0) covered by g1 only (horizontal)
+  %   \draw[red!70,  ultra thick] (0,0) -- (1,0);
+  %   % pair (0,0)-(0,1) covered by g2 only (vertical)
+  %   \draw[blue!70, ultra thick] (0,0) -- (0,1);
+  %   \foreach \i in {0,1,2}\foreach \j in {0,1,2} \node[pt] at (\i,\j) {};
+  %   \node[lbl] at (1,-0.7) {chrom.\ no.\ $= 9$};
+  % \end{scope}
+
+  % \end{tikzpicture}
+  % \caption{Each summand admits a valid 3-coloring of its column-conflict graph
+  % (columns sharing $i$ never co-occur in a $g_1$-line; similarly $j$ for $g_2$).
+  % Their union makes \emph{every} pair of grid points share a line --- the column
+  % conflict graph becomes $K_9$, requiring 9 colors. The highlighted edges in
+  % (c) show two pairs each covered by exactly one summand.}
+  % \end{figure}
+
+  \begin{figure}
+  \centering
+  \definecolor{colA}{RGB}{255,182,193}
+  \definecolor{colB}{RGB}{173,216,230}
+  \definecolor{colC}{RGB}{200,230,180}
+  \begin{tikzpicture}[
+    scale=0.36,
+    lbl/.style={font=\scriptsize},
+    sym/.style={font=\Large},
+  ]
+
+  % Nonzero patterns at P=3.  Row k = s*P+t, col c = i*P+j.
+  \def\gOneRows{0/{0,3,6}, 1/{1,4,7}, 2/{2,5,8},
+                3/{0,4,8}, 4/{1,5,6}, 5/{2,3,7},
+                6/{0,5,7}, 7/{1,3,8}, 8/{2,4,6}}
+  \def\gTwoRows{0/{0,1,2}, 1/{3,4,5}, 2/{6,7,8},
+                3/{0,4,8}, 4/{2,3,7}, 5/{1,5,6},
+                6/{0,5,7}, 7/{1,3,8}, 8/{2,4,6}}
+  \def\gSumRows{0/{0,1,2,3,6}, 1/{1,3,4,5,7}, 2/{2,5,6,7,8},
+                3/{0,4,8},     4/{1,2,3,5,6,7}, 5/{1,2,3,5,6,7},
+                6/{0,5,7},     7/{1,3,8},     8/{2,4,6}}
+
+  \def\classcolour#1{\ifcase#1 colA\or colB\or colC\fi}
+
+  % --- Panel A: J(g1), columns coloured by  i = c // 3 ---
+  \begin{scope}[shift={(0,0)}]
+    \foreach \r/\cols in \gOneRows
+      \foreach \c in \cols {
+        \pgfmathtruncatemacro{\cls}{int(\c/3)}
+        \fill[\classcolour{\cls}] (\c,-\r) rectangle ++(1,-1);
+      }
+    \foreach \r in {0,...,8}\foreach \c in {0,...,8}
+      \draw[gray!55, very thin] (\c,-\r) rectangle ++(1,-1);
+    \node[lbl] at (4.5,-10.3) {(a) $J(g_1)$, 3-colouring by $i$};
+  \end{scope}
+
+  \node[sym] at (10.5, -4.5) {$+$};
+
+  % --- Panel B: J(g2), columns coloured by  j = c mod 3 ---
+  \begin{scope}[shift={(12,0)}]
+    \foreach \r/\cols in \gTwoRows
+      \foreach \c in \cols {
+        \pgfmathtruncatemacro{\cls}{mod(\c,3)}
+        \fill[\classcolour{\cls}] (\c,-\r) rectangle ++(1,-1);
+      }
+    \foreach \r in {0,...,8}\foreach \c in {0,...,8}
+      \draw[gray!55, very thin] (\c,-\r) rectangle ++(1,-1);
+    \node[lbl] at (4.5,-10.3) {(b) $J(g_2)$, 3-colouring by $j$};
+  \end{scope}
+
+  \node[sym] at (22.5, -4.5) {$=$};
+
+  % --- Panel C: J(g) = J(g1)+J(g2), no valid coloring -> all black ---
+  \begin{scope}[shift={(24,0)}]
+    \foreach \r/\cols in \gSumRows
+      \foreach \c in \cols
+        \fill[black] (\c,-\r) rectangle ++(1,-1);
+    \foreach \r in {0,...,8}\foreach \c in {0,...,8}
+      \draw[gray!55, very thin] (\c,-\r) rectangle ++(1,-1);
+    \node[lbl] at (4.5,-10.3) {(c) $J(g_1{+}g_2)$, no $k{<}9$ colouring};
+  \end{scope}
+
+  \end{tikzpicture}
+  \caption{Boolean Jacobian patterns at $P=3$. Each summand is $9{\times}9$ with $3$ nonzeros per
+  row; the column-conflict graph of $J(g_1)$ admits a $3$-colouring grouped by row index $i$
+  (panel a, columns of grid points sharing $i$ never co-occur in a $g_1$-line), and likewise
+  $J(g_2)$ admits a $3$-colouring by $j$ (panel b, the transverse partition). When the two
+  Jacobians are added, every pair of distinct columns is joined by some $g_1$- or $g_2$-line,
+  so the aggregate column-conflict graph is complete and no compression below $9$ colours
+  exists (panel c, shown without colouring).}
+  \end{figure}
+
+
+\section{Bib test}
+\label{sec:bibtest}
+
+This section exercises the bibliography wiring; it should be removed before submission.
+
+Single citation: foundational sparse Jacobian estimation~\cite{curtispowellreid1974sparse}.
+Two-cite: graph-theoretic formulation~\cite{colemanmore1983jacobian, colemanmore1984hessian}.
+Three consecutive (compressed): coloring lineage~\cite{curtispowellreid1974sparse,
+powelltoint1979sparse, colemanmore1983jacobian}.
+Survey reference~\cite{gebremedhin2005color}; recent comparator
+work~\cite{hilldalle2025sparser, dallehill2026common}.
+
+Partial-separability~\cite{griewanktoint1982partitioned, conngouldtoint1992lancelot};
+multifrontal-assembly analogy~\cite{duffreid1983multifrontal, liu1992multifrontal}.
+Experiments on the CUTEst sweep~\cite{gouldorbantoint2014cutest, bongartz1995cute},
+bit-exact against the Pearlmutter HVP oracle~\cite{pearlmutter1994fast}.
+Background AD and sparse storage~\cite{griewankwalther2008evaluating, baydin2018automatic,
+saad2003iterative}; host system~\cite{frostigjohnsonleary2018compiling, jax2018github}.
+
+\section{Conclusions}
+
+
+\begin{ack}
+Use unnumbered first level headings for the acknowledgments. All acknowledgments
+go at the end of the paper before the list of references. Moreover, you are required to declare
+funding (financial activities supporting the submitted work) and competing interests (related financial activities outside the submitted work).
+More information about this disclosure can be found at: \url{https://neurips.cc/Conferences/2026/PaperInformation/FundingDisclosure}.
+
+
+Do {\bf not} include this section in the anonymized submission, only in the final paper. You can use the \texttt{ack} environment provided in the style file to automatically hide this section in the anonymized submission.
+\end{ack}
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\appendix
+
+\section{Technical appendices and supplementary material}
+Technical appendices with additional results, figures, graphs, and proofs may be submitted with the paper submission before the full submission deadline (see above). You can upload a ZIP file for videos or code, but do not upload a separate PDF file for the appendix. There is no page limit for the technical appendices.
+
+Note: Think of the appendix as ``optional reading'' for reviewers. The paper must be able to stand alone without the appendix; for example, adding critical experiments that support the main claims to an appendix is inappropriate.
+
+\section{Action of primitive rules on a BEllpack operand}
+\label{app:bellpack-rules}
+
+We use the 5-tuple shorthand $\mathrm{BE}[V,\,C,\,s,\,e,\,T]$ for a BEllpack
+with values $V$, in-column tuple $C$ of length $k$, row range $[s,e)$, and
+transpose flag $T$.  The remaining fields ($\mathtt{out\_size}$,
+$\mathtt{in\_size}$, $\mathtt{batch\_shape}$) pass through unchanged unless
+explicitly modified.  Each row below is the canonical structural case
+implemented in the current source; rules with several distinct branches
+are listed once per branch with a labelled left-hand side.  When the
+listed branch does not apply, the rule densifies via $V := \mathrm{BE.todense}$
+or promotes to BCOO; those fall-back paths are not enumerated here.
+
+\begingroup
+\renewcommand{\arraystretch}{1.25}
+\footnotesize
+\begin{longtable}{@{}p{0.40\textwidth} l@{}}
+\toprule
+Operation & Result \\
+\midrule
+\endfirsthead
+\toprule
+Operation & Result \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+
+\multicolumn{2}{@{}l}{\itshape Shape-preserving unaries} \\
+\addlinespace[2pt]
+$\Phi(\mathrm{BE})$\footnote{$\Phi$ stands for any element-wise unary that preserves shape and the zero element: $\Phi\in\{\texttt{neg},\texttt{copy},\texttt{conj},\texttt{real},\texttt{imag},\texttt{convert\_element\_type}\}$. Each maps $V\mapsto\Phi(V)$ pointwise on the values tensor, leaving $C$, $s$, $e$, $T$ untouched.} & $\mathrm{BE}[\Phi(V),\,C,\,s,\,e,\,T]$ \\
+$\texttt{cumsum}(\mathrm{BE})$ & $\texttt{cumsum}(\mathrm{BE.todense})$ \quad (no structural path) \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Shape-affecting unaries} \\
+\addlinespace[2pt]
+$\texttt{pad}(\mathrm{BE},\,\mathrm{before},\,\mathrm{after})$, no interior & $\mathrm{BE}[V,\,C,\,s+\mathrm{before},\,e+\mathrm{before},\,T]$ \\
+$\texttt{slice}(\mathrm{BE},\,[\ell,h))$, unit stride on out-axis & $\mathrm{BE}[V_{[\ell:h]},\,C_{[\ell:h]},\,s-\ell,\,e-\ell,\,T]$ \\
+$\texttt{squeeze}(\mathrm{BE})$, $\mathtt{out\_size}{=}1$ at $s{=}0,e{=}1$ & $\mathrm{BE}[V,\,C,\,s,\,e,\,T]$ \quad (identity) \\
+$\texttt{reshape}(\mathrm{BE})$, batched$\to$unbatched, $T{=}\mathrm{False}$ & $\mathrm{BE}[V_{\mathrm{flat}},\,C_{\mathrm{tile}},\,0,\,\prod b\cdot\mathtt{nrows},\,T]$ \\
+$\texttt{reshape}(\mathrm{BE})$, unbatched, leading singleton & $\mathrm{BE}[V_{\mathrm{reshape}},\,C_{\mathrm{tile}},\,s,\,e,\,T]$, $b'{=}(1,\dots,1)$ \\
+$\texttt{broadcast\_in\_dim}(\mathrm{BE})$, $1$-row $T{=}\mathrm{True}$ tile to $N$ & $\mathrm{BE}[V,\,\mathrm{broadcast}(C,N),\,0,\,N,\,\mathrm{True}]$ \\
+$\texttt{broadcast\_in\_dim}(\mathrm{BE})$, leading-batch insert & $\mathrm{BE}[V_{\mathrm{bcast}},\,C_{\mathrm{bcast}},\,s,\,e,\,T]$, $b'{=}(\mathrm{new\_batch}, b)$ \\
+$\texttt{reduce\_sum}(\mathrm{BE})$, axis$=$out, static $C$ & $\mathrm{BE}[V_\Sigma,\,\mathrm{dedup}(C),\,0,\,1,\,T]$ \\
+$\texttt{reduce\_sum}(\mathrm{BE})$, axis$\subseteq$batch & $\mathrm{BE}[V.\mathrm{sum}(\mathrm{axes}),\,C,\,s,\,e,\,T]$, $b'{=}b\setminus\mathrm{axes}$ \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Indexing} \\
+\addlinespace[2pt]
+$\texttt{transpose}(\mathrm{BE},\,\mathrm{perm})$, $2{\times}2$ cross-$V$ swap & $\mathrm{BE}[V,\,C,\,s,\,e,\,\neg T]$ \\
+$\texttt{transpose}(\mathrm{BE},\,\mathrm{perm})$, batch-only / $V$-fixed & $\mathrm{BE}[V_{\mathrm{perm}},\,C_{\mathrm{perm}},\,s,\,e,\,T]$ \\
+$\texttt{rev}(\mathrm{BE})$, axis$=$out, unbatched & $\mathrm{BE}[\mathtt{flip}(V),\,\mathtt{flip}(C),\,N{-}e,\,N{-}s,\,T]$ \\
+$\texttt{gather}(\mathrm{BE},\,\dots)$ & raises \texttt{NotImplementedError} (densify upstream) \\
+$\texttt{scatter\_add}(\cdot,\,\mathrm{BE},\,\mathrm{idx})$, kept form & $\texttt{scatter\_add\_op}(V,\,\mathrm{idx},\,\dots)$ via dispatch \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Shape-preserving multilinear} \\
+\addlinespace[2pt]
+$\alpha\cdot\mathrm{BE}$, scalar $\alpha$ & $\mathrm{BE}[\alpha\,V,\,C,\,s,\,e,\,T]$ \\
+$\mathbf{w}\odot\mathrm{BE}$, per-row weight broadcast & $\mathrm{BE}[\mathbf{w}\,V,\,\mathrm{broadcast}(C),\,s,\,e,\,T]$ \\
+$\mathrm{BE}/\alpha$, scalar $\alpha$ & $\mathrm{BE}[V/\alpha,\,C,\,s,\,e,\,T]$ \\
+$\mathrm{BE}_1+\mathrm{BE}_2$, identical $(s,e,b,C)$ & $\mathrm{BE}[V_1+V_2,\,C,\,s,\,e,\,T]$ \\
+$\mathrm{BE}_1+\mathrm{BE}_2$, identical $(s,e,b)$, mixed $C$ & $\mathrm{dedup}(\mathrm{BE}[V_1\,\Vert\,V_2,\,C_1\,\Vert\,C_2,\,s,\,e,\,T])$ \\
+$\mathrm{BE}_1+\mathrm{BE}_2$, row-disjoint, abutting & $\mathrm{BE}[V_1\,\Vert\,V_2,\,C_1\,\Vert\,C_2,\,\min(s_i),\,\max(e_i),\,T]$ \\
+$\mathrm{BE}+\mathrm{BCOO}$ (or any incompatible) & $\mathrm{BCOO}(\mathrm{BE})+\mathrm{BCOO}$ via shared concat path \\
+$\mathrm{BE}-\mathrm{BE}'$ & $\mathrm{BE}+(-\mathrm{BE}')$ via the add path \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Shape-affecting multilinear} \\
+\addlinespace[2pt]
+$\mathrm{BE}\cdot M$, $M$ closure 2-D, contract on in-axis & $\mathrm{dense}\;V_{\mathrm{contract}}$ of shape $(b,N,B)$ where $B{=}M.\mathrm{shape}[1]$ \\
+$\texttt{concatenate}(\mathrm{BE}_1,\mathrm{BE}_2)$, axis$<n_{\mathrm{batch}}$ & $\mathrm{BE}[V_1\,\Vert_{\mathrm{ax}}\,V_2,\,C_{\mathrm{widen}},\,s,\,e,\,T]$ \\
+$\texttt{concatenate}(\mathrm{BE}_1,\mathrm{BE}_2)$, axis$=$out & $\mathrm{BE}[V_1\,\Vert\,V_2,\,C_1\,\Vert\,C_2,\,0,\,N_1+N_2,\,T]$ \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Control flow / selection} \\
+\addlinespace[2pt]
+$\texttt{cond}(\mathrm{pred},\dots)$, $\mathrm{pred}$ static & recurse into chosen branch jaxpr \\
+$\texttt{jit}(\mathrm{BE})$ & recurse into inner jaxpr; outputs marked traced \\
+$\texttt{select\_n}(p,\,\mathrm{BE},\,\mathrm{closures})$, single traced & $\mathrm{BE}[\mathrm{mask}_p\cdot V,\,C,\,s,\,e,\,T]$ \\
+$\texttt{select\_n}(p,\,\mathrm{BE}_1,\,\mathrm{BE}_2)$, identical $(s,e,b,C)$ & $\mathrm{BE}[\texttt{select\_n}(p,V_1,V_2),\,C,\,s,\,e,\,T]$ \\
+\addlinespace[6pt]
+
+\multicolumn{2}{@{}l}{\itshape Multi-output unary} \\
+\addlinespace[2pt]
+$\texttt{split}(\mathrm{BE})$, batched, axis$=$out & list of $\mathrm{BE}[V_{[c_i]},\,C_{[c_i]},\,0,\,e_i{-}s_i,\,T]$ \\
+$\texttt{split}(\mathrm{BE})$, unbatched, static $C$ & list mixing $\mathrm{BE}$ chunks and empty BCOO chunks \\
+
+\end{longtable}
+\endgroup
+
+The rules above cover the BEllpack-preserving paths in
+\texttt{lineaxpr/\_linops/ellpack\_transforms.py},
+\texttt{lineaxpr/\_linops/ellpack.py}, and
+\texttt{lineaxpr/\_rules/\{add,mul,multilinear,structural,control\_flow\}.py}.
+Several primitives (\texttt{reshape}, \texttt{broadcast\_in\_dim},
+\texttt{reduce\_sum}) carry additional structural branches for less common
+shape combinations; we have shown the canonical case for each and refer
+the reader to the cited files for the full case-split.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\newpage
+\input{checklist.tex}
+
+
+\end{document}

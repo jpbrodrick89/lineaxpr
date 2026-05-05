@@ -14,20 +14,6 @@ from .._linops import (
     LinOpProtocol,
 )
 from .mul import _mul_rule
-from .._linops.base import LinOpProtocol as _LinOpProtocol
-from .._linops.base import negate as _negate_dispatch
-
-
-def _neg_rule(invals, traced, n, **params):
-    """Local neg rule copy (avoids circular import with registry)."""
-    del params, n
-    (op,) = invals
-    (t,) = traced
-    if not t:
-        return None
-    if isinstance(op, _LinOpProtocol):
-        return _negate_dispatch(op)
-    return -op
 
 
 def _bcast(arr, shape):
@@ -83,20 +69,36 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
     remaining = letters[:c_be] + letters[c_be + 1:]
     k_let = "K" if k_old > 1 else ""
     eq = f"{letters}{k_let},{ctr}J->{remaining}J{k_let}{ctr}"
-    new_vals = jnp.einsum(eq, be.values, M_AB)
+    new_vals = jnp.einsum(eq, be.data, M_AB)
     if k_old > 1:
         new_vals = new_vals.reshape(new_aval + (k_old * A,))
 
     out_be = BEllpack(
         start_row=0, end_row=new_out,
-        in_cols=new_in_cols, values=new_vals,
+        in_cols=new_in_cols, data=new_vals,
         out_size=new_out, in_size=in_size, batch_shape=new_batch,
+        transposed=be.transposed,
     )
     if not traced_is_first:
         # dot_general(closure, BE) aval is (*remaining_M, *remaining_BE);
         # BE's out axis is structurally last so we permute batch↔out.
         # Cheap: reorders the in_cols tuple + one values transpose.
         out_be = out_be.transpose((n_batch,) + tuple(range(n_batch)))
+    # When V's JAXPR output position is middle, set v_axis to keep the
+    # LinOp's `.shape` aligned with the eqn aval. For T=True traced_is_
+    # first=False (EIGEN class) V lands at output axis = (M_free_count
+    # + v_pos_among_BE_free).
+    v_in_be = 0 if be.transposed else len(be.shape) - 1
+    be_free = [a for a in range(len(be.shape)) if a != c_be + (1 if be.transposed else 0)]
+    if v_in_be in be_free:
+        v_pos_in_be_free = be_free.index(v_in_be)
+        m_free_count = M.ndim - 1
+        v_out_pos = (v_pos_in_be_free if traced_is_first
+                     else m_free_count + v_pos_in_be_free)
+        out_ndim = len(out_be.shape)
+        if 0 < v_out_pos < out_ndim - 1:
+            from .._linops.base import replace_slots  # noqa: PLC0415
+            out_be = replace_slots(out_be, v_axis=v_out_pos)
     return out_be
 
 
@@ -115,49 +117,77 @@ def _dot_general_rule(invals, traced, n, **params):
     else:
         traced_op, c_tr, M, c_M = y, list(cy), x, list(cx)
     traced_is_first = tx
-    traced_shape = traced_op.shape[:-1]
 
     if len(c_tr) == 0 and len(c_M) == 0 and M.shape == ():
         if isinstance(traced_op, ConstantDiagonal):
-            return ConstantDiagonal(traced_op.n, M * traced_op.value)
+            return ConstantDiagonal(traced_op.n, M * traced_op.data)
         return M * traced_op
-    if len(c_tr) == 0 and len(c_M) == 0:
-        # Outer product. BE's trailing `n` axis stays last.
-        dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
-        if traced_is_first:
-            # (*t, n) × (*m,) → (*t, *m, n)
-            d = dense.reshape(traced_shape + (1,) * M.ndim + dense.shape[-1:])
-            return d * M[..., None]
-        # (*m,) × (*t, n) → (*m, *t, n)
-        return M.reshape(M.shape + (1,) * (len(traced_shape) + 1)) * dense
+    # Outer product (no contraction): fall through to the dense
+    # `lax.dot_general` path below — it places V correctly per the
+    # rewritten dnums, regardless of V position in `traced_op`.
 
     if isinstance(traced_op, ConstantDiagonal):
         remaining = [a for a in range(M.ndim) if a not in c_M]
-        tensor = lax.transpose(M, remaining + c_M)
-        return traced_op.value * tensor
+        # dot_general(traced, M) output is (traced_free..., M_free...);
+        # dot_general(M, traced) output is (M_free..., traced_free...).
+        # For Identity, the "traced_free" slot has size n with values
+        # equal to M along the contracted axis. Put c_M first (becomes
+        # traced_free) when traced is first, else last.
+        if traced_is_first:
+            tensor = lax.transpose(M, c_M + remaining)
+        else:
+            tensor = lax.transpose(M, remaining + c_M)
+        return traced_op.data * tensor
 
-    # Structural BEllpack × closure-matrix path (see
-    # `_be_dot_closure_matrix` for the gate: `k_new >= in_size`
-    # falls through to dense).
+    # Structural BEllpack × closure-matrix path. Maps the jaxpr's
+    # contract axis (in V-augmented coords) to walk-space:
+    # * T=False BE: shape (*batch, out, V), V at axis -1. Structural
+    #   axes are 0..n_batch (in_size at -1 = V is excluded). So
+    #   c_be = c_tr when c_tr <= n_batch (else c_tr points at V,
+    #   which we can't contract structurally — fall through to dense).
+    # * T=True BE: shape (V, *batch, out), V at axis 0. Structural
+    #   axes are 1..n_batch+1 (V excluded). So c_be = c_tr - 1 when
+    #   1 <= c_tr <= n_batch+1.
+    # T=True case is restricted to `traced_is_first=True` because the
+    # `not traced_is_first` branch in `_be_dot_closure_matrix` permutes
+    # batch↔out for T=False output layout; the equivalent T=True
+    # permutation isn't implemented yet (V would land at the wrong
+    # position vs vmap's choice for BE-second dot_general).
     if (isinstance(traced_op, BEllpack)
             and M.ndim == 2
             and len(c_tr) == 1 and len(c_M) == 1
             and traced_op.start_row == 0
-            and traced_op.end_row == traced_op.out_size):
-        be_result = _be_dot_closure_matrix(
-            traced_op, M, c_tr[0], c_M[0], traced_is_first,
-        )
-        if be_result is not None:
-            return be_result
+            and traced_op.end_row == traced_op.out_size
+            and traced_op.v_axis is None):
+        n_batch = traced_op.n_batch
+        if traced_op.transposed:
+            if 1 <= c_tr[0] <= n_batch + 1:
+                c_be = c_tr[0] - 1
+            else:
+                c_be = None
+        else:
+            if 0 <= c_tr[0] <= n_batch:
+                c_be = c_tr[0]
+            else:
+                c_be = None
+        if c_be is not None:
+            be_result = _be_dot_closure_matrix(
+                traced_op, M, c_be, c_M[0], traced_is_first,
+            )
+            if be_result is not None:
+                return be_result
 
+    # Dense fallback: just trust JAX vmap's c_tr/c_M (they already
+    # account for V's position in each operand). No translation needed.
+    # Dense fallback: trust JAX vmap to have placed V at the right
+    # output axis already. (An older `moveaxis(out, ..., -1)` here
+    # was a walk-frame leftover that double-shifted V on the
+    # `traced_is_first` path.)
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
     if traced_is_first:
-        out = lax.dot_general(
+        return lax.dot_general(
             dense, M, ((tuple(c_tr), tuple(c_M)), ((), ()))
         )
-        # dense's trailing `n` axis is never contracted; dot_general's
-        # output places it at `len(traced_shape) - len(c_tr)`. Move to end.
-        return jnp.moveaxis(out, len(traced_shape) - len(c_tr), -1)
     return lax.dot_general(M, dense, ((tuple(c_M), tuple(c_tr)), ((), ())))
 
 
@@ -172,11 +202,8 @@ def _sub_rule(invals, traced, n, **params):
         # a is traced, b is closure. a - b is still linear with same A as a.
         return a if ta else None
     if not ta:
-        # -b only. Negate via _neg_rule equivalent.
-        return _neg_rule([b], [True], n)
-    # both traced
-    neg_b = _neg_rule([b], [True], n)
-    return _add_rule([a, neg_b], [True, True], n)
+        return -b
+    return _add_rule([a, -b], [True, True], n)
 
 
 def _div_rule(invals, traced, n, **params):

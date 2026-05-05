@@ -592,6 +592,66 @@
       "nse": 34988,
       "group": "unconstrained"
     },
+    "TORSION1": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION2": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION3": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION4": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION5": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSION6": {
+      "n": 1600,
+      "nse": 19760,
+      "group": "quadratic"
+    },
+    "TORSIONA": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONB": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONC": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIOND": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONE": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
+    "TORSIONF": {
+      "n": 1600,
+      "nse": 21840,
+      "group": "quadratic"
+    },
     "WOODS": {
       "n": 4000,
       "nse": 10000,

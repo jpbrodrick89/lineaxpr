@@ -17,6 +17,48 @@ The LinOp classes (`ConstantDiagonal`, `Diagonal`, `BEllpack`; see
 banded blocks) avoid materialising intermediate identity matrices; they
 are converted to BCOO or dense at the boundary.
 
+## Column-independence invariant (Phase B convention)
+
+The walker is a sparsify-style transform: it tracks the *Jacobian*
+of a linearised function, and that Jacobian acts on each COLUMN of a
+2D operand independently. There is no primitive that should couple
+columns. `sparsify(f)(seed)` is "f applied to each column of seed,
+columns stacked".
+
+Concretely, with `vmap(in_axes=±1, out_axes=±1)` (batch at the LAST
+axis of a 2D input, output stacked along the LAST axis), this
+matches `jax.experimental.sparse.sparsify` semantics exactly:
+
+* For seed `Identity(n)`, each column is `e_j`. Output column j is
+  `f(e_j)` = J's column j. Result = J.
+* For asymmetric seed `M` shape `(m, n)`, output column j is `f(M[:, j])`.
+  Independent across j; structural sparsity propagates per-column.
+
+Composition follows: `sparsify(f ∘ g)(eye) = J_f @ J_g` because
+`f(g(eye))` decomposes into f acting on each col of g(eye), and
+each col of g(eye) is `g(e_j) = J_g[:, j]`.
+
+**MUST-meet design invariants**:
+
+1. `sparsify(f)(linop.todense()) == sparsify(f)(linop).todense()` for
+   non-transposed LinOps and any vmap(in=±1, out=±1)'d flat linear
+   function (R^n → R^m) with supported primitives.
+2. `sparsify(f)(BEllpack)` returns a BEllpack with the same
+   `transposed` flag (non-transposed → non-transposed).
+
+**Materialize uses `vmap(in=0, out=-1)`**: this is the column-
+independent view (each row of input is a per-sample input → vmap
+batches over rows; output stacked at -1 = columns). Combined with
+Identity seed, gives J directly. (Note: `in_axes=0` on a 2D input
+is equivalent to "iterate over rows", which under the column-
+independent invariant means columns of the seed are treated row-
+by-row — for symmetric Identity that's the same.)
+
+JAX vmap's broadcasting rules don't always meet the column-
+independence assumption directly — vmap inserts boundary transposes
+to maintain its convention. The walker handles these transposes;
+the key invariant — original columns stay independent — is preserved.
+
 ## Known gap: non-finite closures in structural paths
 
 Our structural rules assume `0 * x = 0` for any `x`. This is correct
@@ -35,6 +77,7 @@ from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
+from jax import lax
 from jax.experimental import sparse
 from jax.extend import core
 
@@ -65,7 +108,6 @@ def _walk_jaxpr(jaxpr, env, n):
     Literals are read directly from `.val`; traced status comes from the
     invars the caller seeded.
     """
-
     def read(atom):
         if isinstance(atom, core.Literal):
             return (False, atom.val)
@@ -81,6 +123,16 @@ def _walk_jaxpr(jaxpr, env, n):
             # (DUAL, CMPC) — lets the whole walk fold to a trace-time BCOO
             # literal. See docs/RESEARCH_NOTES.md §10.
             concrete_outs = eqn.primitive.bind(*invals, **eqn.params)
+            # In the vmap jaxpr, broadcast_in_dim of a constant may add the
+            # vmap batch dim b=n as a NEW leading dimension — recognisable by
+            # dim 0 not being in broadcast_dimensions (it was added, not mapped).
+            # Strip it so downstream rules see the pre-vmap (structural) shape.
+            if (eqn.primitive is lax.broadcast_in_dim_p
+                    and hasattr(concrete_outs, 'ndim')
+                    and concrete_outs.ndim > 0
+                    and int(concrete_outs.shape[0]) == n
+                    and 0 not in eqn.params.get('broadcast_dimensions', ())):
+                concrete_outs = concrete_outs[0]
             if eqn.primitive.multiple_results:
                 for v, o in zip(eqn.outvars, concrete_outs):
                     env[v] = (False, o)
@@ -112,17 +164,41 @@ def _walk_jaxpr(jaxpr, env, n):
 
 def _walk_with_seed(linear_fn, seed_linop):
     """Trace `linear_fn` with the aval implied by `seed_linop`, walk the
-    jaxpr, return the output LinOp."""
-    placeholder = jax.ShapeDtypeStruct((seed_linop.shape[-1],), seed_linop.dtype)
+    jaxpr, return the output LinOp.
+
+    `linear_fn` is expected to be already vmapped by the caller (see
+    `materialize`). `sparsify(vmapped_fn)(seed)` is the lower-level
+    entry point — callers may supply any vmap configuration.
+
+    The jaxpr's invar has shape `seed_linop.shape`. For the standard
+    `Identity(n)` seed under default `jax.vmap`, that's `(n, n)`.
+    """
+    placeholder = jax.ShapeDtypeStruct(seed_linop.shape, seed_linop.dtype)
     cj = jax.make_jaxpr(linear_fn)(placeholder)
     jaxpr = cj.jaxpr
 
     if len(jaxpr.invars) != 1:
         raise NotImplementedError("multi-input linear_fn not yet handled")
     (invar,) = jaxpr.invars
-    n = invar.aval.size
+    n = seed_linop.shape[-1]
 
-    env: dict = {v: (False, c) for v, c in zip(jaxpr.constvars, cj.consts)}
+    # Under EAGER_CONSTANT_FOLDING=TRUE, broadcast_in_dim equations that add b=n
+    # as a new leading dim are pre-folded into constvars — our equation-level
+    # strip in _walk_jaxpr never fires for them.  A broadcast-result constvar has
+    # all identical rows (c == c[0]), unlike genuine non-uniform closure data.
+    # Strip those here so the rest of the walk sees the pre-vmap (structural) shape.
+    def _strip_if_broadcast(c):
+        if (hasattr(c, "shape") and len(c.shape) > 1
+                and int(c.shape[0]) == n):
+            try:
+                if jnp.all(c == c[0]):
+                    return c[0]
+            except Exception:
+                pass
+        return c
+
+    env: dict = {v: (False, _strip_if_broadcast(c))
+                 for v, c in zip(jaxpr.constvars, cj.consts)}
     env[invar] = (True, seed_linop)
     _walk_jaxpr(jaxpr, env, n)
 
@@ -135,15 +211,17 @@ def _walk_with_seed(linear_fn, seed_linop):
 def sparsify(linear_fn):
     """Transform a linear function into one that operates on LinOps.
 
-    `sparsify(linear_fn)(seed_linop)` traces `linear_fn` against the aval
-    implied by `seed_linop.primal_aval()`, walks the resulting jaxpr with
-    per-primitive structural rules, and returns a LinOp representing the
-    linear function's matrix.
+    `sparsify(linear_fn)(seed_linop)` traces `linear_fn` against the
+    aval implied by `seed_linop.shape`, walks the resulting jaxpr with
+    per-primitive structural rules, and returns a LinOp representing
+    the linear function's matrix.
 
-    Seeds are explicit — no automatic Identity cast. For the common case
-    of extracting the full Jacobian, the public wrappers `materialize` /
-    `jacfwd` / `jacrev` / `hessian` build
-    `Identity(primal.size, dtype=primal.dtype)` and pass it through.
+    `linear_fn` is **not** vmapped by sparsify — pass an already-vmapped
+    function if you want a per-sample-then-stack interpretation. The
+    high-level entry points (`materialize` / `jacfwd` / `jacrev` /
+    `hessian`) handle vmap themselves.
+
+    Seeds are explicit — no automatic Identity cast.
     """
     def inner(seed_linop):
         return _walk_with_seed(linear_fn, seed_linop)
@@ -179,7 +257,16 @@ def materialize(linear_fn, primal, format: str = "dense"):
         raise ValueError(f"format must be one of {_VALID_FORMATS}, got {format!r}")
     n = primal.size if hasattr(primal, "size") else int(jnp.size(primal))
     seed = Identity(n, dtype=primal.dtype)
-    linop = sparsify(linear_fn)(seed)
+    # vmap config is centralised here so callers (sparsify directly)
+    # can supply any vmap configuration via jax.vmap on linear_fn.
+    #
+    # Phase B convention: (in_axes=-1, out_axes=-1). Both batch and
+    # per-sample stacking happen at the last axis, which aligns with
+    # the walker's "in_axis at -1" convention. Rules pass jaxpr params
+    # straight through (no walk-frame translation); the walker's
+    # natural output equals dense vmap, so `sparsify` matches
+    # `vmap(lin, in_ax, out_ax)(seed_dense)` for any vmap config.
+    linop = sparsify(jax.vmap(linear_fn, in_axes=-1, out_axes=-1))(seed)
     if format == "dense":
         return linop.todense() if isinstance(linop, LinOpProtocol) else linop
     bcoo = linop.to_bcoo() if hasattr(linop, 'to_bcoo') else linop

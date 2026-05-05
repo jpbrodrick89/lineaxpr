@@ -13,8 +13,8 @@ from jax.experimental import sparse
 ColArr = np.ndarray | jax.Array
 
 from .base import (
-    negate,
     pad_op,
+    replace_slots,
     rev_op,
     scale_per_out_row,
     scale_scalar,
@@ -61,32 +61,47 @@ class BEllpack:
     output (downstream `segment_sum` dedups).
     """
 
-    __slots__ = ("start_row", "end_row", "in_cols", "values",
-                 "out_size", "in_size", "batch_shape")
+    __slots__ = ("start_row", "end_row", "in_cols", "data",
+                 "out_size", "in_size", "batch_shape", "transposed",
+                 "v_axis")
 
     start_row: int
     end_row: int
     in_cols: tuple[ColArr, ...]
-    values: jax.Array
+    data: jax.Array
     out_size: int
     in_size: int
     batch_shape: tuple[int, ...]
+    transposed: bool
+    # Optional override for V's position in the LinOp's logical shape.
+    # When None, V is at axis 0 (transposed=True) or axis -1 (transposed=False)
+    # — the canonical layout. When set to a middle axis, V lands at that
+    # position in `.shape`. Only used transiently by EIGEN-class chains
+    # where a JAXPR transpose moves V to middle between two operands of
+    # an add_any. Most rules treat v_axis is None as the only valid case;
+    # `to_bcoo()` raises NotImplementedError for v_axis-at-middle since
+    # BCOO has no v_axis tracking.
+    v_axis: int | None
 
     def __init__(self, start_row: int, end_row: int,
                  in_cols: tuple[ColArr, ...] | list[ColArr],
-                 values: jax.Array,
+                 data: jax.Array,
                  out_size: int, in_size: int,
-                 batch_shape: tuple[int, ...] = ()):
+                 batch_shape: tuple[int, ...] = (),
+                 transposed: bool = False,
+                 v_axis: int | None = None):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
         self.batch_shape = tuple(int(d) for d in batch_shape)
-        self.values = _normalize_values(
-            values, len(self.in_cols), self.batch_shape,
+        self.data = _normalize_data(
+            data, len(self.in_cols), self.batch_shape,
             self.end_row - self.start_row,
         )
         self.out_size = int(out_size)
         self.in_size = int(in_size)
+        self.transposed = bool(transposed)
+        self.v_axis = None if v_axis is None else int(v_axis)
 
     @property
     def nrows(self):
@@ -106,6 +121,14 @@ class BEllpack:
 
     @property
     def shape(self):
+        if self.v_axis is not None:
+            # V (=in_size) at the explicit v_axis position; non-V axes
+            # are (*batch_shape, out_size) in their original order.
+            non_v = (*self.batch_shape, self.out_size)
+            return non_v[:self.v_axis] + (self.in_size,) + non_v[self.v_axis:]
+        if self.transposed:
+            # V (=in_size) at axis 0, batch_shape and out_size following.
+            return (self.in_size, *self.batch_shape, self.out_size)
         return (*self.batch_shape, self.out_size, self.in_size)
 
     @property
@@ -118,15 +141,15 @@ class BEllpack:
         return self.nrows * self.k
 
     @property
-    def values_2d(self):
-        """values always in (*batch, nrows, k) shape regardless of k."""
-        if self.values.ndim == self.n_batch + 1:  # k==1
-            return self.values[..., None]
-        return self.values
+    def data_2d(self):
+        """data always in (*batch, nrows, k) shape regardless of k."""
+        if self.data.ndim == self.n_batch + 1:  # k==1
+            return self.data[..., None]
+        return self.data
 
     @property
     def dtype(self):
-        return self.values.dtype
+        return self.data.dtype
 
     def todense(self):
         # K=1 retains the old single-scatter form (already optimal — no
@@ -135,24 +158,43 @@ class BEllpack:
         # the "never loop over arrays" rule (CLAUDE.md). Cols stack is
         # static (tuple iteration at trace time), values is passed
         # whole (no per-band slicing).
-        if self.n_batch > 0:
-            return self._todense_batched()
-        return self._todense_unbatched()
+        #
+        # `transposed=True` scatters directly into a V-at-0 canvas
+        # (`(in_size, *batch, out_size)`), avoiding a real-data
+        # `lax.transpose` of a `(*batch, out, in)` tensor afterwards.
+        # Same data, swapped (row, col) → (col, row) index pair on the
+        # scatter target.
+        canonical = (self._todense_batched() if self.n_batch > 0
+                     else self._todense_unbatched())
+        if self.v_axis is None:
+            return canonical
+        # Move V from canonical position (0 if transposed else -1) to v_axis.
+        v_canonical = 0 if self.transposed else canonical.ndim - 1
+        if v_canonical == self.v_axis:
+            return canonical
+        return jnp.moveaxis(canonical, v_canonical, self.v_axis)
 
     def _todense_unbatched(self):
         rows_1d = np.arange(self.start_row, self.end_row)
-        dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
+        if self.transposed:
+            dense = jnp.zeros((self.in_size, self.out_size), self.dtype)
+        else:
+            dense = jnp.zeros((self.out_size, self.in_size), self.dtype)
         k = self.k
         if k == 1:
             cols_b = self.in_cols[0]
             if isinstance(cols_b, np.ndarray) and (cols_b >= 0).all():
-                return dense.at[rows_1d, cols_b].add(
-                    self.values, unique_indices=True, indices_are_sorted=True)
+                idx = ((cols_b, rows_1d) if self.transposed
+                       else (rows_1d, cols_b))
+                return dense.at[idx].add(
+                    self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_b >= 0
             safe_cols = jnp.where(mask, cols_b, 0)
-            safe_vals = jnp.where(mask, self.values,
+            safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
-            return dense.at[rows_1d, safe_cols].add(
+            idx = ((safe_cols, rows_1d) if self.transposed
+                   else (rows_1d, safe_cols))
+            return dense.at[idx].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
@@ -164,15 +206,27 @@ class BEllpack:
             static_ok = False
         rows_nk = np.broadcast_to(rows_1d[:, None], (self.nrows, k))
         if static_ok:
-            return dense.at[rows_nk, cols_nk].add(self.values)
+            idx = ((cols_nk, rows_nk) if self.transposed
+                   else (rows_nk, cols_nk))
+            return dense.at[idx].add(self.data)
         mask = cols_nk >= 0
         safe_cols = jnp.where(mask, cols_nk, 0)
-        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
-        return dense.at[rows_nk, safe_cols].add(safe_vals)
+        safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
+        idx = ((safe_cols, rows_nk) if self.transposed
+               else (rows_nk, safe_cols))
+        return dense.at[idx].add(safe_vals)
 
     def _todense_batched(self):
-        out = jnp.zeros(self.batch_shape + (self.out_size, self.in_size),
-                        self.dtype)
+        # T=False canvas: (*batch, out, in). T=True canvas:
+        # (in, *batch, out) so the trailing transpose is unnecessary.
+        if self.transposed:
+            out = jnp.zeros(
+                (self.in_size,) + self.batch_shape + (self.out_size,),
+                self.dtype)
+        else:
+            out = jnp.zeros(
+                self.batch_shape + (self.out_size, self.in_size),
+                self.dtype)
         k = self.k
         batch_grids = np.meshgrid(
             *[np.arange(d) for d in self.batch_shape],
@@ -188,13 +242,21 @@ class BEllpack:
             else:
                 cols_nd = jnp.asarray(cols_b)
             if isinstance(cols_nd, np.ndarray) and (cols_nd >= 0).all():
-                return out.at[tuple(batch_idx_arrays) + (row_idx, cols_nd)].add(
-                    self.values, unique_indices=True, indices_are_sorted=True)
+                if self.transposed:
+                    idx = (cols_nd,) + tuple(batch_idx_arrays) + (row_idx,)
+                else:
+                    idx = tuple(batch_idx_arrays) + (row_idx, cols_nd)
+                return out.at[idx].add(
+                    self.data, unique_indices=True, indices_are_sorted=True)
             mask = cols_nd >= 0
             safe_cols = jnp.where(mask, cols_nd, 0)
-            safe_vals = jnp.where(mask, self.values,
+            safe_vals = jnp.where(mask, self.data,
                                   jnp.zeros((), self.dtype))
-            return out.at[tuple(batch_idx_arrays) + (row_idx, safe_cols)].add(
+            if self.transposed:
+                idx = (safe_cols,) + tuple(batch_idx_arrays) + (row_idx,)
+            else:
+                idx = tuple(batch_idx_arrays) + (row_idx, safe_cols)
+            return out.at[idx].add(
                 safe_vals, unique_indices=True, indices_are_sorted=True)
         resolved = list(self.in_cols)
         all_np = all(isinstance(c, np.ndarray) for c in resolved)
@@ -221,13 +283,36 @@ class BEllpack:
         batch_idx_k = tuple(_expand(a) for a in batch_idx_arrays)
         row_idx_k = _expand(row_idx)
         if static_ok:
-            return out.at[batch_idx_k + (row_idx_k, cols_ndk)].add(self.values)
+            if self.transposed:
+                idx = (cols_ndk,) + batch_idx_k + (row_idx_k,)
+            else:
+                idx = batch_idx_k + (row_idx_k, cols_ndk)
+            return out.at[idx].add(self.data)
         mask = cols_ndk >= 0
         safe_cols = jnp.where(mask, cols_ndk, 0)
-        safe_vals = jnp.where(mask, self.values, jnp.zeros((), self.dtype))
-        return out.at[batch_idx_k + (row_idx_k, safe_cols)].add(safe_vals)
+        safe_vals = jnp.where(mask, self.data, jnp.zeros((), self.dtype))
+        if self.transposed:
+            idx = (safe_cols,) + batch_idx_k + (row_idx_k,)
+        else:
+            idx = batch_idx_k + (row_idx_k, safe_cols)
+        return out.at[idx].add(safe_vals)
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
     def to_bcoo(self):
+        # Delegated to `_ellpack_to_bcoo` (which is flag-aware). Both
+        # helpers produce BCOOs at the LOGICAL view — see the
+        # `_ellpack_to_bcoo` docstring for details.
+        if self.v_axis is not None:
+            # BCOO has no v_axis tracking — densifying-then-rebuilding
+            # would be possible but pre-vmap main shows none of the 6
+            # EIGEN-class problems hit this path. Raise so any unexpected
+            # caller surfaces.
+            raise NotImplementedError(
+                f"BEllpack.to_bcoo() with v_axis={self.v_axis} (middle V); "
+                f"densify via .todense() instead"
+            )
         return _ellpack_to_bcoo(self)
 
     def pad_rows(self, before: int, after: int):
@@ -239,9 +324,10 @@ class BEllpack:
         trim_top = max(0, -new_start)
         trim_bottom = max(0, new_end - new_out_size)
         if trim_top == 0 and trim_bottom == 0:
-            return BEllpack(new_start, new_end, self.in_cols, self.values,
+            return BEllpack(new_start, new_end, self.in_cols, self.data,
                            new_out_size, self.in_size,
-                           batch_shape=self.batch_shape)
+                           batch_shape=self.batch_shape,
+                           transposed=self.transposed)
         nrows_old = self.nrows
         lo = trim_top
         hi = nrows_old - trim_bottom
@@ -251,27 +337,73 @@ class BEllpack:
             empty_vals = jnp.empty(empty_shape, self.dtype)
             return BEllpack(0, 0, empty_cols, empty_vals,
                            new_out_size, self.in_size,
-                           batch_shape=self.batch_shape)
+                           batch_shape=self.batch_shape,
+                           transposed=self.transposed)
         new_in_cols = tuple(_slice_col(c, lo, hi) for c in self.in_cols)
         # Slice values along the nrows axis (after batch dims).
         if self.n_batch == 0:
-            new_values = self.values[lo:hi]
+            new_values = self.data[lo:hi]
         else:
-            new_values = self.values[(slice(None),) * self.n_batch + (slice(lo, hi),)]
+            new_values = self.data[(slice(None),) * self.n_batch + (slice(lo, hi),)]
         return BEllpack(new_start + lo, new_end - trim_bottom,
                        new_in_cols, new_values,
                        new_out_size, self.in_size,
-                       batch_shape=self.batch_shape)
+                       batch_shape=self.batch_shape,
+                       transposed=self.transposed)
 
     def transpose(self, axes: tuple[int, ...] | None = None):
-        """Permute the `(*batch_shape, out_size)` axes; in-axis stays last.
+        """Permute the BE's axes.
 
-        The returned BEllpack is structurally equivalent to
-        `jnp.transpose(self.todense(), permutation + (ndim-1,))` but
-        without densifying.
+        Accepts three forms:
+
+        - `axes is None`: reverse `(*batch_shape, out_size)` — the
+          structural form. V (in-axis) stays at the structural tail.
+        - `axes` of length `n_batch + 1`: structural perm over
+          `(*batch_shape, out_size)`.
+        - `axes` of length `n_batch + 2`: full V-augmented perm. If V's
+          original position (axis 0 for transposed=True, axis -1 for
+          transposed=False) ends up unmoved, this reduces to the
+          structural form. The 2D unbatched cross-V swap (`(1, 0)`)
+          flips `transposed` for free. Other cross-V perms (V swapped
+          with a non-primal axis on rank > 2) are unsupported and
+          raise — BE's structural representation can't natively place
+          V mid-batch.
         """
         nb = self.n_batch
-        permutation = tuple(int(p) for p in axes) if axes is not None else tuple(range(nb + 1))[::-1]
+        permutation = (tuple(int(p) for p in axes) if axes is not None
+                       else tuple(range(nb + 1))[::-1])
+        # Identity perm — return self.
+        if permutation == tuple(range(len(permutation))):
+            return self
+        # Full V-augmented perm: classify what happens to V.
+        if len(permutation) == nb + 2:
+            v_axis_in = 0 if self.transposed else nb + 1
+            v_axis_out = permutation.index(v_axis_in)
+            # Output transposed flag is determined by where V ends up:
+            # axis 0 → transposed=True, axis nb+1 (tail) → transposed=False.
+            # Anything in between means V crossed a batch axis and isn't
+            # structurally representable.
+            if v_axis_out == 0:
+                new_transposed = True
+            elif v_axis_out == nb + 1:
+                new_transposed = False
+            else:
+                raise NotImplementedError(
+                    f"BEllpack.transpose: V ends up at axis {v_axis_out} "
+                    f"of {nb + 2} under perm {permutation} (transposed="
+                    f"{self.transposed}). V must land on either axis 0 "
+                    f"or axis {nb + 1}; intermediate positions cross a "
+                    f"batch axis and aren't structurally representable."
+                )
+            # Strip V from the perm and re-index, leaving a structural
+            # perm over `(*batch, out_size)`.
+            permutation = tuple(p for p in permutation if p != v_axis_in)
+            permutation = tuple(p - 1 if p > v_axis_in else p
+                                for p in permutation)
+            # Apply the structural perm via the recursive code below,
+            # then update the flag.
+            structural = self.transpose(permutation)
+            return replace_slots(structural, transposed=new_transposed)
         assert len(permutation) == nb + 1
         old_sizes = self.batch_shape + (self.out_size,)
         new_sizes = tuple(old_sizes[p] for p in permutation)
@@ -286,13 +418,14 @@ class BEllpack:
                 val_perm = batch_perm + (nb,)
             else:
                 val_perm = batch_perm + (nb, nb + 1)
-            new_values = jnp.transpose(self.values, val_perm)
+            new_values = jnp.transpose(self.data, val_perm)
             new_in_cols = tuple(
                 _transpose_col_batch(c, batch_perm) for c in self.in_cols
             )
             return BEllpack(self.start_row, self.end_row, new_in_cols,
                            new_values, new_out_size, self.in_size,
-                           batch_shape=new_batch_shape)
+                           batch_shape=new_batch_shape,
+                           transposed=self.transposed)
 
         # General case: out axis moves. Pad the compressed row axis to
         # full out_size, then apply the full permutation to values and
@@ -302,11 +435,11 @@ class BEllpack:
         pad_after = out_size - self.end_row
         if self.k == 1:
             val_pad = [(0, 0)] * nb + [(pad_before, pad_after)]
-            values_full = jnp.pad(self.values, val_pad)
+            values_full = jnp.pad(self.data, val_pad)
             new_values = jnp.transpose(values_full, permutation)
         else:
             val_pad = [(0, 0)] * nb + [(pad_before, pad_after), (0, 0)]
-            values_full = jnp.pad(self.values, val_pad)
+            values_full = jnp.pad(self.data, val_pad)
             new_values = jnp.transpose(values_full, permutation + (nb + 1,))
 
         new_in_cols = tuple(
@@ -316,7 +449,8 @@ class BEllpack:
         )
         return BEllpack(0, new_out_size, new_in_cols, new_values,
                        new_out_size, self.in_size,
-                       batch_shape=new_batch_shape)
+                       batch_shape=new_batch_shape,
+                       transposed=self.transposed)
 
 
 def _transpose_col_batch(col, batch_perm):
@@ -364,8 +498,8 @@ def _transpose_col_full(col, batch_shape, start_row, end_row, out_size,
     return jnp.transpose(padded, permutation)
 
 
-def _normalize_values(values, k: int, batch_shape=(), nrows=None):
-    """Coerce a user-supplied `values` into the canonical hybrid layout.
+def _normalize_data(data, k: int, batch_shape=(), nrows=None):
+    """Coerce a user-supplied `data` into the canonical hybrid layout.
 
     Accepts:
       - 1D `jnp.ndarray` (only when k==1 and batch_shape==()).
@@ -376,23 +510,23 @@ def _normalize_values(values, k: int, batch_shape=(), nrows=None):
         `(*B, nrows, k)` when k>=2, or a tuple of k `(*B, nrows)` arrays.
     """
     n_batch = len(batch_shape)
-    if isinstance(values, tuple):
+    if isinstance(data, tuple):
         if k == 1:
-            assert len(values) == 1, f"k=1 but got {len(values)} bands"
-            return jnp.asarray(values[0])
-        assert len(values) == k, f"k={k} but got {len(values)} bands"
+            assert len(data) == 1, f"k=1 but got {len(data)} bands"
+            return jnp.asarray(data[0])
+        assert len(data) == k, f"k={k} but got {len(data)} bands"
         # Each band has shape (*batch_shape, nrows) → stack on last axis.
-        return jnp.stack(list(values), axis=-1)
-    arr = jnp.asarray(values)
+        return jnp.stack(list(data), axis=-1)
+    arr = jnp.asarray(data)
     if k == 1:
         assert arr.ndim == n_batch + 1, (
-            f"k=1 with batch_shape={batch_shape} needs ndim={n_batch+1} values, "
+            f"k=1 with batch_shape={batch_shape} needs ndim={n_batch+1} data, "
             f"got shape {arr.shape}"
         )
     else:
         assert arr.ndim == n_batch + 2 and arr.shape[-1] == k, (
             f"k={k} with batch_shape={batch_shape} needs "
-            f"(*batch, nrows, k) values, got shape {arr.shape}"
+            f"(*batch, nrows, k) data, got shape {arr.shape}"
         )
     return arr
 
@@ -405,8 +539,108 @@ def _slice_col(col, lo, hi):
     return col[lo:hi]
 
 
+def _bcoo_swap_last_two_sparse_axes(bcoo: sparse.BCOO) -> sparse.BCOO:
+    """Swap the last two (sparse) axes of a BCOO. Cheap — reorders the
+    last two index columns, leaves data and n_batch alone."""
+    n_batch = bcoo.n_batch
+    perm = tuple(range(n_batch)) + (n_batch + 1, n_batch)
+    return bcoo.transpose(axes=perm)
+
+
+def _bcoo_to_fully_sparse(bcoo: sparse.BCOO) -> sparse.BCOO:
+    """Promote a batched BCOO (`n_batch > 0`) to a fully-sparse BCOO
+    (`n_batch=0`) at the same `.shape` and `.todense()` view.
+
+    Inlines the per-batch index positions into the indices tensor,
+    flattening `data` accordingly. Same nse, just rearranged so that
+    every axis is sparse — required as a precursor to a transpose
+    that crosses the batch/sparse boundary (`bcoo.transpose` rejects
+    permutations that mix batch with sparse axes).
+    """
+    if bcoo.n_batch == 0:
+        return bcoo
+    nb = bcoo.n_batch
+    batch_shape = tuple(bcoo.shape[:nb])
+    nse_per_batch = bcoo.indices.shape[-2]
+    batch_size = int(np.prod(batch_shape)) if batch_shape else 1
+
+    # Build per-batch index arrays via meshgrid.
+    if batch_shape:
+        batch_axes = np.unravel_index(
+            np.arange(batch_size, dtype=np.int64), batch_shape,
+        )  # tuple of `nb` 1D arrays of length batch_size
+    else:
+        batch_axes = ()
+
+    # Broadcast each batch-axis index to (batch_size, nse_per_batch).
+    new_batch_indices = jnp.stack(
+        [
+            jnp.broadcast_to(
+                jnp.asarray(idx)[:, None], (batch_size, nse_per_batch),
+            )
+            for idx in batch_axes
+        ],
+        axis=-1,
+    ) if batch_axes else jnp.zeros(
+        (batch_size, nse_per_batch, 0), dtype=bcoo.indices.dtype,
+    )
+
+    # Flatten the original sparse indices to (batch_size,
+    # nse_per_batch, n_sparse).
+    flat_sparse = bcoo.indices.reshape(batch_size, nse_per_batch, -1)
+    new_indices = jnp.concatenate(
+        [new_batch_indices.astype(flat_sparse.dtype), flat_sparse],
+        axis=-1,
+    ).reshape(batch_size * nse_per_batch, -1)
+    new_data = bcoo.data.reshape(batch_size * nse_per_batch)
+
+    return sparse.BCOO(
+        (new_data, new_indices),
+        shape=bcoo.shape,
+        indices_sorted=False, unique_indices=False,
+    )
+
+
+def _bcoo_rotate_in_to_front(bcoo: sparse.BCOO, n_batch: int) -> sparse.BCOO:
+    """Rotate a BCOO at shape `(*batch, out, in)` to `(in, *batch, out)`.
+
+    Used by `_ellpack_to_bcoo_batched` for `transposed=True` BEs:
+    canonical-shape BCOO `(*batch, out, in)` needs to land at the
+    LOGICAL `(in, *batch, out)` shape. The permutation crosses the
+    batch/sparse boundary, so go via fully-sparse first.
+    """
+    if n_batch == 0:
+        # Unbatched: just swap last two sparse axes (cheap).
+        return _bcoo_swap_last_two_sparse_axes(bcoo)
+    flat = _bcoo_to_fully_sparse(bcoo)
+    # Original axes: 0..nb-1 (batch), nb (out), nb+1 (in).
+    # Target: in (nb+1) → 0; batch (0..nb-1) → 1..nb; out (nb) → nb+1.
+    perm = (n_batch + 1,) + tuple(range(n_batch)) + (n_batch,)
+    return flat.transpose(axes=perm)
+
+
+def canonicalize(op):
+    """Defensive guard for rules that aren't yet transposed-flag-aware.
+
+    For a `transposed=True` BEllpack, returns its dense view (loses
+    sparsity but stays correct). Pass-through for everything else.
+    Rules that don't yet inspect `op.transposed` should call this on
+    every BEllpack input so they never see a transposed=True operand
+    in a code path that interprets jaxpr axes as canonical.
+
+    Per-rule conversion replaces `op = canonicalize(op)` with proper
+    flag handling. Until every rule is converted, this guard ensures
+    that introducing `transposed=True` in any producer doesn't break
+    correctness anywhere downstream.
+    """
+    if isinstance(op, BEllpack) and op.transposed:
+        return op.todense()
+    return op
+
+
 def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
-    """Flatten BEllpack to BCOO, filtering -1-sentinel cols.
+    """Flatten BEllpack to BCOO at the LOGICAL view (respects
+    `transposed`).
 
     Unbatched (n_batch == 0):
       k=1: values is 1D, indices stack rows + band 0's cols. One HLO op
@@ -421,35 +655,62 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
       broadcast to `(*batch, nrows)`. `-1` sentinels keep their
       position in `indices` with col set to 0 and value set to 0,
       since batched BCOO can't have variable `nse` across batches.
+
+    Flag handling: a `transposed=True` BEllpack is flipped to canonical
+    (free flag flip — same data, T=False interpretation), the canonical
+    BCOO is built, then rotated so `in_size` lands at axis 0 (matching
+    the LOGICAL `(in, *batch, out)` shape). Unbatched: a cheap
+    last-two-swap. Batched: goes via `_bcoo_to_fully_sparse` first
+    because the rotation crosses the batch/sparse boundary. Identical
+    behaviour to `BEllpack.to_bcoo`. Mixing the two helpers is safe —
+    both produce BCOOs at the LOGICAL view regardless of the BE's flag.
     """
     if e.n_batch > 0:
         return _ellpack_to_bcoo_batched(e)
+    # Unbatched. For T=True we build BCOO indices with cols first
+    # (V-axis at output 0), shape `e.shape = (in, out)`. Same data
+    # tensor as T=False; only the index column order differs. Avoids
+    # the prior `canonical → _bcoo_swap_last_two_sparse_axes` round-
+    # trip whose `bcoo.transpose` emits an HLO index-permute op.
     rows_1d = np.arange(e.start_row, e.end_row)
     k = e.k
+
+    def _stack(rows, cols, axis):
+        # T=True wants cols first (V at axis 0 of BCOO indices); T=False
+        # wants rows first (V at axis -1 of BCOO indices).
+        if e.transposed:
+            return (np.stack if isinstance(rows, np.ndarray)
+                    else jnp.stack)([cols, rows], axis=axis)
+        return (np.stack if isinstance(rows, np.ndarray)
+                else jnp.stack)([rows, cols], axis=axis)
 
     # k=1 fast path — single band, values already 1D.
     if k == 1:
         cols_b = e.in_cols[0]
         if isinstance(cols_b, np.ndarray):
             if (cols_b >= 0).all():
-                indices = np.stack([rows_1d, cols_b], axis=1)
+                indices = _stack(rows_1d, cols_b, axis=1)
                 # pyrefly: ignore [bad-argument-type]
-                return sparse.BCOO((e.values, indices), shape=e.shape,
-                                   indices_sorted=True, unique_indices=True)
+                return sparse.BCOO((e.data, indices), shape=e.shape,
+                                   indices_sorted=not e.transposed,
+                                   unique_indices=True)
             keep = np.nonzero(cols_b >= 0)[0]
-            indices = np.stack([rows_1d[keep], cols_b[keep]], axis=1)
+            indices = _stack(rows_1d[keep], cols_b[keep], axis=1)
             # pyrefly: ignore [bad-argument-type]
-            return sparse.BCOO((jnp.take(e.values, keep), indices),
+            return sparse.BCOO((jnp.take(e.data, keep), indices),
                                shape=e.shape,
-                               indices_sorted=True, unique_indices=True)
+                               indices_sorted=not e.transposed,
+                               unique_indices=True)
         # Traced cols — mask values.
         cols_j = jnp.asarray(cols_b)
         mask = cols_j >= 0
         cols_safe = jnp.where(mask, cols_j, 0)
-        vals_safe = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
-        indices = jnp.stack([jnp.asarray(rows_1d), cols_safe], axis=1)
+        vals_safe = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
+        indices = _stack(jnp.asarray(rows_1d), cols_safe, axis=1)
+        # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((vals_safe, indices), shape=e.shape,
-                           indices_sorted=True, unique_indices=True)
+                           indices_sorted=not e.transposed,
+                           unique_indices=True)
 
     # k>=2 path — values is (nrows, k). Dispatch by cols-type and k:
     #   * Static cols: always vectorize. Indices are built in pure np
@@ -473,14 +734,14 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
         # Static cols: always vectorize (any K, any nrows).
         rows_flat = np.concatenate([rows_1d] * k)
         cols_flat = np.concatenate(per_band_cols)
-        vals_flat = e.values.T.reshape(-1)
+        vals_flat = e.data.T.reshape(-1)
         mask = cols_flat >= 0
         if mask.all():
-            indices = np.stack([rows_flat, cols_flat], axis=1)
+            indices = _stack(rows_flat, cols_flat, axis=1)
             # pyrefly: ignore [bad-argument-type]
             return sparse.BCOO((vals_flat, indices), shape=e.shape)
         keep = np.nonzero(mask)[0]
-        indices = np.stack([rows_flat[keep], cols_flat[keep]], axis=1)
+        indices = _stack(rows_flat[keep], cols_flat[keep], axis=1)
         # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((jnp.take(vals_flat, keep), indices),
                            shape=e.shape)
@@ -493,12 +754,13 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
             mask = cols_j >= 0
             rows_parts.append(jnp.asarray(rows_1d))
             cols_parts.append(jnp.where(mask, cols_j, 0))
-            vals_parts.append(jnp.where(mask, e.values[:, b],
+            vals_parts.append(jnp.where(mask, e.data[:, b],
                                         jnp.zeros((), e.dtype)))
         rows_flat = jnp.concatenate(rows_parts)
         cols_flat = jnp.concatenate(cols_parts)
         vals_flat = jnp.concatenate(vals_parts)
-        indices = jnp.stack([rows_flat, cols_flat], axis=1)
+        indices = _stack(rows_flat, cols_flat, axis=1)
+        # pyrefly: ignore [bad-argument-type]
         return sparse.BCOO((vals_flat, indices), shape=e.shape)
     # Vectorized for small nrows (traced cols). `per_band_cols` is
     # already a list of K 1D arrays (mixed np/jnp); `jnp.concatenate`
@@ -506,11 +768,12 @@ def _ellpack_to_bcoo(e: "BEllpack") -> sparse.BCOO:
     # intermediate stack+reshape.
     rows_flat_np = np.concatenate([rows_1d] * k)
     cols_flat = jnp.concatenate(per_band_cols)             # band-major
-    vals_flat = e.values.T.reshape(-1)                     # band-major
+    vals_flat = e.data.T.reshape(-1)                     # band-major
     mask = cols_flat >= 0
     cols_safe = jnp.where(mask, cols_flat, 0)
     vals_safe = jnp.where(mask, vals_flat, jnp.zeros((), e.dtype))
-    indices = jnp.stack([jnp.asarray(rows_flat_np), cols_safe], axis=1)
+    indices = _stack(jnp.asarray(rows_flat_np), cols_safe, axis=1)
+    # pyrefly: ignore [bad-argument-type]
     return sparse.BCOO((vals_safe, indices), shape=e.shape)
 
 
@@ -538,6 +801,15 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
     """
     if e.n_batch == 0:
         return _ellpack_to_bcoo(e)
+    if e.transposed:
+        # Mirror `_ellpack_to_bcoo`'s flag handling: build the
+        # canonical-layout BCOO at shape `(*batch, out, in)`, then
+        # rotate to the LOGICAL `(in, *batch, out)` shape. The rotate
+        # crosses the batch/sparse boundary so the result is always
+        # a fully-sparse (n_batch=0) BCOO when batched.
+        canonical = replace_slots(e, transposed=False)
+        bcoo = _ellpack_to_bcoo_batched(canonical)
+        return _bcoo_rotate_in_to_front(bcoo, n_batch=len(B := e.batch_shape))
     B = e.batch_shape
     nrows = e.nrows
     k = e.k
@@ -582,10 +854,10 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
             safe_cols = np.where(sentinel_mask, 0, cols_bb)
             # Values in band-major order to match `cols_bb`.
             if k == 1:
-                vals_bb = e.values
+                vals_bb = e.data
             else:
                 nb = len(B)
-                vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+                vals_bb = jnp.moveaxis(e.data, -1, nb).reshape(
                     B + (nrows * k,)
                 )
             safe_vals = jnp.where(
@@ -613,10 +885,10 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         residual_mask = cols_pruned < 0
         safe_cols_pruned = np.where(residual_mask, 0, cols_pruned)
         if k == 1:
-            vals_bb = e.values
+            vals_bb = e.data
         else:
             nb = len(B)
-            vals_bb = jnp.moveaxis(e.values, -1, nb).reshape(
+            vals_bb = jnp.moveaxis(e.data, -1, nb).reshape(
                 B + (nrows * k,)
             )
         vals_pruned = jnp.take_along_axis(
@@ -654,7 +926,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         cols = resolve_to_batch(per_band[0])
         mask = cols >= 0
         safe_cols = jnp.where(mask, cols, 0)
-        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        safe_vals = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
         rows_per_batch = jnp.asarray(rows_broad)
         indices = jnp.stack([rows_per_batch, safe_cols], axis=-1)
         data = safe_vals
@@ -666,7 +938,7 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
         )
         mask = cols_stacked >= 0
         safe_cols = jnp.where(mask, cols_stacked, 0)
-        safe_vals = jnp.where(mask, e.values, jnp.zeros((), e.dtype))
+        safe_vals = jnp.where(mask, e.data, jnp.zeros((), e.dtype))
         indices = jnp.stack(
             [rows_stacked.reshape(B + (nse,)),
              safe_cols.reshape(B + (nse,))],
@@ -683,18 +955,11 @@ def _ellpack_to_bcoo_batched(e: "BEllpack") -> sparse.BCOO:
 
 # ---- singledispatch registrations ----
 
-@negate.register(BEllpack)
-def _(op):
-    return BEllpack(op.start_row, op.end_row, op.in_cols,
-                   -op.values, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
-
-
 @scale_scalar.register(BEllpack)
 def _(op, s):
     return BEllpack(op.start_row, op.end_row, op.in_cols,
-                   s * op.values, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
+                   s * op.data, op.out_size, op.in_size,
+                   batch_shape=op.batch_shape, transposed=op.transposed)
 
 
 @scale_per_out_row.register(BEllpack)
@@ -712,38 +977,66 @@ def _(op, v):
         v_slice = v_arr[op.start_row:op.end_row]
     # values shape: (*batch, nrows) for k=1, (*batch, nrows, k) for k>=2.
     # v_slice shape: (*batch, nrows). For k>=2 broadcast a trailing axis.
-    if op.values.ndim == op.n_batch + 1:  # k=1
-        scaled = v_slice * op.values
+    if op.data.ndim == op.n_batch + 1:  # k=1
+        scaled = v_slice * op.data
     else:
-        scaled = v_slice[..., None] * op.values
+        scaled = v_slice[..., None] * op.data
     return BEllpack(op.start_row, op.end_row, op.in_cols,
                    scaled, op.out_size, op.in_size,
-                   batch_shape=op.batch_shape)
+                   batch_shape=op.batch_shape, transposed=op.transposed)
 
 
 # ---- unary structural op registrations for BEllpack ----
 
 @slice_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(s) for s in params["start_indices"])
-    limits = tuple(int(l) for l in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = tuple(int(s) for s in strides_p) if strides_p else (1,) * len(starts)
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
+    # V (in_size) is at axis 0 for transposed=True, axis -1 otherwise.
+    # The "in_axis_noop" check confirms the slice doesn't touch V; the
+    # primal_out (= structural row axis) sits at the opposite end.
+    v_axis = 0 if op.transposed else len(starts) - 1
+    primal_axis = len(starts) - 1 if op.transposed else 0
+    in_axis_noop = (
+        len(starts) >= 2
+        and starts[v_axis] == 0
+        and limits[v_axis] == op.in_size
+        and strides[v_axis] == 1
+    )
 
-    # Unit-stride 1D slice on unbatched BEllpack.
-    if len(starts) == 1 and strides == (1,) and op.n_batch == 0:
-        s, e = starts[0], limits[0]
+    # Unit-stride 1D primal slice on unbatched BEllpack.
+    if (len(starts) == 2 and in_axis_noop
+            and strides[primal_axis] == 1 and op.n_batch == 0):
+        s, e = starts[primal_axis], limits[primal_axis]
         return op.pad_rows(-s, -(op.out_size - e))
 
-    # N-D unit-stride slice on batched BEllpack.
+    # N-D unit-stride slice on batched BEllpack. For T=False the
+    # layout is `(*batch, out, in)` (batch at front, out at -2, in at
+    # -1); for T=True it's `(in, *batch, out)` (in at 0, batch in the
+    # middle, out at -1). Pick the batch/out indices accordingly.
     if (op.n_batch > 0
-            and len(starts) == op.n_batch + 1
-            and all(st == 1 for st in strides)):
+            and in_axis_noop
+            and len(starts) == op.n_batch + 2
+            and all(strides[i] == 1
+                    for i in range(len(starts)) if i != v_axis)):
+        if op.transposed:
+            # axis 0 = in (no-op), axes 1..n_batch = batch, axis -1 = out
+            batch_starts = starts[1:1 + op.n_batch]
+            batch_limits = limits[1:1 + op.n_batch]
+            out_start, out_limit = int(starts[-1]), int(limits[-1])
+        else:
+            # axes 0..n_batch-1 = batch, axis -2 = out, axis -1 = in (no-op)
+            batch_starts = starts[:op.n_batch]
+            batch_limits = limits[:op.n_batch]
+            out_start, out_limit = int(starts[-2]), int(limits[-2])
         batch_slicer = tuple(slice(int(s), int(e))
-                             for s, e in zip(starts[:-1], limits[:-1]))
-        out_start, out_limit = int(starts[-1]), int(limits[-1])
-        tail = (slice(None),) * (op.values.ndim - op.n_batch)
-        new_values = op.values[batch_slicer + tail]
+                             for s, e in zip(batch_starts, batch_limits))
+        # `op.data` has shape `(*batch, nrows)` for k=1 or
+        # `(*batch, nrows, k)` for k>=2 — same in both T flags. Slice
+        # the leading batch dims, leave the tail untouched.
+        tail = (slice(None),) * (op.data.ndim - op.n_batch)
+        new_values = op.data[batch_slicer + tail]
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if hasattr(c, "ndim") and c.ndim > 1:
@@ -755,40 +1048,50 @@ def _(op, *, n, **params):
             op.start_row, op.end_row,
             tuple(new_in_cols), new_values,
             op.out_size, op.in_size,
-            batch_shape=new_batch,
+            batch_shape=new_batch, transposed=op.transposed,
         )
         return sliced.pad_rows(-out_start, -(op.out_size - out_limit))
 
-    # Dense fallback.
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @pad_op.register(BEllpack)
 def _(op, *, n, padding_value, **params):
-    config = params["padding_config"]
-    before, after, interior = config[0] if len(config) >= 1 else (0, 0, 0)
-    before, after = int(before), int(after)
-    interior = int(interior)
+    config = tuple(params["padding_config"])
+    # V (in_size) sits at axis -1 for transposed=False, axis 0 for
+    # transposed=True. Padding the V axis is unsupported here; we only
+    # accept configs where the V axis pad is a noop.
+    v_axis = 0 if op.transposed else len(config) - 1
+    primal_axis = len(config) - 1 if op.transposed else 0  # for unbatched
+    in_axis_noop = (
+        len(config) >= 2 and tuple(config[v_axis]) == (0, 0, 0)
+    )
 
-    # 1D no-interior pad on unbatched BEllpack.
-    if len(config) == 1 and interior == 0 and op.n_batch == 0:
-        return op.pad_rows(before, after)
+    # 1D primal no-interior pad on unbatched BEllpack.
+    if len(config) == 2 and in_axis_noop and op.n_batch == 0:
+        before, after, interior = config[primal_axis]
+        if int(interior) == 0:
+            return op.pad_rows(int(before), int(after))
 
     # N-D zero-interior pad on batched BEllpack.
+    non_v_axes = tuple(i for i in range(len(config)) if i != v_axis)
     if (op.n_batch > 0
-            and len(config) == op.n_batch + 1
-            and all(int(c[2]) == 0 for c in config)):
-        batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-1])
-        out_before, out_after = int(config[-1][0]), int(config[-1][1])
+            and in_axis_noop
+            and len(config) == op.n_batch + 2
+            and all(int(config[i][2]) == 0 for i in non_v_axes)):
+        if op.transposed:
+            # config layout = (V, *batch, out)
+            batch_pads = tuple((int(c[0]), int(c[1])) for c in config[1:-1])
+            out_before, out_after = int(config[-1][0]), int(config[-1][1])
+        else:
+            # config layout = (*batch, out, V)
+            batch_pads = tuple((int(c[0]), int(c[1])) for c in config[:-2])
+            out_before, out_after = int(config[-2][0]), int(config[-2][1])
         new_batch_shape = tuple(
             b + s + a for (b, a), s in zip(batch_pads, op.batch_shape)
         )
-        tail_pad = ((0, 0),) * (op.values.ndim - op.n_batch)
-        new_values = jnp.pad(op.values, batch_pads + tail_pad)
+        tail_pad = ((0, 0),) * (op.data.ndim - op.n_batch)
+        new_values = jnp.pad(op.data, batch_pads + tail_pad)
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if hasattr(c, "ndim") and c.ndim > 1:
@@ -804,42 +1107,99 @@ def _(op, *, n, padding_value, **params):
             tuple(new_in_cols), new_values,
             op.out_size, op.in_size,
             batch_shape=new_batch_shape,
+            transposed=op.transposed,
         )
         return padded_batch.pad_rows(out_before, out_after)
 
-    # Interior padding — promote to BCOO then shift rows.
-    if len(config) == 1 and interior > 0:
-        bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
-        step = interior + 1
-        old_size = bcoo_op.shape[0]
-        out_size = old_size + before + after + interior * max(old_size - 1, 0)
-        new_rows = bcoo_op.indices[:, 0] * step + before
-        new_indices = jnp.stack([new_rows, bcoo_op.indices[:, 1]], axis=1)
-        return sparse.BCOO(
-            (bcoo_op.data, new_indices), shape=(out_size, bcoo_op.shape[1])
-        )
+    # Interior padding — promote to BCOO then shift along the primal
+    # (out_size) axis. For T=False the primal is axis 0 (start of
+    # `(out, in)`); for T=True it's axis 1 (end of `(in, out)`).
+    if len(config) == 2 and in_axis_noop:
+        before, after, interior = config[primal_axis]
+        before, after, interior = int(before), int(after), int(interior)
+        if interior > 0 and op.n_batch == 0:
+            bcoo_op = op.to_bcoo() if hasattr(op, 'to_bcoo') else op
+            step = interior + 1
+            # `bcoo_op.shape` reflects the LOGICAL view; the primal
+            # axis index in the BCOO matches the BE's frame.
+            primal_in_bcoo = primal_axis
+            old_size = bcoo_op.shape[primal_in_bcoo]
+            out_size = old_size + before + after + interior * max(old_size - 1, 0)
+            new_primal_idx = bcoo_op.indices[:, primal_in_bcoo] * step + before
+            new_indices_cols = [
+                new_primal_idx if j == primal_in_bcoo
+                else bcoo_op.indices[:, j]
+                for j in range(2)
+            ]
+            new_indices = jnp.stack(new_indices_cols, axis=1)
+            new_shape = list(bcoo_op.shape)
+            new_shape[primal_in_bcoo] = out_size
+            return sparse.BCOO(
+                (bcoo_op.data, new_indices), shape=tuple(new_shape),
+            )
 
     # Dense fallback.
-    dense = op.todense()
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
+    return lax.pad(op.todense(), padding_value, **params)
 
 
 @squeeze_op.register(BEllpack) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
-    if (op.n_batch == 0 and dimensions == (0,)
+    # Unbatched 1-row BE: squeeze of the size-1 out axis is a no-op.
+    # The out axis sits at position 0 for transposed=False (shape (1, n))
+    # and at position 1 for transposed=True (shape (n, 1)). Returning
+    # the BE unchanged lets downstream rules consume the structural
+    # form rather than a dense (n,) vector.
+    out_axis = (op.n_batch + 1) if op.transposed else op.n_batch
+    if (op.n_batch == 0 and dimensions == (out_axis,)
             and op.out_size == 1 and op.start_row == 0 and op.end_row == 1):
         return op
+    # T=True: shape (V, *batch, 1). Squeezing the trailing size-1 out
+    # axis (`n_batch + 1`) collapses batch into out, producing
+    # BE_T(in=V, batch=(), out=prod(batch)).
+    if (op.transposed and op.n_batch >= 1
+            and op.out_size == 1
+            and op.start_row == 0 and op.end_row == 1
+            and dimensions == (op.n_batch + 1,)):
+        B = int(np.prod(op.batch_shape))
+        if op.k == 1:
+            new_values = op.data.reshape(B)
+        else:
+            new_values = op.data.reshape(B, op.k)
+        new_in_cols: list[ColArr] = []
+        ok = True
+        for c in op.in_cols:
+            if isinstance(c, np.ndarray):
+                if c.ndim == op.n_batch + 1:
+                    new_in_cols.append(c.reshape(B))
+                elif c.ndim == 1 and c.shape[0] == B:
+                    new_in_cols.append(c)
+                else:
+                    ok = False; break
+            elif isinstance(c, slice):
+                rs = np.arange(c.start or 0, c.stop or 1, c.step or 1)
+                if len(rs) == 1:
+                    new_in_cols.append(np.broadcast_to(rs, (B,)).copy())
+                else:
+                    ok = False; break
+            else:
+                ok = False; break
+        if ok:
+            return BEllpack(
+                start_row=0, end_row=B,
+                in_cols=tuple(new_in_cols), data=new_values,
+                out_size=B, in_size=op.in_size,
+                transposed=True,
+            )
     if (op.n_batch >= 1
             and op.out_size == 1
             and op.start_row == 0 and op.end_row == 1
             and dimensions == (op.n_batch,)):
         B = int(np.prod(op.batch_shape))
         if op.k == 1:
-            new_values = op.values.reshape(B)
+            new_values = op.data.reshape(B)
         else:
-            new_values = op.values.reshape(B, op.k)
+            new_values = op.data.reshape(B, op.k)
         new_in_cols: list[ColArr] = []
         ok = True
         for c in op.in_cols:
@@ -863,7 +1223,7 @@ def _(op, *, n, **params):
         if ok:
             return BEllpack(
                 start_row=0, end_row=B,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=B, in_size=op.in_size,
             )
     # Densify (sparse → (out_size, in_size)) then squeeze.
@@ -877,7 +1237,7 @@ def _(op, *, n, **params):
     if op.n_batch == 0 and dimensions == (0,):
         new_start = op.out_size - op.end_row
         new_end = op.out_size - op.start_row
-        new_values = jnp.flip(op.values, axis=0)
+        new_values = jnp.flip(op.data, axis=0)
         new_in_cols: list[ColArr] = []
         for c in op.in_cols:
             if isinstance(c, np.ndarray):
@@ -886,7 +1246,7 @@ def _(op, *, n, **params):
                 new_in_cols.append(jnp.flip(c, axis=0))  # pyrefly: ignore [bad-argument-type]
         return BEllpack(
             start_row=new_start, end_row=new_end,
-            in_cols=tuple(new_in_cols), values=new_values,
+            in_cols=tuple(new_in_cols), data=new_values,
             out_size=op.out_size, in_size=op.in_size,
         )
     dense = op.todense()
@@ -905,8 +1265,8 @@ def _bellpack_unbatch(bep):
     assert bep.n_batch >= 1, "use only when n_batch > 0"
     if bep.n_batch > 1:
         prod_B = int(np.prod(bep.batch_shape))
-        trailing = bep.values.shape[bep.n_batch:]
-        flat_values = bep.values.reshape((prod_B,) + trailing)
+        trailing = bep.data.shape[bep.n_batch:]
+        flat_values = bep.data.reshape((prod_B,) + trailing)
         flat_cols: list[ColArr] = []
         for c in bep.in_cols:
             if c.ndim == 1:
@@ -915,20 +1275,22 @@ def _bellpack_unbatch(bep):
                 flat_cols.append(c.reshape((prod_B,) + c.shape[bep.n_batch:]))
         bep = BEllpack(
             start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=tuple(flat_cols), values=flat_values,
+            in_cols=tuple(flat_cols), data=flat_values,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(prod_B,),
+            transposed=bep.transposed,
         )
     B = bep.batch_shape[0]
     result = []
     for b in range(B):
         in_cols_b = tuple(c[b] if hasattr(c, "ndim") and c.ndim >= 2 else c
                           for c in bep.in_cols)
-        values_b = bep.values[b]
+        values_b = bep.data[b]
         result.append(BEllpack(
             start_row=bep.start_row, end_row=bep.end_row,
-            in_cols=in_cols_b, values=values_b,
+            in_cols=in_cols_b, data=values_b,
             out_size=bep.out_size, in_size=bep.in_size,
             batch_shape=(),
+            transposed=bep.transposed,
         ))
     return tuple(result)

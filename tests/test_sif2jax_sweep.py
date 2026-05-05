@@ -226,20 +226,33 @@ def test_sif2jax_correctness_and_nse(param):
     # JIT-wrapping is intentional: production callers jit-compile, and
     # some regressions (e.g. rank-collapse in _add_rule's BCOO-concat
     # path) only manifest under jit tracing because closure values
-    # become tracers. Un-jitted `bcoo_hessian` misses those. See
-    # JIT_UNSUPPORTED above for the handful of problems we have to
-    # run un-jitted.
+    # become tracers. Un-jitted `bcoo_hessian` misses those.
+    #
+    # Single jit produces both S and the reference matvec hvp(v) with a
+    # *shared* `jax.linearize` — one trace, one compile, one
+    # gradient-tape walk. The status quo built `bcoo_hessian` and the
+    # reference hvp via two independent linearize calls, which doubled
+    # the trace+compile cost on small problems (40+% of total runtime
+    # there). `S @ v` is intentionally kept OUTSIDE the jit: pulling
+    # it in fuses S, S@v, and hvp(v) into one HLO graph and on
+    # densifying problems (e.g. SBRYBND, n=5000, dense fallback) XLA
+    # OOMs / hangs the compile.
+    v = jax.random.normal(jax.random.key(0), y.shape, dtype=y.dtype)
     if name in UNFOLDED_UNSUPPORTED:
         S = lineaxpr.bcoo_hessian(f)(y)
+        _, hvp = jax.linearize(jax.grad(f), y)
+        hvp_v = hvp(v)
     else:
-        S = jax.jit(lineaxpr.bcoo_hessian(f))(y)
+        @jax.jit
+        def _make_S_and_hvp_v(y, v):
+            _, hvp = jax.linearize(jax.grad(f), y)
+            S = lineaxpr.materialize(hvp, y, format='bcoo')
+            return S, hvp(v)
+        S, hvp_v = _make_S_and_hvp_v(y, v)
 
     # Correctness via random-vector matvec (avoids O(n²) memory).
     # Compare S @ v against hvp(v) where hvp is jax's linearized gradient.
-    _, hvp = jax.linearize(jax.grad(f), y)
-    v = jax.random.normal(jax.random.key(0), y.shape, dtype=y.dtype)
     Sv = S @ v  # works for both BCOO and ndarray
-    hvp_v = hvp(v)
     denom = float(jnp.max(jnp.abs(hvp_v))) + 1e-30
     rel_err = float(jnp.max(jnp.abs(Sv - hvp_v))) / denom
     assert rel_err < REL_TOL, (
@@ -260,27 +273,32 @@ def test_sif2jax_correctness_and_nse(param):
             f"smart-densify should have caught this."
         )
 
-    # nse regression (only meaningful when S is a BCOO — dense returns
-    # skip the check). Manifest is keyed by bare class name; for
+    # nse regression. Manifest is keyed by bare class name; for
     # size-overridden problems the recorded nse is the override's
     # smaller-n nse, not the default-n.
-    if isinstance(S, sparse.BCOO):
-        manifest = _load_manifest()
-        entry = manifest.get(name)
-        if entry is not None:
-            recorded_nse = entry["nse"]
-            recorded_n = entry["n"]
-            if recorded_n != n:
-                # Problem default-size may have changed upstream; skip
-                # the regression check rather than crying wolf.
-                pytest.skip(
-                    f"{name}: manifest n={recorded_n} != current n={n} — "
-                    f"update the manifest"
-                )
-            assert S.nse <= recorded_nse, (
-                f"{name}: nse regressed {recorded_nse} → {S.nse} (n={n}). "
-                f"If this increase is intentional (trade-off justified), "
-                f"bump `tests/nse_manifest.json`."
+    manifest = _load_manifest()
+    entry = manifest.get(name)
+    if entry is not None:
+        recorded_nse = entry["nse"]
+        recorded_n = entry["n"]
+        if recorded_n != n:
+            # Problem default-size may have changed upstream; skip
+            # the regression check rather than crying wolf.
+            pytest.skip(
+                f"{name}: manifest n={recorded_n} != current n={n} — "
+                f"update the manifest"
             )
-        # Un-manifested problems: silent. Run `update_nse_manifest.py`
-        # to capture current state.
+        # Sparsity regression: a problem recorded in the manifest
+        # was previously a BCOO. If it now densifies, structural
+        # paths got lost — fail loudly so we notice.
+        assert isinstance(S, sparse.BCOO), (
+            f"{name}: previously emitted BCOO (manifest nse={recorded_nse}, "
+            f"n={n}) but now densified — structural sparsity regression."
+        )
+        assert S.nse <= recorded_nse, (
+            f"{name}: nse regressed {recorded_nse} → {S.nse} (n={n}). "
+            f"If this increase is intentional (trade-off justified), "
+            f"bump `tests/nse_manifest.json`."
+        )
+    # Un-manifested problems: silent. Run `update_nse_manifest.py`
+    # to capture current state.

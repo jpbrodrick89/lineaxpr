@@ -14,11 +14,10 @@ from .ellpack import BEllpack
 
 from .base import (
     broadcast_in_dim_op,
-    cumsum_op,
     gather_op,
-    negate,
     pad_op,
     reduce_sum_op,
+    replace_slots,
     reshape_op,
     rev_op,
     scale_per_out_row,
@@ -27,16 +26,17 @@ from .base import (
     split_op,
     squeeze_op,
 )
+from .dense import _bid_with_extra_batch
 
 
 class ConstantDiagonal:
     """Diagonal matrix with all entries equal to `value`."""
 
-    __slots__ = ("n", "value")
+    __slots__ = ("n", "data")
 
-    def __init__(self, n: int, value: Any = 1.0):
+    def __init__(self, n: int, data: Any = 1.0):
         self.n = n
-        self.value = value
+        self.data = data
 
     @property
     def shape(self):
@@ -44,18 +44,22 @@ class ConstantDiagonal:
 
     @property
     def dtype(self):
-        return jnp.asarray(self.value).dtype
+        return jnp.asarray(self.data).dtype
 
     def todense(self):
-        if isinstance(self.value, float) and self.value == 1.0:
+        if isinstance(self.data, float) and self.data == 1.0:
             return jnp.eye(self.n)
-        return self.value * jnp.eye(self.n)
+        return self.data * jnp.eye(self.n)
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self.n, jnp.full((self.n,), self.value))
+        return _diag_to_bcoo(self.n, jnp.full((self.n,), self.data))
 
     def transpose(self, axes: tuple[int, ...] | None = None):
-        return self  # symmetric
+        # Symmetric: any 2D perm preserves the matrix.
+        return self
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
 
 def Identity(n: int, dtype=None):
@@ -64,21 +68,21 @@ def Identity(n: int, dtype=None):
     The standard seed for `lineaxpr.sparsify` when extracting the full
     Jacobian of a linear function.
     """
-    value = jnp.asarray(1.0, dtype=dtype) if dtype is not None else 1.0
-    return ConstantDiagonal(n, value)
+    data = jnp.asarray(1.0, dtype=dtype) if dtype is not None else 1.0
+    return ConstantDiagonal(n, data)
 
 
 class Diagonal:
     """Diagonal matrix `diag(values)` for a length-n vector."""
 
-    __slots__ = ("values",)
+    __slots__ = ("data",)
 
-    def __init__(self, values):
-        self.values = values
+    def __init__(self, data):
+        self.data = data
 
     @property
     def n(self):
-        return self.values.shape[0]
+        return self.data.shape[0]
 
     @property
     def shape(self):
@@ -86,7 +90,7 @@ class Diagonal:
 
     @property
     def dtype(self):
-        return self.values.dtype
+        return self.data.dtype
 
     def todense(self):
         # `where(eye_bool, v[:, None], 0)` — same shape family as
@@ -108,15 +112,18 @@ class Diagonal:
         # numbers disagree; trust the clean Linux container.
         return jnp.where(
             jnp.eye(self.n, dtype=jnp.bool_),
-            self.values[:, None],
-            jnp.zeros((), self.values.dtype),
+            self.data[:, None],
+            jnp.zeros((), self.data.dtype),
         )
 
     def to_bcoo(self):
-        return _diag_to_bcoo(self.n, self.values)
+        return _diag_to_bcoo(self.n, self.data)
 
     def transpose(self, axes: tuple[int, ...] | None = None):
         return self  # symmetric
+
+    def __neg__(self):
+        return replace_slots(self, data=-self.data)
 
 
 def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
@@ -129,84 +136,100 @@ def _diag_to_bcoo(n: int, values) -> sparse.BCOO:
 
 # ---- singledispatch registrations ----
 
-@negate.register(ConstantDiagonal)
-def _(op):
-    return ConstantDiagonal(op.n, -op.value)
-
-
-@negate.register(Diagonal)
-def _(op):
-    return Diagonal(-op.values)
-
-
 @scale_scalar.register(ConstantDiagonal)
 def _(op, s):
-    return ConstantDiagonal(op.n, s * op.value)
+    return ConstantDiagonal(op.n, s * op.data)
 
 
 @scale_scalar.register(Diagonal)
 def _(op, s):
-    return Diagonal(s * op.values)
+    return Diagonal(s * op.data)
 
 
 @scale_per_out_row.register(ConstantDiagonal)
 def _(op, v):
-    return Diagonal(op.value * jnp.asarray(v))
+    return Diagonal(op.data * jnp.asarray(v))
 
 
 @scale_per_out_row.register(Diagonal)
 def _(op, v):
-    return Diagonal(op.values * jnp.asarray(v))
+    return Diagonal(op.data * jnp.asarray(v))
 
 
 # ---- unary structural op registrations ----
 
+def _trailing_is_in_axis_noop(starts, limits, strides, in_size):
+    """True when the trailing slice spec is a full no-op over `in_size`.
+
+    Phase B: jaxpr params pass straight through (no `[:-1]` strip). When
+    the trailing axis is a no-op slice covering the full `in_size`, it
+    corresponds to the LinOp's implicit in-axis (e.g. vmap's V-axis at
+    -1) and the structural branches operate on the leading out-axes.
+    """
+    return (len(starts) >= 2
+            and int(starts[-1]) == 0
+            and int(limits[-1]) == int(in_size)
+            and int(strides[-1]) == 1)
+
+
 @slice_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
-    if len(starts) == 1:
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
+    if (len(starts) == 2
+            and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
         stride = strides[0]
         cols = np.arange(s, e, stride)
         k_out = len(cols)
-        values_b = jnp.broadcast_to(jnp.asarray(op.value), (k_out,))
+        data_b = jnp.broadcast_to(jnp.asarray(op.data), (k_out,))
         return BEllpack(
             start_row=0, end_row=k_out,
-            in_cols=(cols,), values=values_b,
+            in_cols=(cols,), data=data_b,
             out_size=k_out, in_size=op.n,
         )
-    # Multi-dim: dense fallback
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    return lax.slice(op.todense(), **params)
 
 
 @slice_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    starts = tuple(int(x) for x in params["start_indices"])
-    limits = tuple(int(x) for x in params["limit_indices"])
-    strides_p = params.get("strides")
-    strides = tuple(int(x) for x in strides_p) if strides_p else (1,) * len(starts)
-    if len(starts) == 1:
+    starts = params["start_indices"]
+    limits = params["limit_indices"]
+    strides = params.get("strides") or (1,) * len(starts)
+    if (len(starts) == 2
+            and _trailing_is_in_axis_noop(starts, limits, strides, op.n)):
         s, e = starts[0], limits[0]
         stride = strides[0]
         cols = np.arange(s, e, stride)
         k_out = len(cols)
         return BEllpack(
             start_row=0, end_row=k_out,
-            in_cols=(cols,), values=op.values[s:e:stride],
+            in_cols=(cols,), data=op.data[s:e:stride],
             out_size=k_out, in_size=op.n,
         )
-    dense = op.todense()
-    s_full = starts + (0,)
-    l_full = limits + (n,)
-    str_full = strides + (1,)
-    return lax.slice(dense, s_full, l_full, str_full)
+    # Axis-1-only slice: by V-axis-detection, V was at axis 0 of the
+    # input (vmap-rewrote a primal-axis slice on a V-at-0 Diagonal).
+    # Output has shape (n, n_cols) with V at axis 0; emit a T=True
+    # BEllpack (in_size=n=V_size, out_size=n_cols=primal). Each
+    # primal-out column j has at most one non-zero, at row
+    # in_cols[0][j] = s_in + j*stride_in (which sits in [0, n)).
+    # No sentinels needed — every kept output column has a valid row.
+    if (len(starts) == 2
+            and starts[0] == 0 and limits[0] == op.n and strides[0] == 1):
+        s_in, e_in = int(starts[1]), int(limits[1])
+        stride_in = int(strides[1])
+        n_cols = (e_in - s_in + stride_in - 1) // stride_in
+        rows_for_cols = (s_in + np.arange(n_cols, dtype=np.intp)
+                         * stride_in)
+        data = op.data[s_in:e_in:stride_in]
+        return BEllpack(
+            start_row=0, end_row=n_cols,
+            in_cols=(rows_for_cols,), data=data,
+            out_size=n_cols, in_size=op.n,
+            transposed=True,
+        )
+    return lax.slice(op.todense(), **params)
 
 
 @squeeze_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
@@ -214,11 +237,13 @@ def _(op, *, n, **params):
     dimensions = params["dimensions"]
     if not dimensions:
         return op
-    if op.n == 1 and dimensions == (0,):
-        val = jnp.asarray(op.value).reshape(1)
+    # For a 1×1 CD, axes 0 and 1 are interchangeable (both size 1);
+    # squeeze either to a 1D row-vector BE.
+    if op.n == 1 and dimensions in ((0,), (1,)):
+        val = jnp.asarray(op.data).reshape(1)
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(np.asarray([0]),), values=val,
+            in_cols=(np.asarray([0]),), data=val,
             out_size=1, in_size=1,
         )
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
@@ -229,68 +254,124 @@ def _(op, *, n, **params):
     dimensions = params["dimensions"]
     if not dimensions:
         return op
-    if op.n == 1 and dimensions == (0,):
+    if op.n == 1 and dimensions in ((0,), (1,)):
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(np.asarray([0]),), values=op.values,
+            in_cols=(np.asarray([0]),), data=op.data,
             out_size=1, in_size=1,
         )
     raise NotImplementedError(f"squeeze on diag with dims {dimensions}")
 
 
-@rev_op.register(ConstantDiagonal)
+@rev_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    return op  # constant under axis-reversal
+    dimensions = params["dimensions"]
+    # CD = a·I is symmetric, so reversing axis 0 (rows) and axis 1
+    # (cols) both yield the same anti-diagonal. dim=(1,) arises under
+    # vmap(in_axes=0) where vmap rewrites rev's primal-axis index.
+    if dimensions in ((0,), (1,)):
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        data = jnp.broadcast_to(jnp.asarray(op.data, dtype=op.dtype), (op.n,))
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=data,
+                        out_size=op.n, in_size=op.n)
+    return op
 
 
 @rev_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
     dimensions = params["dimensions"]
+    # Reversing rows of diag(v) gives the anti-diagonal with v[n-1-i]
+    # at (i, n-1-i) — values reversed.
+    # Reversing cols of diag(v) gives the anti-diagonal with v[i]
+    # at (i, n-1-i) — values not reversed (original col is moved).
     if dimensions == (0,):
-        return Diagonal(op.values[::-1])
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=op.data[::-1],
+                        out_size=op.n, in_size=op.n)
+    if dimensions == (1,):
+        cols = np.arange(op.n - 1, -1, -1, dtype=np.int64)
+        return BEllpack(start_row=0, end_row=op.n,
+                        in_cols=(cols,), data=op.data,
+                        out_size=op.n, in_size=op.n)
     return op
 
 
 @reshape_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
-    if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
-        batch_shape = new_sizes[:-1]
-        nrows = new_sizes[-1]
-        flat_idx = np.arange(op.n).reshape(new_sizes)
-        values = jnp.broadcast_to(jnp.asarray(op.value), new_sizes)
+    # V-at-0 walk-frame: new_sizes[0] == op.n (V) and the trailing axes
+    # factor to op.n. Empirically the only branch that fires for any
+    # sweep problem (a previous V-at-(-1) branch — `prod(new_sizes[:-1])
+    # == op.n` — was dead code on the full sweep, removed). Emit a
+    # T=True BE so V stays at axis 0; verified equivalent to the
+    # build-BE_F-then-transpose construction.
+    full = params["new_sizes"]
+    if (len(full) >= 2 and full[0] == op.n
+            and int(np.prod(full[1:])) == op.n):
+        structural = full[1:]
+        batch_shape = structural[:-1]
+        nrows = structural[-1]
+        flat_idx = np.arange(op.n).reshape(structural)
+        data = jnp.broadcast_to(jnp.asarray(op.data), structural)
         return BEllpack(
             start_row=0, end_row=nrows,
-            in_cols=(flat_idx,), values=values,
+            in_cols=(flat_idx,), data=data,
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
+            transposed=True,
         )
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
 
 
 @reshape_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    new_sizes = tuple(int(s) for s in params["new_sizes"])
+    new_sizes = params["new_sizes"][:-1]
     if len(new_sizes) >= 2 and int(np.prod(new_sizes)) == op.n:
         batch_shape = new_sizes[:-1]
         nrows = new_sizes[-1]
         flat_idx = np.arange(op.n).reshape(new_sizes)
-        values = op.values.reshape(new_sizes)
+        data = op.data.reshape(new_sizes)
         return BEllpack(
             start_row=0, end_row=nrows,
-            in_cols=(flat_idx,), values=values,
+            in_cols=(flat_idx,), data=data,
             out_size=nrows, in_size=op.n,
             batch_shape=batch_shape,
         )
-    dense = op.todense()
-    return lax.reshape(dense, tuple(new_sizes) + (n,))
+    return lax.reshape(op.todense(), params["new_sizes"],
+                       dimensions=params.get("dimensions"),
+                       out_sharding=params.get("sharding"))
+
+
+def _is_inside_vmap_bcast(shape, bd, op_n):
+    """Detect inside-vmap broadcast: V slot is at the front of the output.
+
+    CD/Diagonal are symmetric so transpose is a no-op (no `transposed`
+    flag), but inside-vmap params still indicate V at output axis 0
+    (mapped from input axis 0). When that pattern matches, densify
+    rather than running the V-at-back structural branches below.
+    """
+    return bool(bd) and bd[0] == 0 and len(shape) >= 1 and shape[0] == op_n
 
 
 @broadcast_in_dim_op.register(ConstantDiagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
+    full_shape = tuple(params["shape"])
+    full_bd = tuple(params["broadcast_dimensions"])
+    inside_vmap = _is_inside_vmap_bcast(full_shape, full_bd, op.n)
+    # V is at output axis 0 (transposed-style) when `_is_inside_vmap_bcast`,
+    # else at output axis -1. Strip the V axis to get the structural frame.
+    # See comment in the `Diagonal` rule below for the V-at-0 derivation.
+    if inside_vmap:
+        shape = full_shape[1:]
+        broadcast_dimensions = tuple(int(d) - 1 for d in full_bd[1:])
+        out_transposed = True
+    else:
+        shape = full_shape[:-1]
+        broadcast_dimensions = full_bd[:-1]
+        out_transposed = False
     # Diagonal (aval `(n,)`) broadcast to `(*pre, n, *post)` where all
     # non-n axes are size-1.
     if (len(broadcast_dimensions) == 1
@@ -300,7 +381,7 @@ def _(op, *, n, **params):
         bcast_axis = broadcast_dimensions[0]
         leading_singletons = tuple(shape[:bcast_axis])
         trailing_singletons = tuple(shape[bcast_axis + 1:])
-        v = jnp.broadcast_to(jnp.asarray(op.value), (op.n,))
+        v = jnp.broadcast_to(jnp.asarray(op.data), (op.n,))
         if not trailing_singletons:
             cols = (np.arange(op.n),)
             new_values = jnp.broadcast_to(
@@ -309,9 +390,10 @@ def _(op, *, n, **params):
             )
             return BEllpack(
                 start_row=0, end_row=op.n,
-                in_cols=cols, values=new_values,
+                in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
+                transposed=out_transposed,
             )
         cols_2d = np.arange(op.n).reshape(
             (1,) * len(leading_singletons) + (op.n,)
@@ -326,22 +408,40 @@ def _(op, *, n, **params):
         ).reshape(new_batch + (1,))
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(cols_full[..., None],), values=new_values,
+            in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
+            transposed=out_transposed,
         )
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    if inside_vmap:
+        # V-at-0 fallback: structural BE didn't match, but we know V
+        # is at output axis 0. Densify on the original full params
+        # rather than calling `_bid_with_extra_batch` (which assumes
+        # V-at-(-1) and would re-add V at the wrong place).
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
 @broadcast_in_dim_op.register(Diagonal) # pyrefly: ignore [bad-argument-type]
 def _(op, *, n, **params):
-    shape = params["shape"]
-    broadcast_dimensions = params["broadcast_dimensions"]
+    full_shape = tuple(params["shape"])
+    full_bd = tuple(params["broadcast_dimensions"])
+    inside_vmap = _is_inside_vmap_bcast(full_shape, full_bd, op.n)
+    if inside_vmap:
+        # V is at output axis 0 ("transposed" layout): bd[0]=0 maps
+        # input V to output axis 0. Strip axis 0 from shape and the
+        # first (V-mapping) entry from bd; remaining bd entries
+        # mapped to output axes >=1 shift down by 1. The structural
+        # check then runs on the V-stripped frame, and we emit a BE
+        # with `transposed=True` so V lands back at axis 0 of the
+        # output.
+        shape = full_shape[1:]
+        broadcast_dimensions = tuple(int(d) - 1 for d in full_bd[1:])
+        out_transposed = True
+    else:
+        shape = full_shape[:-1]
+        broadcast_dimensions = full_bd[:-1]
+        out_transposed = False
     if (len(broadcast_dimensions) == 1
             and shape[broadcast_dimensions[0]] == op.n
             and all(s == 1 for i, s in enumerate(shape)
@@ -349,7 +449,7 @@ def _(op, *, n, **params):
         bcast_axis = broadcast_dimensions[0]
         leading_singletons = tuple(shape[:bcast_axis])
         trailing_singletons = tuple(shape[bcast_axis + 1:])
-        v = op.values
+        v = op.data
         if not trailing_singletons:
             cols = (np.arange(op.n),)
             new_values = jnp.broadcast_to(
@@ -358,9 +458,10 @@ def _(op, *, n, **params):
             )
             return BEllpack(
                 start_row=0, end_row=op.n,
-                in_cols=cols, values=new_values,
+                in_cols=cols, data=new_values,
                 out_size=op.n, in_size=op.n,
                 batch_shape=leading_singletons,
+                transposed=out_transposed,
             )
         cols_2d = np.arange(op.n).reshape(
             (1,) * len(leading_singletons) + (op.n,)
@@ -375,16 +476,14 @@ def _(op, *, n, **params):
         ).reshape(new_batch + (1,))
         return BEllpack(
             start_row=0, end_row=1,
-            in_cols=(cols_full[..., None],), values=new_values,
+            in_cols=(cols_full[..., None],), data=new_values,
             out_size=1, in_size=op.n,
             batch_shape=new_batch,
+            transposed=out_transposed,
         )
-    dense = op.todense()
-    expected_ndim = len(broadcast_dimensions) + 1
-    while dense.ndim > expected_ndim and dense.shape[0] == 1:
-        dense = dense[0]
-    out_dims = tuple(broadcast_dimensions) + (len(shape),)
-    return lax.broadcast_in_dim(dense, tuple(shape) + (n,), out_dims)
+    if inside_vmap:
+        return lax.broadcast_in_dim(op.todense(), full_shape, full_bd)
+    return _bid_with_extra_batch(op.todense(), shape, broadcast_dimensions, n)
 
 
 @reduce_sum_op.register(ConstantDiagonal)
@@ -412,24 +511,36 @@ def _(op, *, n, start_indices, **params):
         and dnums.start_index_map == (0,)
         and params["slice_sizes"] == (1,)
     )
+    # V-augmented gather (post jax.vmap, V at axis 0): operand has
+    # shape (V=n, primal_out=n); the gather collapses axis 1 (primal)
+    # and preserves V as offset_dims=(0,). The output BE is the same
+    # row-select but transposed=True to match the V-at-0 layout.
+    sl = params["slice_sizes"]
+    point_gather_v_collapsed_T = (
+        tuple(dnums.offset_dims) == (0,)
+        and tuple(dnums.collapsed_slice_dims) == (1,)
+        and tuple(dnums.start_index_map) == (1,)
+        and len(sl) == 2 and sl[0] == op.n and sl[1] == 1
+    )
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
-    vals = jnp.broadcast_to(jnp.asarray(op.value), batch_shape + (N,))
+    vals = jnp.broadcast_to(jnp.asarray(op.data), batch_shape + (N,))
     if point_gather_kept:
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=(row_idx[..., None],),
-            values=vals[..., None],
+            data=vals[..., None],
             out_size=1, in_size=op.n,
             batch_shape=batch_shape + (N,),
         )
     return BEllpack(
         start_row=0, end_row=N,
         in_cols=(row_idx,),
-        values=vals,
+        data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
+        transposed=point_gather_v_collapsed_T,
     )
 
 
@@ -477,38 +588,37 @@ def _(op, *, n, start_indices, **params):
         and dnums.start_index_map == (0,)
         and params["slice_sizes"] == (1,)
     )
+    # V-augmented gather (V at axis 0); see ConstantDiagonal rule above.
+    sl = params["slice_sizes"]
+    point_gather_v_collapsed_T = (
+        tuple(dnums.offset_dims) == (0,)
+        and tuple(dnums.collapsed_slice_dims) == (1,)
+        and tuple(dnums.start_index_map) == (1,)
+        and len(sl) == 2 and sl[0] == op.n and sl[1] == 1
+    )
     row_idx = start_indices[..., 0]
     batch_shape = tuple(row_idx.shape[:-1])
     N = row_idx.shape[-1]
-    vals = jnp.take(op.values, row_idx)
+    vals = jnp.take(op.data, row_idx)
     if point_gather_kept:
         return BEllpack(
             start_row=0, end_row=1,
             in_cols=(row_idx[..., None],),
-            values=vals[..., None],
+            data=vals[..., None],
             out_size=1, in_size=op.n,
             batch_shape=batch_shape + (N,),
         )
     return BEllpack(
         start_row=0, end_row=N,
         in_cols=(row_idx,),
-        values=vals,
+        data=vals,
         out_size=N, in_size=op.n,
         batch_shape=batch_shape,
+        transposed=point_gather_v_collapsed_T,
     )
 
 
 @pad_op.register(ConstantDiagonal)
 @pad_op.register(Diagonal)
 def _(op, *, n, padding_value, **params) -> jax.Array:
-    config = params["padding_config"]
-    dense = op.todense()
-    full_config = tuple((int(b), int(a), int(i)) for (b, a, i) in config) + ((0, 0, 0),)
-    return lax.pad(dense, jnp.asarray(0.0, dtype=dense.dtype), full_config)
-
-
-@cumsum_op.register(ConstantDiagonal)
-@cumsum_op.register(Diagonal)
-def _(op, *, n, **params) -> jax.Array:
-    return lax.cumsum(op.todense(), axis=params["axis"],
-                      reverse=params.get("reverse", False))
+    return lax.pad(op.todense(), padding_value, **params)

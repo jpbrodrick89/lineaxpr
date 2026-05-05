@@ -28,6 +28,35 @@ def _mul_rule(invals, traced, n, **params):
     else:
         raise NotImplementedError("mul of two traced operands — not linear")
 
+    # Primal axes (= traced_op shape minus V). For transposed=True
+    # BE, V is at axis 0 → primal = shape[1:]; for transposed=False
+    # (default for non-BE LinOps and canonical BEs) V is at axis -1 →
+    # primal = shape[:-1]. For BCOO at V-at-0 layout (shape[0] == n
+    # and shape[-1] != n — produced by `_scatter_add_rule` and the
+    # broadcast_in_dim sparsity-recovery path), V is at axis 0 too.
+    is_transposed_be = (
+        isinstance(traced_op, BEllpack) and traced_op.transposed
+    )
+    from jax.experimental import sparse as _sp  # noqa: PLC0415
+    is_v_at_0_bcoo = (
+        isinstance(traced_op, _sp.BCOO)
+        and len(traced_op.shape) >= 2
+        and traced_op.shape[0] == n
+        and traced_op.shape[-1] != n
+    )
+    if is_transposed_be or is_v_at_0_bcoo:
+        traced_var_shape = traced_op.shape[1:]
+    else:
+        traced_var_shape = traced_op.shape[:-1]
+
+    # vmap inserts broadcast_in_dim on scalar closures, giving them shape
+    # (1, k) instead of (k,). Squeeze leading (1,) dims so the existing
+    # scale_ok / scale_per_out_row paths see the expected shape.
+    if hasattr(scale, "shape"):
+        target_ndim = len(traced_var_shape)
+        while hasattr(scale, "shape") and len(scale.shape) > target_ndim and scale.shape[0] == 1:
+            scale = scale[0]
+
     scalar_like = not hasattr(scale, "shape") or scale.shape in ((), (1,))
     if scalar_like:
         s = jnp.asarray(scale).reshape(())
@@ -37,7 +66,6 @@ def _mul_rule(invals, traced, n, **params):
     # scale_per_out_row assumes scale has shape that broadcasts cleanly
     # against the op's var_shape (batch_shape + (out_size,)). If scale has
     # extra dims (jaxpr outer-product-like broadcasts), fall back to dense.
-    traced_var_shape = traced_op.shape[:-1]
     scale_ok = (
         hasattr(scale, "shape")
         and len(scale.shape) <= len(traced_var_shape)
@@ -64,9 +92,9 @@ def _mul_rule(invals, traced, n, **params):
         new_batch = scale.shape[:-1]
         scale_arr = jnp.asarray(scale)
         if traced_op.k == 1:
-            new_values = scale_arr * traced_op.values
+            new_values = scale_arr * traced_op.data
         else:
-            new_values = scale_arr[..., None] * traced_op.values
+            new_values = scale_arr[..., None] * traced_op.data
         new_in_cols: list[ColArr] = []
         can_emit = True
         for c in traced_op.in_cols:
@@ -87,9 +115,10 @@ def _mul_rule(invals, traced, n, **params):
         if can_emit:
             return BEllpack(
                 start_row=traced_op.start_row, end_row=traced_op.end_row,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=traced_op.out_size, in_size=traced_op.in_size,
                 batch_shape=new_batch,
+                transposed=traced_op.transposed,
             )
     # Out-size-broadcast path: scale expands a size-1 out axis to
     # `scale.shape[-1]`. Triggered by the NONMSQRT / EIGENALS-class
@@ -122,10 +151,10 @@ def _mul_rule(invals, traced, n, **params):
         if traced_op.k == 1:
             # traced values (*batch, 1). scale (*batch, new_out).
             # Result (*batch, new_out).
-            new_values = scale_arr * traced_op.values
+            new_values = scale_arr * traced_op.data
         else:
             # traced values (*batch, 1, k). Insert new_out axis then mul.
-            new_values = scale_arr[..., None] * traced_op.values
+            new_values = scale_arr[..., None] * traced_op.data
         new_in_cols: list[ColArr] = []
         can_emit2 = True
         for c in traced_op.in_cols:
@@ -144,9 +173,52 @@ def _mul_rule(invals, traced, n, **params):
         if can_emit2:
             return BEllpack(
                 start_row=0, end_row=new_out,
-                in_cols=tuple(new_in_cols), values=new_values,
+                in_cols=tuple(new_in_cols), data=new_values,
                 out_size=new_out, in_size=traced_op.in_size,
                 batch_shape=traced_op.batch_shape,
+                transposed=traced_op.transposed,
             )
+    # Per-in-col scale path: scale aligns with the matrix's IN axis
+    # (last axis of `(*batch, out, in)` for T=False, axis 1 of
+    # `(in, *batch, out)` for T=True — but for the rule we just check
+    # `traced_op.shape[-1]` since it equals the BE's logical last
+    # matrix axis when batch=()). For a BE with static `np.ndarray`
+    # in_cols, gather `scale[in_cols[b]]` (clamped at 0 for sentinels)
+    # and multiply into `data`; sentinel rows already carry data=0 so
+    # no extra masking needed (but we mask defensively for k>=1).
+    if (isinstance(traced_op, BEllpack)
+            and traced_op.n_batch == 0
+            and not traced_op.transposed
+            and hasattr(scale, "shape")
+            and scale.ndim == 1
+            and scale.shape[0] == traced_op.in_size
+            and all(isinstance(c, np.ndarray) and c.ndim == 1
+                    for c in traced_op.in_cols)):
+        scale_arr = jnp.asarray(scale)
+        gathered = []
+        masks = []
+        for c in traced_op.in_cols:
+            safe = np.maximum(c, 0)
+            gathered.append(scale_arr[safe])
+            masks.append(jnp.asarray(c >= 0))
+        if traced_op.k == 1:
+            mul_factor = jnp.where(masks[0], gathered[0], 0.0)
+            new_data = traced_op.data * mul_factor
+        else:
+            stacked = jnp.stack(gathered, axis=-1)
+            mask_stack = jnp.stack(masks, axis=-1)
+            mul_factor = jnp.where(mask_stack, stacked, 0.0)
+            new_data = traced_op.data * mul_factor
+        return BEllpack(
+            start_row=traced_op.start_row, end_row=traced_op.end_row,
+            in_cols=traced_op.in_cols, data=new_data,
+            out_size=traced_op.out_size, in_size=traced_op.in_size,
+            batch_shape=traced_op.batch_shape,
+            transposed=traced_op.transposed,
+        )
+    # Dense fallback: just trust natural broadcasting. Under vmap, JAX
+    # already wraps scale appropriately so `scale * dense` does the
+    # right thing — manual axis-insertion logic was bogus and silently
+    # dropped axes when scale was a (1, k) closure broadcast row.
     dense = traced_op.todense() if isinstance(traced_op, LinOpProtocol) else traced_op
-    return scale[..., None] * dense
+    return jnp.asarray(scale) * dense

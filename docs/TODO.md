@@ -322,6 +322,16 @@ mixed-Ellpack → Csr path, `materialize` accepts `format='csr'`.
 **Win**: unlocks arrowhead problems that currently densify; cuDSS-
 native output.
 
+**Follow-up (transpose)**: `_transpose_rule` (registry.py) currently
+densifies BCOO when `walk_perm` crosses BCOO's batch / sparse
+boundary (`_bcoo_transpose` raises NotImplementedError there). CSR
+has no batch-vs-sparse separation, so a CSR detour — convert BCOO →
+Csr, transpose by relabeling row/col, return Csr — would preserve
+sparsity for these perms. See the densify branch in
+`_transpose_rule`. Untriggered on the current sif2jax sweep
+(manifest unchanged when we added the boundary check) but worth
+revisiting once Csr lands.
+
 ### 3. Test infra follow-ups
 
 - **Sweep runtime**: the slow sweep (~4 min) now exercises 323

@@ -38,18 +38,18 @@ from lineaxpr import _base
 
 def _todense_scatter(self):
     idx = jnp.arange(self.n)
-    return jnp.zeros((self.n, self.n), self.values.dtype).at[idx, idx].set(self.values)
+    return jnp.zeros((self.n, self.n), self.data.dtype).at[idx, idx].set(self.data)
 
 
 def _todense_veye(self):
-    return self.values[:, None] * jnp.eye(self.n, dtype=self.values.dtype)
+    return self.data[:, None] * jnp.eye(self.n, dtype=self.data.dtype)
 
 
 def _todense_where(self):
     return jnp.where(
         jnp.eye(self.n, dtype=jnp.bool_),
-        self.values[:, None],
-        jnp.zeros((), self.values.dtype),
+        self.data[:, None],
+        jnp.zeros((), self.data.dtype),
     )
 
 

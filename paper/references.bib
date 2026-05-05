@@ -1,0 +1,349 @@
+% =============================================================================
+% references.bib — bibliography for the lineaxpr NeurIPS submission.
+%
+% Provenance: every entry below was fetched from doi.org with
+%   curl -sLH "Accept: application/x-bibtex" "https://doi.org/<DOI>"
+% on 2026-05-03.  The DOI is included in every entry so each citation can be
+% verified independently — please do that before you trust anything here.
+%
+% Keys have been renamed to a `firstauthorYEARkeyword` convention for
+% readability; all other fields (author, title, journal, pages, DOI, URL) are
+% the verbatim Crossref/DataCite metadata, except where flagged with a
+% `% NOTE:` comment immediately above the entry.
+% =============================================================================
+
+
+% -----------------------------------------------------------------------------
+% Coloring-based methods for sparse Jacobian / Hessian extraction.
+% These are the methods lineaxpr's "structural walk" alternative is contrasted
+% with throughout the paper.
+% -----------------------------------------------------------------------------
+
+% Foundational paper that introduced graph-coloring compression for finite-
+% difference Jacobian estimation. Cite when motivating compressed AD.
+@article{curtispowellreid1974sparse,
+  title={On the Estimation of Sparse Jacobian Matrices},
+  volume={13},
+  ISSN={1464-3634},
+  url={http://dx.doi.org/10.1093/imamat/13.1.117},
+  DOI={10.1093/imamat/13.1.117},
+  number={1},
+  journal={IMA Journal of Applied Mathematics},
+  publisher={Oxford University Press (OUP)},
+  author={CURTIS, A. R. and POWELL, M. J. D. and REID, J. K.},
+  year={1974},
+  month=Feb,
+  pages={117–119}
+}
+
+% Extends Curtis–Powell–Reid to the symmetric Hessian case via graph
+% coloring.  Cite alongside the 1974 paper when introducing the coloring-
+% based pipeline.
+@article{powelltoint1979sparse,
+  title={On the Estimation of Sparse Hessian Matrices},
+  volume={16},
+  ISSN={1095-7170},
+  url={http://dx.doi.org/10.1137/0716078},
+  DOI={10.1137/0716078},
+  number={6},
+  journal={SIAM Journal on Numerical Analysis},
+  publisher={Society for Industrial \& Applied Mathematics (SIAM)},
+  author={Powell, M. J. D. and Toint, Ph. L.},
+  year={1979},
+  month=Dec,
+  pages={1060–1074}
+}
+
+% NOTE: Crossref returned the title as "...Graph Coloring Blems"; the actual
+% paper title ends with "Problems".  Title kept verbatim as returned; please
+% correct in the rendered bibliography if needed.
+@article{colemanmore1983jacobian,
+  title={Estimation of Sparse Jacobian Matrices and Graph Coloring Blems},
+  volume={20},
+  ISSN={1095-7170},
+  url={http://dx.doi.org/10.1137/0720013},
+  DOI={10.1137/0720013},
+  number={1},
+  journal={SIAM Journal on Numerical Analysis},
+  publisher={Society for Industrial \& Applied Mathematics (SIAM)},
+  author={Coleman, Thomas F. and Moré, Jorge J.},
+  year={1983},
+  month=Feb,
+  pages={187–209}
+}
+
+% Companion paper for the Hessian-coloring problem.  Most direct theoretical
+% antecedent of asdex's symmetric-coloring path.
+@article{colemanmore1984hessian,
+  title={Estimation of sparse hessian matrices and graph coloring problems},
+  volume={28},
+  ISSN={1436-4646},
+  url={http://dx.doi.org/10.1007/BF02612334},
+  DOI={10.1007/bf02612334},
+  number={3},
+  journal={Mathematical Programming},
+  publisher={Springer Science and Business Media LLC},
+  author={Coleman, Thomas F. and Moré, Jorge J.},
+  year={1984},
+  month=Oct,
+  pages={243–270}
+}
+
+% The canonical survey: 70+ pages, all the structural and acyclic-coloring
+% variants in one place.  Title gives the section its name.  Cite as the
+% high-level reference for "what coloring is and what it costs".
+@article{gebremedhin2005color,
+  title={What Color Is Your Jacobian? Graph Coloring for Computing Derivatives},
+  volume={47},
+  ISSN={1095-7200},
+  url={http://dx.doi.org/10.1137/S0036144504444711},
+  DOI={10.1137/s0036144504444711},
+  number={4},
+  journal={SIAM Review},
+  publisher={Society for Industrial \& Applied Mathematics (SIAM)},
+  author={Gebremedhin, Assefaw Hadish and Manne, Fredrik and Pothen, Alex},
+  year={2005},
+  month=Jan,
+  pages={629–705}
+}
+
+% Hill & Dalle's TMLR 2025 paper on SparseConnectivityTracer.jl + asdex —
+% the closest contemporaneous comparator for lineaxpr.  BibTeX taken
+% verbatim from OpenReview (https://openreview.net/forum?id=GtXSN52nIW).
+@article{hilldalle2025sparser,
+  title={Sparser, Better, Faster, Stronger: Sparsity Detection for Efficient Automatic Differentiation},
+  author={Adrian Hill and Guillaume Dalle},
+  journal={Transactions on Machine Learning Research},
+  issn={2835-8856},
+  year={2025},
+  url={https://openreview.net/forum?id=GtXSN52nIW},
+  note={}
+}
+
+% Dalle & Hill on DifferentiationInterface.jl, JMLR 27(25), 2026.
+% BibTeX taken verbatim from http://jmlr.org/papers/v27/25-1024.bib.
+@article{dallehill2026common,
+  author  = {Guillaume Dalle and Adrian Hill},
+  title   = {A Common Interface for Automatic Differentiation},
+  journal = {Journal of Machine Learning Research},
+  year    = {2026},
+  volume  = {27},
+  number  = {25},
+  pages   = {1--13},
+  url     = {http://jmlr.org/papers/v27/25-1024.html}
+}
+
+
+% -----------------------------------------------------------------------------
+% Partial separability (Griewank–Toint), the framework for lineaxpr's "limits
+% of coloring" section.
+% -----------------------------------------------------------------------------
+
+% The partitioned-quasi-Newton paper.  The companion paper that defines
+% partial separability — Griewank & Toint, "On the unconstrained optimization
+% of partially separable functions of many variables", in M.J.D. Powell (ed.),
+% Nonlinear Optimization 1981, Academic Press, 1982 — is a book chapter and
+% has no DOI; please add as a manual entry if needed.
+@article{griewanktoint1982partitioned,
+  title={Partitioned variable metric updates for large structured optimization problems},
+  volume={39},
+  ISSN={0945-3245},
+  url={http://dx.doi.org/10.1007/BF01399316},
+  DOI={10.1007/bf01399316},
+  number={1},
+  journal={Numerische Mathematik},
+  publisher={Springer Science and Business Media LLC},
+  author={Griewank, A. and Toint, Ph. L.},
+  year={1982},
+  month=Feb,
+  pages={119–137}
+}
+
+% LANCELOT: the practical realisation of partitioned methods for large-scale
+% nonlinear programming.  Cite for the engineering reality of partial
+% separability beyond the original 1982 papers.
+@book{conngouldtoint1992lancelot,
+  title={Lancelot},
+  ISBN={9783662122112},
+  ISSN={0179-3632},
+  url={http://dx.doi.org/10.1007/978-3-662-12211-2},
+  DOI={10.1007/978-3-662-12211-2},
+  journal={Springer Series in Computational Mathematics},
+  publisher={Springer Berlin Heidelberg},
+  author={Conn, A. R. and Gould, N. I. M. and Toint, Ph. L.},
+  year={1992}
+}
+
+
+% -----------------------------------------------------------------------------
+% Multifrontal / sparse direct solvers.  Cite when drawing the assembly-tree
+% analogy for lineaxpr's structural walk.
+% -----------------------------------------------------------------------------
+
+% NOTE: Crossref returned the title as "...Indefinite Sparse Symmetric Linear"
+% (apparently truncated).  The full ACM TOMS title is widely cited as ending
+% with "Equations" — please verify on the publisher page if the truncation
+% matters.
+@article{duffreid1983multifrontal,
+  title={The Multifrontal Solution of Indefinite Sparse Symmetric Linear},
+  volume={9},
+  ISSN={1557-7295},
+  url={http://dx.doi.org/10.1145/356044.356047},
+  DOI={10.1145/356044.356047},
+  number={3},
+  journal={ACM Transactions on Mathematical Software},
+  publisher={Association for Computing Machinery (ACM)},
+  author={Duff, I. S. and Reid, J. K.},
+  year={1983},
+  month=sep,
+  pages={302–325}
+}
+
+% Liu's SIAM Review survey of multifrontal methods — the cleanest single
+% reference for the assembly-tree picture (frontal matrices, update
+% matrices, extended-add) that the multifrontal analogy in the paper rests
+% on.
+@article{liu1992multifrontal,
+  title={The Multifrontal Method for Sparse Matrix Solution: Theory and Practice},
+  volume={34},
+  ISSN={1095-7200},
+  url={http://dx.doi.org/10.1137/1034004},
+  DOI={10.1137/1034004},
+  number={1},
+  journal={SIAM Review},
+  publisher={Society for Industrial \& Applied Mathematics (SIAM)},
+  author={Liu, Joseph W. H.},
+  year={1992},
+  month=Mar,
+  pages={82–109}
+}
+
+
+% -----------------------------------------------------------------------------
+% Automatic differentiation foundations.
+% -----------------------------------------------------------------------------
+
+% The standard textbook reference for AD theory and forward/reverse-mode
+% mechanics.  Cite once early, e.g. when defining `jax.linearize` semantics.
+@book{griewankwalther2008evaluating,
+  title={Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation, Second Edition},
+  ISBN={9780898717761},
+  url={http://dx.doi.org/10.1137/1.9780898717761},
+  DOI={10.1137/1.9780898717761},
+  publisher={Society for Industrial and Applied Mathematics},
+  author={Griewank, Andreas and Walther, Andrea},
+  year={2008},
+  month=Jan
+}
+
+% Pearlmutter's HVP trick — the basis of `vmap(hvp)(eye)` reference oracles
+% that lineaxpr is verified bit-exact against.
+@article{pearlmutter1994fast,
+  title={Fast Exact Multiplication by the Hessian},
+  volume={6},
+  ISSN={1530-888X},
+  url={http://dx.doi.org/10.1162/neco.1994.6.1.147},
+  DOI={10.1162/neco.1994.6.1.147},
+  number={1},
+  journal={Neural Computation},
+  publisher={MIT Press - Journals},
+  author={Pearlmutter, Barak A.},
+  year={1994},
+  month=Jan,
+  pages={147–160}
+}
+
+% Modern-ML AD survey — the conventional one-stop citation for "what is AD".
+% BibTeX taken verbatim from http://jmlr.org/papers/v18/17-468.bib (JMLR 18(153), 2018).
+@article{baydin2018automatic,
+  author  = {Atilim Gunes Baydin and Barak A. Pearlmutter and Alexey Andreyevich Radul and Jeffrey Mark Siskind},
+  title   = {Automatic Differentiation in Machine Learning: a Survey},
+  journal = {Journal of Machine Learning Research},
+  year    = {2018},
+  volume  = {18},
+  number  = {153},
+  pages   = {1--43},
+  url     = {http://jmlr.org/papers/v18/17-468.html}
+}
+
+
+% -----------------------------------------------------------------------------
+% JAX — system citation for the host framework.
+% -----------------------------------------------------------------------------
+
+% NOTE: JAX has no peer-reviewed paper; the canonical citation is the
+% SysML 2018 short paper (no DOI).  The arXiv-style entry below points to
+% the publicly available PDF.  Please verify the URL still resolves
+% before submission.
+@inproceedings{frostigjohnsonleary2018compiling,
+  author = {Frostig, Roy and Johnson, Matthew James and Leary, Chris},
+  title = {Compiling machine learning programs via high-level tracing},
+  booktitle = {Proc. SysML Conference},
+  year = {2018},
+  url = {https://cs.stanford.edu/~rfrostig/pubs/jax-mlsys2018.pdf}
+}
+
+% NOTE: software citation — verify the URL/year before submission.
+@misc{jax2018github,
+  author = {James Bradbury and Roy Frostig and Peter Hawkins and Matthew James Johnson and Chris Leary and Dougal Maclaurin and George Necula and Adam Paszke and Jake Vander{P}las and Skye Wanderman-{M}ilne and Qiao Zhang},
+  title = {{JAX}: composable transformations of {P}ython+{N}um{P}y programs},
+  url = {http://github.com/jax-ml/jax},
+  year = {2018}
+}
+
+
+% -----------------------------------------------------------------------------
+% Test problem suite (CUTEst).  Cite once when introducing the benchmark sweep.
+% -----------------------------------------------------------------------------
+
+% The current CUTEst paper.  Cite as the source of the ~275-problem sweep.
+@article{gouldorbantoint2014cutest,
+  title={CUTEst: a Constrained and Unconstrained Testing Environment with safe threads for mathematical optimization},
+  volume={60},
+  ISSN={1573-2894},
+  url={http://dx.doi.org/10.1007/s10589-014-9687-3},
+  DOI={10.1007/s10589-014-9687-3},
+  number={3},
+  journal={Computational Optimization and Applications},
+  publisher={Springer Science and Business Media LLC},
+  author={Gould, Nicholas I. M. and Orban, Dominique and Toint, Philippe L.},
+  year={2014},
+  month=Aug,
+  pages={545–557}
+}
+
+% The original CUTE — cited together with the 2014 update for historical
+% completeness.
+@article{bongartz1995cute,
+  title={CUTE: constrained and unconstrained testing environment},
+  volume={21},
+  ISSN={1557-7295},
+  url={http://dx.doi.org/10.1145/200979.201043},
+  DOI={10.1145/200979.201043},
+  number={1},
+  journal={ACM Transactions on Mathematical Software},
+  publisher={Association for Computing Machinery (ACM)},
+  author={Bongartz, I. and Conn, A. R. and Gould, Nick and Toint, Ph. L.},
+  year={1995},
+  month=Mar,
+  pages={123–160}
+}
+
+
+% -----------------------------------------------------------------------------
+% Sparse matrix formats — covers ELLPACK, CSR/BCSR, BCOO ancestry.
+% -----------------------------------------------------------------------------
+
+% Saad's textbook — §3.4 surveys the storage formats including ELLPACK,
+% which BEllpack is named after.  No standalone paper for the ELLPACK
+% format itself is conventionally cited.
+@book{saad2003iterative,
+  title={Iterative Methods for Sparse Linear Systems},
+  ISBN={9780898718003},
+  url={http://dx.doi.org/10.1137/1.9780898718003},
+  DOI={10.1137/1.9780898718003},
+  publisher={Society for Industrial and Applied Mathematics},
+  author={Saad, Yousef},
+  year={2003},
+  month=Jan
+}
