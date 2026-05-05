@@ -62,7 +62,8 @@ class BEllpack:
     """
 
     __slots__ = ("start_row", "end_row", "in_cols", "data",
-                 "out_size", "in_size", "batch_shape", "transposed")
+                 "out_size", "in_size", "batch_shape", "transposed",
+                 "v_axis")
 
     start_row: int
     end_row: int
@@ -72,13 +73,23 @@ class BEllpack:
     in_size: int
     batch_shape: tuple[int, ...]
     transposed: bool
+    # Optional override for V's position in the LinOp's logical shape.
+    # When None, V is at axis 0 (transposed=True) or axis -1 (transposed=False)
+    # — the canonical layout. When set to a middle axis, V lands at that
+    # position in `.shape`. Only used transiently by EIGEN-class chains
+    # where a JAXPR transpose moves V to middle between two operands of
+    # an add_any. Most rules treat v_axis is None as the only valid case;
+    # `to_bcoo()` raises NotImplementedError for v_axis-at-middle since
+    # BCOO has no v_axis tracking.
+    v_axis: int | None
 
     def __init__(self, start_row: int, end_row: int,
                  in_cols: tuple[ColArr, ...] | list[ColArr],
                  data: jax.Array,
                  out_size: int, in_size: int,
                  batch_shape: tuple[int, ...] = (),
-                 transposed: bool = False):
+                 transposed: bool = False,
+                 v_axis: int | None = None):
         self.start_row = int(start_row)
         self.end_row = int(end_row)
         self.in_cols = tuple(in_cols)
@@ -90,6 +101,7 @@ class BEllpack:
         self.out_size = int(out_size)
         self.in_size = int(in_size)
         self.transposed = bool(transposed)
+        self.v_axis = None if v_axis is None else int(v_axis)
 
     @property
     def nrows(self):
@@ -109,6 +121,11 @@ class BEllpack:
 
     @property
     def shape(self):
+        if self.v_axis is not None:
+            # V (=in_size) at the explicit v_axis position; non-V axes
+            # are (*batch_shape, out_size) in their original order.
+            non_v = (*self.batch_shape, self.out_size)
+            return non_v[:self.v_axis] + (self.in_size,) + non_v[self.v_axis:]
         if self.transposed:
             # V (=in_size) at axis 0, batch_shape and out_size following.
             return (self.in_size, *self.batch_shape, self.out_size)
@@ -147,8 +164,15 @@ class BEllpack:
         # `lax.transpose` of a `(*batch, out, in)` tensor afterwards.
         # Same data, swapped (row, col) → (col, row) index pair on the
         # scatter target.
-        return (self._todense_batched() if self.n_batch > 0
-                else self._todense_unbatched())
+        canonical = (self._todense_batched() if self.n_batch > 0
+                     else self._todense_unbatched())
+        if self.v_axis is None:
+            return canonical
+        # Move V from canonical position (0 if transposed else -1) to v_axis.
+        v_canonical = 0 if self.transposed else canonical.ndim - 1
+        if v_canonical == self.v_axis:
+            return canonical
+        return jnp.moveaxis(canonical, v_canonical, self.v_axis)
 
     def _todense_unbatched(self):
         rows_1d = np.arange(self.start_row, self.end_row)
@@ -280,6 +304,15 @@ class BEllpack:
         # Delegated to `_ellpack_to_bcoo` (which is flag-aware). Both
         # helpers produce BCOOs at the LOGICAL view — see the
         # `_ellpack_to_bcoo` docstring for details.
+        if self.v_axis is not None:
+            # BCOO has no v_axis tracking — densifying-then-rebuilding
+            # would be possible but pre-vmap main shows none of the 6
+            # EIGEN-class problems hit this path. Raise so any unexpected
+            # caller surfaces.
+            raise NotImplementedError(
+                f"BEllpack.to_bcoo() with v_axis={self.v_axis} (middle V); "
+                f"densify via .todense() instead"
+            )
         return _ellpack_to_bcoo(self)
 
     def pad_rows(self, before: int, after: int):

@@ -430,12 +430,35 @@ def _add_rule(invals, traced, n, **params):
     # logical-view dense or canonical BEs.
     all_traced = [v for v, t in zip(invals, traced) if t]
     traced_be = [v for v in all_traced if isinstance(v, BEllpack)]
+
+    # V-axis-middle fast path: all traced are BE with same v_axis (set,
+    # i.e. middle), same shape, same in_cols, same row range. Merge by
+    # summing data directly. Used by EIGEN-class chains where two
+    # parallel BEs converge at v_axis=middle before a final transpose.
+    if (traced_be
+            and len(traced_be) == len(all_traced)
+            and all(b.v_axis is not None for b in traced_be)
+            and len({b.v_axis for b in traced_be}) == 1
+            and len({b.transposed for b in traced_be}) == 1
+            and len({b.shape for b in traced_be}) == 1
+            and len({(b.start_row, b.end_row) for b in traced_be}) == 1
+            and len({tuple(c.tobytes() if hasattr(c, 'tobytes') else id(c)
+                           for c in b.in_cols) for b in traced_be}) == 1):
+        first = traced_be[0]
+        summed = sum(b.data for b in traced_be[1:]) + traced_be[0].data
+        return replace_slots(first, data=summed)
+
     if traced_be:
         be_flags = {v.transposed for v in traced_be}
         all_be = len(traced_be) == len(all_traced)
         if all_be and be_flags == {True}:
             # All transposed=True BEs: flip all to canonical (free),
-            # recurse, flip result back.
+            # recurse, flip result back. If all operands share the same
+            # v_axis (set or None), restore it on the result so band-
+            # widening preserves the V-at-middle invariant.
+            common_v_axis = (traced_be[0].v_axis
+                             if len({b.v_axis for b in traced_be}) == 1
+                             else None)
             flipped = [
                 replace_slots(v, transposed=False)
                 if t and isinstance(v, BEllpack) else v
@@ -443,7 +466,8 @@ def _add_rule(invals, traced, n, **params):
             ]
             res = _add_rule_canonical(flipped, traced, n)
             if isinstance(res, BEllpack):
-                return replace_slots(res, transposed=True)
+                return replace_slots(res, transposed=True,
+                                     v_axis=common_v_axis)
             # The recurse computed in canonical V-at-(-1) frame; we need
             # V back at axis 0. For ndim==2 that's a swap; for ndim>2
             # it's "move last axis to front".

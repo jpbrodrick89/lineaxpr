@@ -331,37 +331,45 @@ def _transpose_rule(invals, traced, n, **params):
     ndim = len(perm)
 
     if isinstance(op, BEllpack):
-        bdim = 0 if op.transposed else ndim - 1
+        # V's input position: from v_axis if set (middle), else canonical.
+        bdim = (op.v_axis if op.v_axis is not None
+                else (0 if op.transposed else ndim - 1))
         n_out = perm.index(bdim)
-        # Output T flag: V at JAXPR output axis 0 → T=True; at -1 → T=False.
-        # V at middle → can't represent structurally.
+        # Walk perm: strip V from both sides, shift remaining axes.
+        walk_perm = tuple(
+            (perm[j] if perm[j] < bdim else perm[j] - 1)
+            for j in range(ndim) if j != n_out
+        )
+        # Output: V at canonical (0 or ndim-1) → unset v_axis; V at
+        # middle → set v_axis = n_out. Transposed flag tracks the
+        # underlying canonical layout (preserved across middle states).
         if n_out == 0:
+            out_v_axis = None
             out_transposed = True
         elif n_out == ndim - 1:
+            out_v_axis = None
             out_transposed = False
         else:
-            out_transposed = None
-        if out_transposed is not None:
-            # Walk perm: strip V from both sides, shift remaining axes.
-            walk_perm = tuple(
-                (perm[j] if perm[j] < bdim else perm[j] - 1)
-                for j in range(ndim) if j != n_out
-            )
-            # Apply structural perm; if identity, op stays as-is. Then
-            # set the output flag (free flag flip if it differs).
-            if walk_perm == tuple(range(ndim - 1)):
-                structural = op
-            else:
-                try:
-                    structural = op.transpose(walk_perm)
-                except NotImplementedError:
-                    structural = None
-            if structural is not None:
-                if structural.transposed != out_transposed:
-                    from .._linops.base import replace_slots  # noqa: PLC0415
-                    structural = replace_slots(
-                        structural, transposed=out_transposed)
-                return structural
+            out_v_axis = n_out
+            out_transposed = op.transposed
+        # Apply structural perm; if identity, op stays as-is.
+        if walk_perm == tuple(range(ndim - 1)):
+            structural = op
+        else:
+            try:
+                structural = op.transpose(walk_perm)
+            except NotImplementedError:
+                structural = None
+        if structural is not None:
+            from .._linops.base import replace_slots  # noqa: PLC0415
+            if (structural.transposed != out_transposed
+                    or structural.v_axis != out_v_axis):
+                structural = replace_slots(
+                    structural,
+                    transposed=out_transposed,
+                    v_axis=out_v_axis,
+                )
+            return structural
 
     # Fall back: BCOO / dense / unsupported BE perm.
     try:

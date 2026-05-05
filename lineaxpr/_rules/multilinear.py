@@ -84,6 +84,21 @@ def _be_dot_closure_matrix(be: BEllpack, M, c_be: int, c_M: int,
         # BE's out axis is structurally last so we permute batch↔out.
         # Cheap: reorders the in_cols tuple + one values transpose.
         out_be = out_be.transpose((n_batch,) + tuple(range(n_batch)))
+    # When V's JAXPR output position is middle, set v_axis to keep the
+    # LinOp's `.shape` aligned with the eqn aval. For T=True traced_is_
+    # first=False (EIGEN class) V lands at output axis = (M_free_count
+    # + v_pos_among_BE_free).
+    v_in_be = 0 if be.transposed else len(be.shape) - 1
+    be_free = [a for a in range(len(be.shape)) if a != c_be + (1 if be.transposed else 0)]
+    if v_in_be in be_free:
+        v_pos_in_be_free = be_free.index(v_in_be)
+        m_free_count = M.ndim - 1
+        v_out_pos = (v_pos_in_be_free if traced_is_first
+                     else m_free_count + v_pos_in_be_free)
+        out_ndim = len(out_be.shape)
+        if 0 < v_out_pos < out_ndim - 1:
+            from .._linops.base import replace_slots  # noqa: PLC0415
+            out_be = replace_slots(out_be, v_axis=v_out_pos)
     return out_be
 
 
@@ -143,7 +158,7 @@ def _dot_general_rule(invals, traced, n, **params):
             and len(c_tr) == 1 and len(c_M) == 1
             and traced_op.start_row == 0
             and traced_op.end_row == traced_op.out_size
-            and (not traced_op.transposed or traced_is_first)):
+            and traced_op.v_axis is None):
         n_batch = traced_op.n_batch
         if traced_op.transposed:
             if 1 <= c_tr[0] <= n_batch + 1:
