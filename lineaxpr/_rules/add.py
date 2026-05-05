@@ -452,6 +452,58 @@ def _add_rule(invals, traced, n, **params):
         be_flags = {v.transposed for v in traced_be}
         all_be = len(traced_be) == len(all_traced)
         if all_be and be_flags == {True}:
+            # Pre-densify shortcut: when all T=True BEs would band-widen
+            # past `k >= in_size` (e.g. PENALTY3's 200-way reduce_sum
+            # add), flip-flip-back's `_add_rule_canonical` densifies into
+            # a V-at-(-1) Tracer, then needs a real `jnp.transpose` to
+            # restore V-at-0. Build the widened BE at T=True directly
+            # (single concat of data + cols) and densify at T=True
+            # (scatters into V-at-0 canvas) — saves the trailing
+            # transpose vs flip-flip-back.
+            same_range_T = all(
+                v.start_row == traced_be[0].start_row
+                and v.end_row == traced_be[0].end_row
+                and v.out_size == traced_be[0].out_size
+                and v.in_size == traced_be[0].in_size
+                and v.batch_shape == traced_be[0].batch_shape
+                and v.v_axis is None
+                for v in traced_be
+            )
+            if same_range_T:
+                K_total = sum(v.k for v in traced_be)
+                first = traced_be[0]
+                # Only shortcut when even after dedup the result would
+                # densify — count unique col keys; if unique_K >= in_size
+                # then dedup can't bring it below the densify threshold.
+                # (If dedup could rescue sparsity, fall through so the
+                # canonical path takes that branch — see HS38/EGGCRATE,
+                # which have many duplicate cols across operands.)
+                if K_total >= first.in_size:
+                    def _col_key(c):
+                        if isinstance(c, np.ndarray):
+                            return ("np", c.shape, c.tobytes())
+                        if isinstance(c, slice):
+                            return ("slc", c.start, c.stop, c.step)
+                        return ("id", id(c))
+                    unique_keys = set()
+                    for v in traced_be:
+                        for c in v.in_cols:
+                            unique_keys.add(_col_key(c))
+                    if len(unique_keys) >= first.in_size:
+                        # Build widened T=True BE in one shot, densify.
+                        band_axis = first.n_batch + 1
+                        parts = [v.data_2d for v in traced_be]
+                        new_values = (jnp.concatenate(parts, axis=band_axis)
+                                      if len(parts) > 1 else parts[0])
+                        widened = BEllpack(
+                            first.start_row, first.end_row,
+                            tuple(c for v in traced_be for c in v.in_cols),
+                            new_values,
+                            first.out_size, first.in_size,
+                            batch_shape=first.batch_shape,
+                            transposed=True,
+                        )
+                        return widened.todense()
             # All transposed=True BEs: flip all to canonical (free),
             # recurse, flip result back. If all operands share the same
             # v_axis (set or None), restore it on the result so band-
