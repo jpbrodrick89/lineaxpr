@@ -1,0 +1,179 @@
+\begin{thebibliography}{19}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Baydin et~al.(2018)Baydin, Pearlmutter, Radul, and
+  Siskind]{baydin2018automatic}
+Atilim~Gunes Baydin, Barak~A. Pearlmutter, Alexey~Andreyevich Radul, and
+  Jeffrey~Mark Siskind.
+\newblock Automatic differentiation in machine learning: a survey.
+\newblock \emph{Journal of Machine Learning Research}, 18\penalty0
+  (153):\penalty0 1--43, 2018.
+\newblock URL \url{http://jmlr.org/papers/v18/17-468.html}.
+
+\bibitem[Bongartz et~al.(1995)Bongartz, Conn, Gould, and
+  Toint]{bongartz1995cute}
+I.~Bongartz, A.~R. Conn, Nick Gould, and Ph.~L. Toint.
+\newblock Cute: constrained and unconstrained testing environment.
+\newblock \emph{ACM Transactions on Mathematical Software}, 21\penalty0
+  (1):\penalty0 123–160, March 1995.
+\newblock ISSN 1557-7295.
+\newblock \doi{10.1145/200979.201043}.
+\newblock URL \url{http://dx.doi.org/10.1145/200979.201043}.
+
+\bibitem[Bradbury et~al.(2018)Bradbury, Frostig, Hawkins, Johnson, Leary,
+  Maclaurin, Necula, Paszke, Vander{P}las, Wanderman-{M}ilne, and
+  Zhang]{jax2018github}
+James Bradbury, Roy Frostig, Peter Hawkins, Matthew~James Johnson, Chris Leary,
+  Dougal Maclaurin, George Necula, Adam Paszke, Jake Vander{P}las, Skye
+  Wanderman-{M}ilne, and Qiao Zhang.
+\newblock {JAX}: composable transformations of {P}ython+{N}um{P}y programs,
+  2018.
+\newblock URL \url{http://github.com/jax-ml/jax}.
+
+\bibitem[Coleman and Moré(1983)]{colemanmore1983jacobian}
+Thomas~F. Coleman and Jorge~J. Moré.
+\newblock Estimation of sparse jacobian matrices and graph coloring blems.
+\newblock \emph{SIAM Journal on Numerical Analysis}, 20\penalty0 (1):\penalty0
+  187–209, February 1983.
+\newblock ISSN 1095-7170.
+\newblock \doi{10.1137/0720013}.
+\newblock URL \url{http://dx.doi.org/10.1137/0720013}.
+
+\bibitem[Coleman and Moré(1984)]{colemanmore1984hessian}
+Thomas~F. Coleman and Jorge~J. Moré.
+\newblock Estimation of sparse hessian matrices and graph coloring problems.
+\newblock \emph{Mathematical Programming}, 28\penalty0 (3):\penalty0 243–270,
+  October 1984.
+\newblock ISSN 1436-4646.
+\newblock \doi{10.1007/bf02612334}.
+\newblock URL \url{http://dx.doi.org/10.1007/BF02612334}.
+
+\bibitem[Conn et~al.(1992)Conn, Gould, and Toint]{conngouldtoint1992lancelot}
+A.~R. Conn, N.~I.~M. Gould, and Ph.~L. Toint.
+\newblock \emph{Lancelot}.
+\newblock Springer Berlin Heidelberg, 1992.
+\newblock ISBN 9783662122112.
+\newblock \doi{10.1007/978-3-662-12211-2}.
+\newblock URL \url{http://dx.doi.org/10.1007/978-3-662-12211-2}.
+
+\bibitem[CURTIS et~al.(1974)CURTIS, POWELL, and
+  REID]{curtispowellreid1974sparse}
+A.~R. CURTIS, M.~J.~D. POWELL, and J.~K. REID.
+\newblock On the estimation of sparse jacobian matrices.
+\newblock \emph{IMA Journal of Applied Mathematics}, 13\penalty0 (1):\penalty0
+  117–119, February 1974.
+\newblock ISSN 1464-3634.
+\newblock \doi{10.1093/imamat/13.1.117}.
+\newblock URL \url{http://dx.doi.org/10.1093/imamat/13.1.117}.
+
+\bibitem[Dalle and Hill(2026)]{dallehill2026common}
+Guillaume Dalle and Adrian Hill.
+\newblock A common interface for automatic differentiation.
+\newblock \emph{Journal of Machine Learning Research}, 27\penalty0
+  (25):\penalty0 1--13, 2026.
+\newblock URL \url{http://jmlr.org/papers/v27/25-1024.html}.
+
+\bibitem[Duff and Reid(1983)]{duffreid1983multifrontal}
+I.~S. Duff and J.~K. Reid.
+\newblock The multifrontal solution of indefinite sparse symmetric linear.
+\newblock \emph{ACM Transactions on Mathematical Software}, 9\penalty0
+  (3):\penalty0 302–325, September 1983.
+\newblock ISSN 1557-7295.
+\newblock \doi{10.1145/356044.356047}.
+\newblock URL \url{http://dx.doi.org/10.1145/356044.356047}.
+
+\bibitem[Frostig et~al.(2018)Frostig, Johnson, and
+  Leary]{frostigjohnsonleary2018compiling}
+Roy Frostig, Matthew~James Johnson, and Chris Leary.
+\newblock Compiling machine learning programs via high-level tracing.
+\newblock In \emph{Proc. SysML Conference}, 2018.
+\newblock URL \url{https://cs.stanford.edu/~rfrostig/pubs/jax-mlsys2018.pdf}.
+
+\bibitem[Gebremedhin et~al.(2005)Gebremedhin, Manne, and
+  Pothen]{gebremedhin2005color}
+Assefaw~Hadish Gebremedhin, Fredrik Manne, and Alex Pothen.
+\newblock What color is your jacobian? graph coloring for computing
+  derivatives.
+\newblock \emph{SIAM Review}, 47\penalty0 (4):\penalty0 629–705, January
+  2005.
+\newblock ISSN 1095-7200.
+\newblock \doi{10.1137/s0036144504444711}.
+\newblock URL \url{http://dx.doi.org/10.1137/S0036144504444711}.
+
+\bibitem[Gould et~al.(2014)Gould, Orban, and Toint]{gouldorbantoint2014cutest}
+Nicholas I.~M. Gould, Dominique Orban, and Philippe~L. Toint.
+\newblock Cutest: a constrained and unconstrained testing environment with safe
+  threads for mathematical optimization.
+\newblock \emph{Computational Optimization and Applications}, 60\penalty0
+  (3):\penalty0 545–557, August 2014.
+\newblock ISSN 1573-2894.
+\newblock \doi{10.1007/s10589-014-9687-3}.
+\newblock URL \url{http://dx.doi.org/10.1007/s10589-014-9687-3}.
+
+\bibitem[Griewank and Toint(1982)]{griewanktoint1982partitioned}
+A.~Griewank and Ph.~L. Toint.
+\newblock Partitioned variable metric updates for large structured optimization
+  problems.
+\newblock \emph{Numerische Mathematik}, 39\penalty0 (1):\penalty0 119–137,
+  February 1982.
+\newblock ISSN 0945-3245.
+\newblock \doi{10.1007/bf01399316}.
+\newblock URL \url{http://dx.doi.org/10.1007/BF01399316}.
+
+\bibitem[Griewank and Walther(2008)]{griewankwalther2008evaluating}
+Andreas Griewank and Andrea Walther.
+\newblock \emph{Evaluating Derivatives: Principles and Techniques of
+  Algorithmic Differentiation, Second Edition}.
+\newblock Society for Industrial and Applied Mathematics, January 2008.
+\newblock ISBN 9780898717761.
+\newblock \doi{10.1137/1.9780898717761}.
+\newblock URL \url{http://dx.doi.org/10.1137/1.9780898717761}.
+
+\bibitem[Hill and Dalle(2025)]{hilldalle2025sparser}
+Adrian Hill and Guillaume Dalle.
+\newblock Sparser, better, faster, stronger: Sparsity detection for efficient
+  automatic differentiation.
+\newblock \emph{Transactions on Machine Learning Research}, 2025.
+\newblock ISSN 2835-8856.
+\newblock URL \url{https://openreview.net/forum?id=GtXSN52nIW}.
+
+\bibitem[Liu(1992)]{liu1992multifrontal}
+Joseph W.~H. Liu.
+\newblock The multifrontal method for sparse matrix solution: Theory and
+  practice.
+\newblock \emph{SIAM Review}, 34\penalty0 (1):\penalty0 82–109, March 1992.
+\newblock ISSN 1095-7200.
+\newblock \doi{10.1137/1034004}.
+\newblock URL \url{http://dx.doi.org/10.1137/1034004}.
+
+\bibitem[Pearlmutter(1994)]{pearlmutter1994fast}
+Barak~A. Pearlmutter.
+\newblock Fast exact multiplication by the hessian.
+\newblock \emph{Neural Computation}, 6\penalty0 (1):\penalty0 147–160,
+  January 1994.
+\newblock ISSN 1530-888X.
+\newblock \doi{10.1162/neco.1994.6.1.147}.
+\newblock URL \url{http://dx.doi.org/10.1162/neco.1994.6.1.147}.
+
+\bibitem[Powell and Toint(1979)]{powelltoint1979sparse}
+M.~J.~D. Powell and Ph.~L. Toint.
+\newblock On the estimation of sparse hessian matrices.
+\newblock \emph{SIAM Journal on Numerical Analysis}, 16\penalty0 (6):\penalty0
+  1060–1074, December 1979.
+\newblock ISSN 1095-7170.
+\newblock \doi{10.1137/0716078}.
+\newblock URL \url{http://dx.doi.org/10.1137/0716078}.
+
+\bibitem[Saad(2003)]{saad2003iterative}
+Yousef Saad.
+\newblock \emph{Iterative Methods for Sparse Linear Systems}.
+\newblock Society for Industrial and Applied Mathematics, January 2003.
+\newblock ISBN 9780898718003.
+\newblock \doi{10.1137/1.9780898718003}.
+\newblock URL \url{http://dx.doi.org/10.1137/1.9780898718003}.
+
+\end{thebibliography}
